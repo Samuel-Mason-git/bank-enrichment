@@ -1,7 +1,6 @@
 from dotenv import load_dotenv, dotenv_values
 import os
 import requests 
-import ngrok
 from fastapi import FastAPI
 import uvicorn
 from pydantic import BaseModel
@@ -9,11 +8,6 @@ from pydantic import BaseModel
 # Loading environment variables
 load_dotenv()
 config = dotenv_values(".env")
-
-# Set testing token and create webhook listener
-ngrok.set_auth_token(os.getenv("NGROK_TOKEN"))
-listener = ngrok.connect(8000)
-print(f"ngrok tunnel opened at: {listener.url()}")
 
 # Create the App
 app = FastAPI()
@@ -44,4 +38,4 @@ async def recieve_monzo(monzo_data: outer):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
