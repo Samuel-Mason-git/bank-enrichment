@@ -43,7 +43,40 @@ git clone git@github.com:your-username/bank-enrichment.git
 cd bank-enrichment
 ```
 
-#### 3. Open the Firewall
+#### 3. Configure Environment Variables
+
+Copy the example environment file and fill in your own values:
+
+```bash
+cp config/.env.example config/.env
+nano config/.env
+```
+
+The file contains the following keys:
+
+| Key | Description |
+|---|---|
+| `DASHBOARD_USER` | Username for the dashboard login |
+| `DASHBOARD_PASSWORD` | Password for the dashboard login |
+| `OPENAI_SECRET` | Your OpenAI API key |
+| `CLAUDE_SECRET` | Your Anthropic API key |
+
+`config/.env` is gitignored and stays on your server only — `git pull` will never overwrite it.
+
+To get it onto the server you have two options:
+
+**Option A — Copy from your local machine:**
+```bash
+scp config/.env ubuntu@your_server_ip:~/bank-enrichment/config/.env
+```
+
+**Option B — Create it directly on the server via SSH:**
+```bash
+nano ~/bank-enrichment/config/.env
+```
+Paste your values in, then `Ctrl+X`, `Y`, `Enter` to save.
+
+#### 5. Open the Firewall
 
 The server listens on port 8000. You need to open this at two levels:
 
@@ -58,7 +91,7 @@ Add an ingress security rule for TCP port 8000 with source `0.0.0.0/0` in your
 cloud provider's network security settings. On Oracle Cloud this is done via
 Network Security Groups on your instance's VNIC.
 
-#### 4. Start the Server
+#### 6. Start the Server
 
 ```bash
 docker compose up -d
@@ -77,14 +110,14 @@ To view live logs:
 docker compose logs -f
 ```
 
-#### 5. Deploying Updates
+#### 7. Deploying Updates
 
 When you push changes to the repository, SSH into your server and run:
 
 ```bash
 cd ~/bank-enrichment
 git pull
-docker compose up -d --build
+docker compose up -d --build && docker image prune -f
 ```
 
 **If the database schema has changed**, wipe the existing database first so it is recreated cleanly:
@@ -93,5 +126,5 @@ docker compose up -d --build
 docker compose down
 git pull
 rm -f data/bank_enrichment_server.db
-docker compose up -d --build
+docker compose up -d --build && docker image prune -f
 ```
