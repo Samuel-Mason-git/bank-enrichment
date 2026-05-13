@@ -13,6 +13,9 @@ import time
 import json
 import os
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
 from server_db import init_db, get_con
 
 BASE_DIR = os.path.dirname(__file__)
@@ -59,6 +62,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    log.error(f"422 validation error. Body: {body.decode()}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 class inner(BaseModel):
