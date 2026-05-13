@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Transaction {{ transaction_id }}</title>
+    <title>{{ description }}</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -16,44 +16,63 @@
 <main>
     <a href="/dashboard" class="back">← Back to Dashboard</a>
 
-    <div class="tx-header">
-        <div class="tx-amount {% if payload.data.amount < 0 %}debit{% else %}credit{% endif %}">
-            £{{ "%.2f"|format(payload.data.amount / 100 | abs) }}
+    <div class="tx-hero {% if is_debit %}debit{% else %}credit{% endif %}">
+        <div class="tx-hero-amount">{{ amount }}</div>
+        <div class="tx-hero-desc">{{ description }}</div>
+        <div class="tx-hero-meta">
+            <span>{{ category | capitalize }}</span>
+            <span class="dot-sep">·</span>
+            <span>{{ received_at }}</span>
+            <span class="dot-sep">·</span>
+            <span class="badge {{ status }}">{{ status }}</span>
         </div>
-        <div class="tx-meta">
-            <div class="tx-description">{{ payload.data.description }}</div>
-            <div class="tx-sub">{{ payload.data.category | capitalize }} · {{ received_at }}</div>
-        </div>
-        <span class="badge {{ status }}">{{ status }}</span>
     </div>
 
-    <section>
-        <h2>Transaction Details</h2>
-        <table>
-            <tbody>
-                <tr><th>ID</th><td>{{ transaction_id }}</td></tr>
-                <tr><th>Type</th><td>{{ payload.type }}</td></tr>
-                <tr><th>Amount</th><td>{{ payload.data.currency }} {{ "%.2f"|format(payload.data.amount / 100) }}</td></tr>
-                <tr><th>Description</th><td>{{ payload.data.description }}</td></tr>
-                <tr><th>Category</th><td>{{ payload.data.category }}</td></tr>
-                <tr><th>Created</th><td>{{ payload.data.created }}</td></tr>
-                <tr><th>Settled</th><td>{{ payload.data.settled or '—' }}</td></tr>
-                <tr><th>Account ID</th><td>{{ payload.data.account_id }}</td></tr>
-                <tr><th>Is Load</th><td>{{ payload.data.is_load }}</td></tr>
-                {% if payload.data.merchant %}
-                <tr><th>Merchant</th><td>{{ payload.data.merchant }}</td></tr>
-                {% endif %}
-                {% if payload.data.counterparty %}
-                <tr><th>Counterparty</th><td>{{ payload.data.counterparty.name }} ({{ payload.data.counterparty.sort_code }} / {{ payload.data.counterparty.account_number }})</td></tr>
-                {% endif %}
-            </tbody>
-        </table>
-    </section>
+    <div class="detail-grid">
 
-    <section style="margin-top: 16px;">
-        <h2>Raw Payload</h2>
-        <pre class="raw">{{ payload | tojson(indent=2) }}</pre>
-    </section>
+        <div class="detail-card">
+            <div class="detail-card-title">Transaction</div>
+            <div class="detail-row"><span>ID</span><span class="mono">{{ transaction_id }}</span></div>
+            <div class="detail-row"><span>Type</span><span>{{ currency }}</span></div>
+            <div class="detail-row"><span>Created</span><span>{{ created }}</span></div>
+            <div class="detail-row"><span>Settled</span><span>{{ settled if settled else '—' }}</span></div>
+            <div class="detail-row"><span>Is Load</span><span>{{ 'Yes' if is_load else 'No' }}</span></div>
+        </div>
+
+        {% if counterparty %}
+        <div class="detail-card">
+            <div class="detail-card-title">Counterparty</div>
+            <div class="detail-row"><span>Name</span><span>{{ counterparty.name }}</span></div>
+            {% if counterparty.sort_code %}
+            <div class="detail-row"><span>Sort Code</span><span class="mono">{{ counterparty.sort_code }}</span></div>
+            {% endif %}
+            {% if counterparty.account_number %}
+            <div class="detail-row"><span>Account</span><span class="mono">{{ counterparty.account_number }}</span></div>
+            {% endif %}
+            {% if counterparty.beneficiary_account_type %}
+            <div class="detail-row"><span>Type</span><span>{{ counterparty.beneficiary_account_type }}</span></div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if merchant %}
+        <div class="detail-card">
+            <div class="detail-card-title">Merchant</div>
+            {% for key, value in merchant.items() %}
+            {% if value %}
+            <div class="detail-row"><span>{{ key | replace('_', ' ') | capitalize }}</span><span>{{ value }}</span></div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+
+    </div>
+
+    <details class="raw-section">
+        <summary>Raw Payload</summary>
+        <pre class="raw">{{ raw }}</pre>
+    </details>
+
 </main>
 
 </body>

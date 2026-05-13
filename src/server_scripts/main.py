@@ -92,8 +92,14 @@ class outer(BaseModel):
 
 
 @app.post('/recieve_monzo/')
-async def recieve_monzo(monzo_data: outer):
-    payload = monzo_data.model_dump()
+async def recieve_monzo(request: Request):
+    body = await request.body()
+    try:
+        monzo_data = outer.model_validate_json(body)
+    except Exception as e:
+        log.error(f"Validation error: {e}. Body: {body.decode()}")
+        raise HTTPException(status_code=422, detail="Invalid payload")
+
     received_at = time.strftime("%Y-%m-%d %H:%M:%S")
     transaction_id = monzo_data.data.id
 
@@ -101,7 +107,7 @@ async def recieve_monzo(monzo_data: outer):
         con = get_con()
         con.execute(
             "INSERT OR IGNORE INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?)",
-            [transaction_id, json.dumps(payload), received_at]
+            [transaction_id, body.decode(), received_at]
         )
         log.info(f"Transaction stored: {transaction_id}")
     except Exception as e:
@@ -123,6 +129,9 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     payload = json.loads(row[1])
+    data = payload.get("data", {})
+    amount_pence = data.get("amount", 0)
+    amount_str = f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}"
 
     return templates.TemplateResponse(
         request=request,
@@ -131,7 +140,17 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "transaction_id": row[0],
             "received_at": row[2],
             "status": row[3],
-            "payload": payload,
+            "amount": amount_str,
+            "is_debit": amount_pence < 0,
+            "description": data.get("description", ""),
+            "category": data.get("category", ""),
+            "currency": data.get("currency", ""),
+            "created": data.get("created", ""),
+            "settled": data.get("settled") or None,
+            "is_load": data.get("is_load"),
+            "merchant": data.get("merchant"),
+            "counterparty": data.get("counterparty"),
+            "raw": json.dumps(payload, indent=2),
         }
     )
 
