@@ -109,12 +109,15 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
         "SELECT id, received_at, status FROM webhook_queue ORDER BY received_at DESC LIMIT 20"
     ).fetchall()
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "total": total,
-        "by_status": by_status,
-        "recent": recent,
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "total": total,
+            "by_status": by_status,
+            "recent": recent,
+        }
+    )
 
 
 if __name__ == "__main__":
