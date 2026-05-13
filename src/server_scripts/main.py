@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 import logging
@@ -13,7 +15,9 @@ import os
 
 from server_db import init_db, get_con
 
-LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "server.log")
+BASE_DIR = os.path.dirname(__file__)
+
+LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 logging.basicConfig(
@@ -30,6 +34,7 @@ DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 
 security = HTTPBasic()
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -53,6 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 class inner(BaseModel):
@@ -93,7 +99,7 @@ async def recieve_monzo(monzo_data: outer):
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     total = con.execute("SELECT COUNT(*) FROM webhook_queue").fetchone()[0]
     by_status = con.execute(
@@ -103,44 +109,12 @@ async def dashboard(credentials: HTTPBasicCredentials = Depends(verify_credentia
         "SELECT id, received_at, status FROM webhook_queue ORDER BY received_at DESC LIMIT 20"
     ).fetchall()
 
-    status_rows = "".join(
-        f"<tr><td>{s}</td><td>{c}</td></tr>" for s, c in by_status
-    )
-    transaction_rows = "".join(
-        f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td></tr>" for r in recent
-    )
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Bank Enrichment</title>
-    <style>
-        body {{ font-family: sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #222; }}
-        h1 {{ font-size: 1.4rem; margin-bottom: 24px; }}
-        h2 {{ font-size: 1rem; margin-top: 32px; color: #555; }}
-        .stat {{ display: inline-block; background: #f4f4f4; border-radius: 8px; padding: 16px 28px; margin-right: 12px; font-size: 1.6rem; font-weight: bold; }}
-        .stat span {{ display: block; font-size: 0.75rem; font-weight: normal; color: #888; margin-top: 4px; }}
-        table {{ border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 0.9rem; }}
-        th {{ text-align: left; border-bottom: 2px solid #ddd; padding: 8px; color: #555; }}
-        td {{ padding: 8px; border-bottom: 1px solid #eee; }}
-    </style>
-</head>
-<body>
-    <h1>Bank Enrichment Dashboard</h1>
-    <div class="stat">{total}<span>Total Transactions</span></div>
-    <h2>By Status</h2>
-    <table>
-        <tr><th>Status</th><th>Count</th></tr>
-        {status_rows}
-    </table>
-    <h2>Recent Transactions</h2>
-    <table>
-        <tr><th>ID</th><th>Received At</th><th>Status</th></tr>
-        {transaction_rows}
-    </table>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "total": total,
+        "by_status": by_status,
+        "recent": recent,
+    })
 
 
 if __name__ == "__main__":

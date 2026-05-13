@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Enrichment</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <div class="dot"></div>
+    <h1>Bank Enrichment</h1>
+</header>
+
+<main>
+    <div class="stats">
+        <div class="stat-card total">
+            <div class="value">{{ total }}</div>
+            <div class="label">Total Transactions</div>
+        </div>
+        {% for status, count in by_status %}
+        <div class="stat-card {{ status }}">
+            <div class="value">{{ count }}</div>
+            <div class="label">{{ status | capitalize }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <section>
+        <h2>Recent Transactions</h2>
+        {% if recent %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Transaction ID</th>
+                    <th>Received At</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in recent %}
+                <tr>
+                    <td>{{ row[0] }}</td>
+                    <td>{{ row[1] }}</td>
+                    <td><span class="badge {{ row[2] }}">{{ row[2] }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">No transactions received yet</div>
+        {% endif %}
+    </section>
+</main>
+
+</body>
+</html>
