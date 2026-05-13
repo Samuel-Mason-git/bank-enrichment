@@ -1,16 +1,19 @@
-from dotenv import load_dotenv, dotenv_values
-import os
-import requests 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-import uvicorn
 from pydantic import BaseModel
+import uvicorn
 
-# Loading environment variables
-load_dotenv()
-config = dotenv_values(".env")
+from server_db import init_db
 
-# Create the App
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
 
 class inner(BaseModel):
     account_id: str
@@ -23,9 +26,11 @@ class inner(BaseModel):
     is_load: bool
     settled: str
     merchant: dict
+
 class outer(BaseModel):
     type: str
     data: inner
+
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(monzo_data: outer):
