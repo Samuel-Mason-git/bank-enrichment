@@ -111,6 +111,31 @@ async def recieve_monzo(monzo_data: outer):
     return {"status": "ok"}
 
 
+@app.get("/dashboard/transaction/{transaction_id}", response_class=HTMLResponse)
+async def transaction_detail(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    row = con.execute(
+        "SELECT id, payload, received_at, status FROM webhook_queue WHERE id = ?",
+        [transaction_id]
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    payload = json.loads(row[1])
+
+    return templates.TemplateResponse(
+        request=request,
+        name="transaction.html",
+        context={
+            "transaction_id": row[0],
+            "received_at": row[2],
+            "status": row[3],
+            "payload": payload,
+        }
+    )
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()

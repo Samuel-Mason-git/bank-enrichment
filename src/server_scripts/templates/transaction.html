@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transaction {{ transaction_id }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <div class="dot"></div>
+    <h1>Bank Enrichment</h1>
+</header>
+
+<main>
+    <a href="/dashboard" class="back">← Back to Dashboard</a>
+
+    <div class="tx-header">
+        <div class="tx-amount {% if payload.data.amount < 0 %}debit{% else %}credit{% endif %}">
+            £{{ "%.2f"|format(payload.data.amount / 100 | abs) }}
+        </div>
+        <div class="tx-meta">
+            <div class="tx-description">{{ payload.data.description }}</div>
+            <div class="tx-sub">{{ payload.data.category | capitalize }} · {{ received_at }}</div>
+        </div>
+        <span class="badge {{ status }}">{{ status }}</span>
+    </div>
+
+    <section>
+        <h2>Transaction Details</h2>
+        <table>
+            <tbody>
+                <tr><th>ID</th><td>{{ transaction_id }}</td></tr>
+                <tr><th>Type</th><td>{{ payload.type }}</td></tr>
+                <tr><th>Amount</th><td>{{ payload.data.currency }} {{ "%.2f"|format(payload.data.amount / 100) }}</td></tr>
+                <tr><th>Description</th><td>{{ payload.data.description }}</td></tr>
+                <tr><th>Category</th><td>{{ payload.data.category }}</td></tr>
+                <tr><th>Created</th><td>{{ payload.data.created }}</td></tr>
+                <tr><th>Settled</th><td>{{ payload.data.settled or '—' }}</td></tr>
+                <tr><th>Account ID</th><td>{{ payload.data.account_id }}</td></tr>
+                <tr><th>Is Load</th><td>{{ payload.data.is_load }}</td></tr>
+                {% if payload.data.merchant %}
+                <tr><th>Merchant</th><td>{{ payload.data.merchant }}</td></tr>
+                {% endif %}
+                {% if payload.data.counterparty %}
+                <tr><th>Counterparty</th><td>{{ payload.data.counterparty.name }} ({{ payload.data.counterparty.sort_code }} / {{ payload.data.counterparty.account_number }})</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </section>
+
+    <section style="margin-top: 16px;">
+        <h2>Raw Payload</h2>
+        <pre class="raw">{{ payload | tojson(indent=2) }}</pre>
+    </section>
+</main>
+
+</body>
+</html>
