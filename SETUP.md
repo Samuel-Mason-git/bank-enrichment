@@ -76,7 +76,7 @@ nano ~/bank-enrichment/config/.env
 ```
 Paste your values in, then `Ctrl+X`, `Y`, `Enter` to save.
 
-#### 5. Open the Firewall
+#### 4. Open the Firewall
 
 The server listens on port 8000. You need to open this at two levels:
 
@@ -91,10 +91,10 @@ Add an ingress security rule for TCP port 8000 with source `0.0.0.0/0` in your
 cloud provider's network security settings. On Oracle Cloud this is done via
 Network Security Groups on your instance's VNIC.
 
-#### 6. Start the Server
+#### 5. Start the Server
 
 ```bash
-docker compose up -d
+sudo docker compose up -d
 ```
 
 Docker will build the image, install all dependencies, and start the server.
@@ -107,8 +107,16 @@ A `data/` directory is created automatically in the project folder containing:
 To view live logs:
 
 ```bash
-docker compose logs -f
+sudo docker compose logs -f
 ```
+
+#### 6. Access the Dashboard
+
+Open `http://your_server_ip:8000/dashboard` in your browser. You will be prompted
+for the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
+
+The dashboard shows total transactions received, a breakdown by status, and the
+20 most recent transactions.
 
 #### 7. Deploying Updates
 
@@ -117,14 +125,14 @@ When you push changes to the repository, SSH into your server and run:
 ```bash
 cd ~/bank-enrichment
 git pull
-docker compose up -d --build && docker image prune -f
+sudo docker compose up -d --build && sudo docker image prune -f
 ```
 
 **If the database schema has changed**, wipe the existing database first so it is recreated cleanly:
 
 ```bash
-docker compose down
+sudo docker compose down
 git pull
 rm -f data/bank_enrichment_server.db
-docker compose up -d --build && docker image prune -f
+sudo docker compose up -d --build && sudo docker image prune -f
 ```

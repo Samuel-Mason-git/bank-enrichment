@@ -48,6 +48,16 @@ because the context sentences tell it exactly what each transaction was.
 7. LLM reads context and applies or creates labels from your label taxonomy
 8. Final enriched dataset stored locally — queryable by category, tag, label, sublabel, date, merchant, or any combination
 
+## Dashboard
+
+The server exposes a password-protected dashboard at `http://your_server_ip:8000/dashboard` showing:
+
+- Total transactions received
+- Breakdown by status (pending, enriched, processed)
+- The 20 most recent transactions
+
+Credentials are set via environment variables — see SETUP.md.
+
 ## What You End Up With
 
 A clean, structured, personal financial dataset where every transaction has:
