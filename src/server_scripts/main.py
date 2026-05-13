@@ -5,7 +5,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 import uvicorn
 import logging
 import secrets
@@ -72,6 +73,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 
 class inner(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     account_id: str
     amount: int
     created: str
@@ -80,10 +82,11 @@ class inner(BaseModel):
     id: str
     category: str
     is_load: bool
-    settled: str
-    merchant: dict
+    settled: Optional[str] = None
+    merchant: Optional[dict] = None
 
 class outer(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     type: str
     data: inner
 
