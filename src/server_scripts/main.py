@@ -109,6 +109,10 @@ async def recieve_monzo(request: Request):
             "INSERT OR IGNORE INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?)",
             [transaction_id, body.decode(), received_at]
         )
+        con.execute(
+            "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ? WHERE id = 1",
+            [monzo_data.data.amount]
+        )
         log.info(f"Transaction stored: {transaction_id}")
     except Exception as e:
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
@@ -158,21 +162,26 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
-    total = con.execute("SELECT COUNT(*) FROM webhook_queue").fetchone()[0]
-    by_status = con.execute(
-        "SELECT status, COUNT(*) FROM webhook_queue GROUP BY status"
+    lifetime = con.execute(
+        "SELECT total_received, total_amount_pence, requests_sent, total_enriched, total_processed FROM stats WHERE id = 1"
+    ).fetchone()
+    queue = con.execute(
+        "SELECT id, received_at, status, request_count FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC"
     ).fetchall()
-    recent = con.execute(
-        "SELECT id, received_at, status FROM webhook_queue ORDER BY received_at DESC LIMIT 20"
-    ).fetchall()
+
+    total_received, total_amount_pence, requests_sent, total_enriched, total_processed = lifetime or (0, 0, 0, 0, 0)
+    total_amount_str = f"£{abs(total_amount_pence) / 100:,.2f}"
 
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
-            "total": total,
-            "by_status": by_status,
-            "recent": recent,
+            "total_received": total_received,
+            "total_amount": total_amount_str,
+            "requests_sent": requests_sent,
+            "total_enriched": total_enriched,
+            "total_processed": total_processed,
+            "queue": queue,
         }
     )
 

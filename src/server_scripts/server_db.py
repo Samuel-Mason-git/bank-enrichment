@@ -24,3 +24,7 @@ def init_db() -> None:
         statement = statement.strip()
         if statement:
             _con.execute(statement)
+
+    _con.execute(
+        "ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS request_count INTEGER DEFAULT 0"
+    )
