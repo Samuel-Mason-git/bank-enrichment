@@ -165,6 +165,9 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
     lifetime = con.execute(
         "SELECT total_received, total_amount_pence, requests_sent, total_enriched, total_processed FROM stats WHERE id = 1"
     ).fetchone()
+    queue_stats = con.execute(
+        "SELECT status, COUNT(*) FROM webhook_queue WHERE status != 'processed' GROUP BY status"
+    ).fetchall()
     queue = con.execute(
         "SELECT id, received_at, status, request_count FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC"
     ).fetchall()
@@ -181,6 +184,7 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "requests_sent": requests_sent,
             "total_enriched": total_enriched,
             "total_processed": total_processed,
+            "queue_stats": queue_stats,
             "queue": queue,
         }
     )

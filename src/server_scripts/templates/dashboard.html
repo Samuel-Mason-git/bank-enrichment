@@ -40,6 +40,14 @@
     </div>
 
     <div class="section-label">Current Queue</div>
+    <div class="stats">
+        {% for status, count in queue_stats %}
+        <div class="stat-card {{ status }}">
+            <div class="value">{{ count }}</div>
+            <div class="label">{{ status | capitalize }}</div>
+        </div>
+        {% endfor %}
+    </div>
     <section>
         {% if queue %}
         <table>
