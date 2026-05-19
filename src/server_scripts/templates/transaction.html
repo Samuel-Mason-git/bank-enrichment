@@ -36,7 +36,12 @@
         </div>
     </div>
 
-    {% if user_context %}
+    {% if skipped %}
+    <div class="enrichment-card skipped">
+        <div class="enrichment-label">Skipped</div>
+        <div class="enrichment-meta">Marked as skipped {{ enriched_at }}</div>
+    </div>
+    {% elif user_context %}
     <div class="enrichment-card">
         <div class="enrichment-label">Enrichment</div>
         <div class="enrichment-context">"{{ user_context }}"</div>
@@ -105,9 +110,17 @@
     </details>
 
     <div class="tx-bottom-actions">
-        {% if status == 'enriched' %}
+        {% if skipped %}
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
+            <button type="submit" class="btn-action-reset">↩ Un-skip</button>
+        </form>
+        {% elif status == 'enriched' %}
         <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
             <button type="submit" class="btn-action-reset">↩ Reset to Pending</button>
+        </form>
+        {% elif status == 'pending' %}
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/skip">
+            <button type="submit" class="btn-action-skip">— Skip</button>
         </form>
         {% endif %}
         <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">

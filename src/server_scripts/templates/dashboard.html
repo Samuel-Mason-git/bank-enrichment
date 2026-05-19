@@ -58,6 +58,13 @@
     </div>
     {% endif %}
 
+    <div class="queue-header">
+        <span class="queue-count">{{ total_queue }} transaction{{ 's' if total_queue != 1 else '' }}</span>
+        {% if total_pages > 1 %}
+        <span class="queue-page">Page {{ page }} of {{ total_pages }}</span>
+        {% endif %}
+    </div>
+
     <div class="card">
         {% if queue %}
         <table>
@@ -77,11 +84,13 @@
                     <td><a href="/dashboard/transaction/{{ row.id }}">{{ row.id }}</a></td>
                     <td><span class="amount-badge {% if row.is_debit %}debit{% else %}credit{% endif %}">{{ row.amount }}</span></td>
                     <td>{{ row.received_at }}</td>
-                    <td><span class="badge {{ row.status }}">{{ row.status }}</span></td>
+                    <td><span class="badge {% if row.skipped %}skipped{% else %}{{ row.status }}{% endif %}">{% if row.skipped %}skipped{% else %}{{ row.status }}{% endif %}</span></td>
                     <td>{{ row.request_count }}</td>
                     <td>
                         <div class="row-actions">
+                            {% if row.status != 'enriched' and not row.skipped %}
                             <button class="btn-row-enrich" onclick="openEnrich('{{ row.id }}')">✏ Enrich</button>
+                            {% endif %}
                             <form method="post" action="/dashboard/transaction/{{ row.id }}/delete" onsubmit="return confirm('Delete this transaction?')">
                                 <button type="submit" class="btn-row-delete">✕</button>
                             </form>
@@ -95,6 +104,34 @@
         <div class="empty">No transactions in the queue</div>
         {% endif %}
     </div>
+
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="/dashboard?page={{ page - 1 }}" class="page-btn">← Previous</a>
+        {% else %}
+        <span class="page-btn disabled">← Previous</span>
+        {% endif %}
+
+        <div class="page-numbers">
+            {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                <span class="page-num active">{{ p }}</span>
+                {% elif p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+                <a href="/dashboard?page={{ p }}" class="page-num">{{ p }}</a>
+                {% elif p == page - 3 or p == page + 3 %}
+                <span class="page-ellipsis">…</span>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        {% if page < total_pages %}
+        <a href="/dashboard?page={{ page + 1 }}" class="page-btn">Next →</a>
+        {% else %}
+        <span class="page-btn disabled">Next →</span>
+        {% endif %}
+    </div>
+    {% endif %}
 
 </main>
 

@@ -24,6 +24,20 @@ class TelegramBot:
         if response.status_code != 200:
             log.error(f"Message failed to send: {response.text}")
 
+    def send_skip_confirm(self, chat_id: int, transaction_id: str):
+        url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": f"Skip this transaction?\n\n<code>{transaction_id}</code>",
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "✅ Yes, skip", "callback_data": f"skip_do:{transaction_id}"},
+                    {"text": "❌ Cancel",    "callback_data": "skip_cancel"},
+                ]]
+            }
+        })
+
     def ack_callback(self, callback_query_id: str):
         requests.post(
             f"https://api.telegram.org/bot{self.api_key}/answerCallbackQuery",
@@ -114,7 +128,8 @@ class TelegramBot:
             "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [[
-                    {"text": "✏️ Enrich", "callback_data": f"enrich:{data['id']}"}
+                    {"text": "✏️ Enrich", "callback_data": f"enrich:{data['id']}"},
+                    {"text": "⏭ Skip", "callback_data": f"skip_confirm:{data['id']}"},
                 ]]
             }
         }

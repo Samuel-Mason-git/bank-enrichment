@@ -17,5 +17,6 @@ CREATE TABLE IF NOT EXISTS webhook_queue (
         CHECK (status IN ('pending', 'enriched', 'processed')),
     user_context    TEXT,
     enriched_at     TIMESTAMP,
-    request_count   INTEGER      DEFAULT 0
+    request_count   INTEGER      DEFAULT 0,
+    skipped         BOOLEAN      DEFAULT FALSE
 );

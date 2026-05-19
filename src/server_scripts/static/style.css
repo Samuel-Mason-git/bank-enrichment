@@ -165,6 +165,7 @@ tr:hover td      { background: #fafafa; }
 .badge.pending   { background: #fef3c7; color: #92400e; }
 .badge.enriched  { background: #ede9fe; color: #5b21b6; }
 .badge.processed { background: #d1fae5; color: #065f46; }
+.badge.skipped   { background: #f4f4f5; color: #71717a; }
 
 .amount-badge {
     display: inline-flex;
@@ -204,6 +205,75 @@ a:hover { text-decoration: underline; }
 }
 
 .mono { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; font-size: 0.78rem; }
+
+/* ── Queue header & pagination ──────────────────────────────── */
+.queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.queue-count {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #71717a;
+}
+.queue-page {
+    font-size: 0.75rem;
+    color: #a1a1aa;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+    margin-bottom: 40px;
+}
+
+.page-btn {
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #3f3f46;
+    background: #fff;
+    border: 1px solid #e4e4e7;
+    text-decoration: none;
+    transition: background 0.1s;
+    cursor: pointer;
+}
+.page-btn:hover { background: #fafafa; text-decoration: none; }
+.page-btn.disabled { color: #d4d4d8; cursor: default; pointer-events: none; }
+
+.page-numbers {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.page-num {
+    min-width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #52525b;
+    text-decoration: none;
+    transition: background 0.1s;
+}
+.page-num:hover { background: #f4f4f5; text-decoration: none; }
+.page-num.active { background: #18181b; color: #fff; font-weight: 600; }
+
+.page-ellipsis {
+    min-width: 32px;
+    text-align: center;
+    font-size: 0.8rem;
+    color: #a1a1aa;
+}
 
 /* ── Row action buttons ─────────────────────────────────────── */
 .row-actions {
@@ -365,6 +435,13 @@ a:hover { text-decoration: underline; }
 .tx-hero .badge { opacity: 1; background: rgba(255,255,255,0.15); color: #fff; }
 
 /* ── Enrichment card ────────────────────────────────────────── */
+.enrichment-card.skipped {
+    background: #fafafa;
+    border-color: #e4e4e7;
+}
+.enrichment-card.skipped .enrichment-label { color: #71717a; }
+.enrichment-card.skipped .enrichment-meta  { color: #a1a1aa; }
+
 .enrichment-card {
     background: #f0fdf4;
     border: 1px solid #bbf7d0;
@@ -461,6 +538,20 @@ pre.raw {
     margin-bottom: 56px;
 }
 .tx-bottom-actions form { flex: 1; }
+
+.btn-action-skip {
+    width: 100%;
+    padding: 14px;
+    border-radius: 9px;
+    border: 1px solid #e4e4e7;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    background: #fff;
+    color: #71717a;
+    transition: background 0.1s;
+}
+.btn-action-skip:hover { background: #f4f4f5; }
 
 .btn-action-reset {
     width: 100%;

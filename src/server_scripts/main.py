@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi import FastAPI, HTTPException, Depends, Request, status, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -203,6 +203,28 @@ async def recieve_telegram(request: Request):
             _sessions[chat_id] = {"transaction_id": transaction_id}
             bot.send_message(chat_id, f"Enriching <code>{transaction_id}</code>\n\nWhat was this transaction? Send a one-line description.")
 
+        elif cq.data and cq.data.startswith("skip_confirm:"):
+            transaction_id = cq.data.split(":", 1)[1]
+            bot.send_skip_confirm(chat_id, transaction_id)
+
+        elif cq.data and cq.data.startswith("skip_do:"):
+            transaction_id = cq.data.split(":", 1)[1]
+            try:
+                con = get_con()
+                con.execute(
+                    "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', enriched_at = ? WHERE id = ?",
+                    [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+                )
+                log.info(f"Transaction skipped via Telegram: {transaction_id}")
+            except Exception as e:
+                log.error(f"Failed to skip transaction {transaction_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            bot.send_message(chat_id, "⏭ Skipped.")
+
+        elif cq.data == "skip_cancel":
+            bot.send_message(chat_id, "Cancelled.")
+
     elif update.message and update.message.text:
         msg = update.message
         chat_id = msg.chat.id
@@ -239,7 +261,7 @@ async def recieve_telegram(request: Request):
 async def transaction_detail(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     row = con.execute(
-        "SELECT id, payload, received_at, status, user_context, enriched_at FROM webhook_queue WHERE id = ?",
+        "SELECT id, payload, received_at, status, user_context, enriched_at, skipped FROM webhook_queue WHERE id = ?",
         [transaction_id]
     ).fetchone()
 
@@ -260,6 +282,7 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "status": row[3],
             "user_context": row[4],
             "enriched_at": row[5],
+            "skipped": row[6],
             "amount": amount_str,
             "is_debit": amount_pence < 0,
             "description": data.get("description", ""),
@@ -273,6 +296,16 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "raw": json.dumps(payload, indent=2),
         }
     )
+
+
+@app.post("/dashboard/transaction/{transaction_id}/skip", response_class=HTMLResponse)
+async def skip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    con.execute(
+        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', enriched_at = ? WHERE id = ?",
+        [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+    )
+    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
 
 
 @app.post("/dashboard/transaction/{transaction_id}/enrich-dashboard", response_class=HTMLResponse)
@@ -306,7 +339,7 @@ async def delete_transaction(transaction_id: str, request: Request, credentials:
 async def reset_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     con.execute(
-        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL WHERE id = ?",
+        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL, skipped = FALSE WHERE id = ?",
         [transaction_id]
     )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
@@ -333,8 +366,10 @@ async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(
     )
 
 
+PAGE_SIZE = 20
+
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials), page: int = Query(1, ge=1)):
     con = get_con()
     lifetime = con.execute(
         "SELECT total_received, total_amount_pence, requests_sent, total_enriched, total_processed FROM stats WHERE id = 1"
@@ -342,8 +377,12 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
     queue_stats = con.execute(
         "SELECT status, COUNT(*) FROM webhook_queue WHERE status != 'processed' GROUP BY status"
     ).fetchall()
+    total_queue = con.execute(
+        "SELECT COUNT(*) FROM webhook_queue WHERE status != 'processed'"
+    ).fetchone()[0]
     rows = con.execute(
-        "SELECT id, received_at, status, request_count, payload FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC"
+        "SELECT id, received_at, status, request_count, payload, skipped FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC LIMIT ? OFFSET ?",
+        [PAGE_SIZE, (page - 1) * PAGE_SIZE]
     ).fetchall()
 
     queue = []
@@ -356,22 +395,26 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "request_count": row[3] or 0,
             "amount": f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}",
             "is_debit": amount_pence < 0,
+            "skipped": bool(row[5]),
         })
 
     total_received, total_amount_pence, requests_sent, total_enriched, total_processed = lifetime or (0, 0, 0, 0, 0)
-    total_amount_str = f"£{abs(total_amount_pence) / 100:,.2f}"
+    total_pages = max(1, -(-total_queue // PAGE_SIZE))
 
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
             "total_received": total_received,
-            "total_amount": total_amount_str,
+            "total_amount": f"£{abs(total_amount_pence) / 100:,.2f}",
             "requests_sent": requests_sent,
             "total_enriched": total_enriched,
             "total_processed": total_processed,
             "queue_stats": queue_stats,
             "queue": queue,
+            "page": page,
+            "total_pages": total_pages,
+            "total_queue": total_queue,
         }
     )
 

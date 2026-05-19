@@ -50,15 +50,21 @@ because the context sentences tell it exactly what each transaction was.
 
 ## Dashboard
 
-The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard` with two sections:
+The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard`.
 
-**Lifetime Stats** — counters that persist permanently regardless of queue state:
-- Total transactions received and total monetary value
-- Total notifications sent, enriched, and processed to local DB
+**Lifetime Stats** — persistent counters that survive queue clears:
+- Total transactions received and total monetary value processed
+- Total Telegram notifications sent, enriched, and processed
 
-**Current Queue** — the live state of the processing queue:
+**Current Queue** — live state of unprocessed transactions:
 - Status breakdown (pending / enriched) with counts
-- Full list of all unprocessed transactions, each linking to a detail page
+- Paginated transaction list with amount, status, and inline actions
+- Enrich any transaction directly from the dashboard via a modal
+- Delete transactions inline
+
+Each transaction links to a detail page showing the full payload, merchant/counterparty info, enrichment context, and controls to reset or delete.
+
+A **Database view** at `/dashboard/db` lets you inspect the raw `stats` and `webhook_queue` tables directly without needing to exec into the container.
 
 Credentials are set via environment variables — see SETUP.md.
 
