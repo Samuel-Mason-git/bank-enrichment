@@ -289,6 +289,27 @@ async def reset_transaction(transaction_id: str, request: Request, credentials: 
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
 
 
+@app.get("/dashboard/db", response_class=HTMLResponse)
+async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    stats_rows = con.execute("SELECT * FROM stats").fetchall()
+    stats_cols = ["id", "total_received", "total_amount_pence", "requests_sent", "total_enriched", "total_processed"]
+    queue_rows = con.execute(
+        "SELECT id, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC"
+    ).fetchall()
+    queue_cols = ["id", "received_at", "status", "user_context", "enriched_at", "request_count"]
+    return templates.TemplateResponse(
+        request=request,
+        name="db.html",
+        context={
+            "tables": [
+                {"name": "stats", "columns": stats_cols, "rows": stats_rows},
+                {"name": "webhook_queue", "columns": queue_cols, "rows": queue_rows},
+            ]
+        }
+    )
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()

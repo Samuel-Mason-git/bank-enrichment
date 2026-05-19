@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DB View</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <div class="dot"></div>
+    <h1>Bank Enrichment</h1>
+</header>
+
+<main>
+    <div class="tx-nav" style="margin-bottom:24px;">
+        <a href="/dashboard" class="back">← Back to Dashboard</a>
+    </div>
+
+    {% for table in tables %}
+    <div class="section-label">{{ table.name }}</div>
+    <section style="margin-bottom:32px; overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    {% for col in table.columns %}
+                    <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in table.rows %}
+                <tr>
+                    {% for cell in row %}
+                    <td class="mono">{{ cell if cell is not none else '—' }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+                {% if not table.rows %}
+                <tr><td colspan="{{ table.columns | length }}" class="empty">No rows</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </section>
+    {% endfor %}
+
+</main>
+
+</body>
+</html>
