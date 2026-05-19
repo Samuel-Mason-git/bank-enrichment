@@ -154,10 +154,135 @@ tr:hover td { background: #fafafa; }
 a { color: #6366f1; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* Inline row actions */
+.row-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.btn-row-enrich {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: none;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: #fef9c3;
+    color: #854d0e;
+}
+.btn-row-enrich:hover { background: #fef08a; }
+
+.btn-row-delete {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: none;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    background: #fee2e2;
+    color: #991b1b;
+}
+.btn-row-delete:hover { background: #fecaca; }
+
+/* Enrich modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.modal-box {
+    background: white;
+    border-radius: 16px;
+    padding: 32px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+
+.modal-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: #1a1a2e;
+}
+
+.modal-tx-id {
+    font-size: 0.75rem;
+    font-family: monospace;
+    color: #999;
+    margin-bottom: 20px;
+}
+
+.modal-textarea {
+    width: 100%;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    resize: vertical;
+    outline: none;
+    color: #1a1a2e;
+}
+.modal-textarea:focus { border-color: #6366f1; }
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.btn-enrich-submit {
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: #fef08a;
+    color: #713f12;
+}
+.btn-enrich-submit:hover { background: #fde047; }
+
 .back {
     font-size: 0.85rem;
     color: #999;
 }
+
+/* Bottom action buttons on transaction page */
+.tx-bottom-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+    margin-bottom: 40px;
+}
+
+.tx-bottom-actions form { flex: 1; }
+
+.btn-action-reset, .btn-action-delete {
+    width: 100%;
+    padding: 16px 24px;
+    border-radius: 12px;
+    border: none;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: background 0.15s;
+}
+
+.btn-action-reset  { background: #f3f4f6; color: #374151; }
+.btn-action-reset:hover  { background: #e5e7eb; }
+.btn-action-delete { background: #fee2e2; color: #991b1b; }
+.btn-action-delete:hover { background: #fecaca; }
 
 /* Transaction nav */
 .tx-nav {

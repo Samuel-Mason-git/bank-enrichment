@@ -173,6 +173,10 @@ async def recieve_monzo(request: Request):
     if is_new and bot:
         try:
             bot.send_card(json.loads(body))
+            con.execute(
+                "UPDATE webhook_queue SET request_count = request_count + 1 WHERE id = ?",
+                [transaction_id]
+            )
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)
 
@@ -269,6 +273,26 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "raw": json.dumps(payload, indent=2),
         }
     )
+
+
+@app.post("/dashboard/transaction/{transaction_id}/enrich-dashboard", response_class=HTMLResponse)
+async def enrich_transaction_dashboard(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    form = await request.form()
+    context = (form.get("context") or "").strip()
+    if not context:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    con = get_con()
+    row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    was_pending = row[0] == "pending"
+    con.execute(
+        "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+        [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+    )
+    if was_pending:
+        con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.post("/dashboard/transaction/{transaction_id}/delete", response_class=HTMLResponse)

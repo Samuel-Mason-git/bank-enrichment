@@ -57,6 +57,7 @@
                     <th>Received At</th>
                     <th>Status</th>
                     <th>Requests Sent</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -66,6 +67,14 @@
                     <td>{{ row[1] }}</td>
                     <td><span class="badge {{ row[2] }}">{{ row[2] }}</span></td>
                     <td>{{ row[3] if row[3] is not none else 0 }}</td>
+                    <td>
+                        <div class="row-actions">
+                            <button class="btn-row-enrich" onclick="openEnrich('{{ row[0] }}')">✏ Enrich</button>
+                            <form method="post" action="/dashboard/transaction/{{ row[0] }}/delete" onsubmit="return confirm('Delete this transaction?')">
+                                <button type="submit" class="btn-row-delete">✕</button>
+                            </form>
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -76,6 +85,37 @@
     </section>
 
 </main>
+
+<!-- Enrich modal -->
+<div id="enrich-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+        <div class="modal-title">Enrich Transaction</div>
+        <div id="modal-tx-id" class="modal-tx-id"></div>
+        <form id="enrich-form" method="post">
+            <textarea name="context" class="modal-textarea" placeholder="What was this transaction? e.g. Lunch with Alex at Pret" rows="3" required></textarea>
+            <div class="modal-footer">
+                <button type="button" class="btn-reset" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn-enrich-submit">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openEnrich(txId) {
+    document.getElementById('modal-tx-id').textContent = txId;
+    document.getElementById('enrich-form').action = '/dashboard/transaction/' + txId + '/enrich-dashboard';
+    document.querySelector('.modal-textarea').value = '';
+    document.getElementById('enrich-modal').style.display = 'flex';
+    document.querySelector('.modal-textarea').focus();
+}
+function closeModal() {
+    document.getElementById('enrich-modal').style.display = 'none';
+}
+document.getElementById('enrich-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+</script>
 
 </body>
 </html>

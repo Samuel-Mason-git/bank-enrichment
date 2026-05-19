@@ -16,16 +16,6 @@
 <main>
     <div class="tx-nav">
         <a href="/dashboard" class="back">← Back to Dashboard</a>
-        <div class="tx-actions">
-            {% if status == 'enriched' %}
-            <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
-                <button type="submit" class="btn-reset">↩ Reset to Pending</button>
-            </form>
-            {% endif %}
-            <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">
-                <button type="submit" class="btn-delete">✕ Delete</button>
-            </form>
-        </div>
     </div>
 
     <div class="tx-hero {% if is_debit %}debit{% else %}credit{% endif %}">
@@ -107,6 +97,17 @@
         <summary>Raw Payload</summary>
         <pre class="raw">{{ raw }}</pre>
     </details>
+
+    <div class="tx-bottom-actions">
+        {% if status == 'enriched' %}
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
+            <button type="submit" class="btn-action-reset">↩ Reset to Pending</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">
+            <button type="submit" class="btn-action-delete">✕ Delete Transaction</button>
+        </form>
+    </div>
 
 </main>
 
