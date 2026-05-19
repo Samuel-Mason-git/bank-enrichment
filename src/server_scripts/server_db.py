@@ -34,5 +34,10 @@ def init_db() -> None:
     _con.execute(
         "ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS last_requested_at TIMESTAMP"
     )
+    _con.execute(
+        """UPDATE webhook_queue
+           SET last_requested_at = received_at
+           WHERE request_count > 0 AND last_requested_at IS NULL"""
+    )
     _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_category")
     _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_tags")
