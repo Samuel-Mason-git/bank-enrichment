@@ -3,6 +3,7 @@
 ### Prerequisites
 - A Monzo account with developer access enabled at developers.monzo.com
 - A server with a public IP address and Docker installed
+- A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
 
 ### Telegram Bot Setup
 
@@ -27,7 +28,9 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
 
 ---
 
-### Registering the Webhook
+### Registering the Monzo Webhook
+
+Do this after the server is running with HTTPS (see steps 6–8 in Setting Up the Server).
 
 1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
 2. Note your **Account ID** displayed at the top of the playground
@@ -37,7 +40,7 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
 ```json
 {
     "account_id": "your_account_id_here",
-    "url": "http://your_server_ip:8000/recieve_monzo/"
+    "url": "https://your-name.duckdns.org/recieve_monzo/"
 }
 ```
 
@@ -101,29 +104,43 @@ nano ~/bank-enrichment/config/.env
 ```
 Paste your values in, then `Ctrl+X`, `Y`, `Enter` to save.
 
-#### 4. Open the Firewall
+#### 4. Set Up DuckDNS
 
-The server listens on port 8000. You need to open this at two levels:
+Telegram requires HTTPS. This project uses [DuckDNS](https://www.duckdns.org) (free) for a domain and Caddy (included in docker-compose) for automatic SSL.
 
-**OS level:**
-```bash
-sudo iptables -I INPUT -p tcp --dport 8000 -j ACCEPT
+1. Go to [duckdns.org](https://www.duckdns.org) and log in
+2. Create a subdomain (e.g. `your-name.duckdns.org`) and set the IP to your server's public IP
+3. Update the `Caddyfile` in the project root — replace `bank-enrichment.duckdns.org` with your subdomain:
+
+```
+your-name.duckdns.org {
+    reverse_proxy bank-enrichment:8000
+}
 ```
 
-**Cloud provider level:**
+#### 5. Open the Firewall
 
-Add an ingress security rule for TCP port 8000 with source `0.0.0.0/0` in your
-cloud provider's network security settings. On Oracle Cloud this is done via
-Network Security Groups on your instance's VNIC.
+You need to open ports 80 and 443 at two levels:
 
-#### 5. Start the Server
+**OS level** — run these on your server:
+```bash
+sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+sudo netfilter-persistent save
+sudo systemctl enable netfilter-persistent
+```
+
+**Cloud provider level** — add two ingress security rules (source `0.0.0.0/0`, TCP) for ports 80 and 443 in your cloud provider's network security settings. On Oracle Cloud this is done via Network Security Groups on your instance's VNIC.
+
+#### 6. Start the Server
 
 ```bash
 sudo docker compose up -d
 ```
 
-Docker will build the image, install all dependencies, and start the server.
-The container restarts automatically on failure and on server reboot.
+Docker will build the app image and pull Caddy, then start both containers. Caddy automatically obtains and renews a free SSL certificate via Let's Encrypt — this requires port 80 to be open and your DuckDNS domain pointing at the server.
+
+The containers restart automatically on failure and on server reboot.
 
 A `data/` directory is created automatically in the project folder containing:
 - `bank_enrichment_server.db` — the DuckDB database
@@ -135,9 +152,23 @@ To view live logs:
 sudo docker compose logs -f
 ```
 
-#### 6. Access the Dashboard
+#### 7. Register the Telegram Webhook
 
-Open `http://your_server_ip:8000/dashboard` in your browser. You will be prompted
+Once the server is running, register your HTTPS URL with Telegram (replace with your token and subdomain):
+
+```
+https://api.telegram.org/bot{YOUR_TOKEN}/setWebhook?url=https://your-name.duckdns.org/recieve_telegram/
+```
+
+You should get back `{"ok":true,"result":true}`. Verify with:
+
+```
+https://api.telegram.org/bot{YOUR_TOKEN}/getWebhookInfo
+```
+
+#### 8. Access the Dashboard
+
+Open `https://your-name.duckdns.org/dashboard` in your browser. You will be prompted
 for the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
 
 The dashboard has two sections:
@@ -145,7 +176,21 @@ The dashboard has two sections:
 - **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed) stored in a dedicated `stats` table that survives queue clears
 - **Current Queue** — live status breakdown and full list of all pending and enriched transactions, each linking to a detail page
 
-#### 7. Deploying Updates
+#### 9. Register the Monzo Webhook
+
+Update the Monzo webhook URL to use your HTTPS domain:
+
+1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
+2. Click **Register webhook** and use your HTTPS URL:
+
+```json
+{
+    "account_id": "your_account_id_here",
+    "url": "https://your-name.duckdns.org/recieve_monzo/"
+}
+```
+
+#### 10. Deploying Updates
 
 When you push changes to the repository, SSH into your server and run:
 

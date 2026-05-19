@@ -50,7 +50,7 @@ because the context sentences tell it exactly what each transaction was.
 
 ## Dashboard
 
-The server exposes a password-protected dashboard at `http://your_server_ip:8000/dashboard` with two sections:
+The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard` with two sections:
 
 **Lifetime Stats** — counters that persist permanently regardless of queue state:
 - Total transactions received and total monetary value
