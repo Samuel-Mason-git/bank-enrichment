@@ -295,9 +295,9 @@ async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(
     stats_rows = con.execute("SELECT * FROM stats").fetchall()
     stats_cols = ["id", "total_received", "total_amount_pence", "requests_sent", "total_enriched", "total_processed"]
     queue_rows = con.execute(
-        "SELECT id, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC"
+        "SELECT id, payload, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC"
     ).fetchall()
-    queue_cols = ["id", "received_at", "status", "user_context", "enriched_at", "request_count"]
+    queue_cols = ["id", "payload", "received_at", "status", "user_context", "enriched_at", "request_count"]
     return templates.TemplateResponse(
         request=request,
         name="db.html",
