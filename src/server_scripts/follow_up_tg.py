@@ -21,6 +21,32 @@ FOLLOW_UP_LABELS = {1: "1 hour", 2: "1 day", 3: "2 days"}
 
 def run_requester(bot) -> None:
     con = get_con()
+
+    # Handle transactions where the initial send never happened (bot was down, send failed, etc.)
+    # Use received_at as the reference since last_requested_at will be NULL
+    missed_cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400))
+    missed = con.execute(
+        """SELECT id, payload FROM webhook_queue
+           WHERE status = 'pending'
+           AND skipped = FALSE
+           AND request_count = 0
+           AND received_at <= ?""",
+        [missed_cutoff]
+    ).fetchall()
+
+    for row in missed:
+        transaction_id, payload_str = row[0], row[1]
+        try:
+            bot.send_card(json.loads(payload_str))
+            con.execute(
+                "UPDATE webhook_queue SET request_count = 1, last_requested_at = ? WHERE id = ?",
+                [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+            )
+            con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
+            log.info(f"Missed initial send recovered for {transaction_id}")
+        except Exception as e:
+            log.error(f"Missed send recovery failed for {transaction_id}: {e}", exc_info=True)
+
     for request_count, delay_seconds in FOLLOW_UP_SCHEDULE:
         cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - delay_seconds))
         rows = con.execute(
