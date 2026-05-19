@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bank Enrichment</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -94,7 +95,7 @@
         <form id="enrich-form" method="post">
             <textarea name="context" class="modal-textarea" placeholder="What was this transaction? e.g. Lunch with Alex at Pret" rows="3" required></textarea>
             <div class="modal-footer">
-                <button type="button" class="btn-reset" onclick="closeModal()">Cancel</button>
+                <button type="button" class="btn-modal-cancel" onclick="closeModal()">Cancel</button>
                 <button type="submit" class="btn-enrich-submit">Save</button>
             </div>
         </form>
