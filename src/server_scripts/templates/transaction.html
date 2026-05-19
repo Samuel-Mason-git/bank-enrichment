@@ -10,14 +10,19 @@
 <body>
 
 <header>
-    <div class="dot"></div>
-    <h1>Bank Enrichment</h1>
+    <div class="header-brand">
+        <div class="dot"></div>
+        <h1>Bank Enrichment</h1>
+    </div>
+    <nav class="header-nav">
+        <a href="/dashboard" class="nav-link">Dashboard</a>
+        <a href="/dashboard/db" class="nav-link">Database</a>
+    </nav>
 </header>
 
 <main>
-    <div class="tx-nav">
-        <a href="/dashboard" class="back">← Back to Dashboard</a>
-    </div>
+
+    <a href="/dashboard" class="back">← Dashboard</a>
 
     <div class="tx-hero {% if is_debit %}debit{% else %}credit{% endif %}">
         <div class="tx-hero-amount">{{ amount }}</div>

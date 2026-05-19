@@ -3,25 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DB View</title>
+    <title>Database — Bank Enrichment</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <header>
-    <div class="dot"></div>
-    <h1>Bank Enrichment</h1>
+    <div class="header-brand">
+        <div class="dot"></div>
+        <h1>Bank Enrichment</h1>
+    </div>
+    <nav class="header-nav">
+        <a href="/dashboard" class="nav-link">Dashboard</a>
+        <a href="/dashboard/db" class="nav-link active">Database</a>
+    </nav>
 </header>
 
 <main>
-    <div class="tx-nav" style="margin-bottom:24px;">
-        <a href="/dashboard" class="back">← Back to Dashboard</a>
-    </div>
 
     {% for table in tables %}
     <div class="section-label">{{ table.name }}</div>
-    <section style="margin-bottom:32px; overflow-x:auto;">
+    <div class="card" style="overflow-x: auto; margin-bottom: 32px;">
         <table>
             <thead>
                 <tr>
@@ -34,7 +37,7 @@
                 {% for row in table.rows %}
                 <tr>
                     {% for cell in row %}
-                    <td class="mono">{{ cell if cell is not none else '—' }}</td>
+                    <td class="mono" style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ cell if cell is not none else '' }}">{{ cell if cell is not none else '—' }}</td>
                     {% endfor %}
                 </tr>
                 {% endfor %}
@@ -43,7 +46,7 @@
                 {% endif %}
             </tbody>
         </table>
-    </section>
+    </div>
     {% endfor %}
 
 </main>

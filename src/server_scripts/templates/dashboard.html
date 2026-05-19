@@ -10,8 +10,14 @@
 <body>
 
 <header>
-    <div class="dot"></div>
-    <h1>Bank Enrichment</h1>
+    <div class="header-brand">
+        <div class="dot"></div>
+        <h1>Bank Enrichment</h1>
+    </div>
+    <nav class="header-nav">
+        <a href="/dashboard" class="nav-link active">Dashboard</a>
+        <a href="/dashboard/db" class="nav-link">Database</a>
+    </nav>
 </header>
 
 <main>
@@ -20,7 +26,7 @@
     <div class="stats">
         <div class="stat-card total">
             <div class="value">{{ total_received }}</div>
-            <div class="label">Total Received</div>
+            <div class="label">Received</div>
         </div>
         <div class="stat-card total">
             <div class="value">{{ total_amount }}</div>
@@ -41,6 +47,7 @@
     </div>
 
     <div class="section-label">Current Queue</div>
+    {% if queue_stats %}
     <div class="stats">
         {% for status, count in queue_stats %}
         <div class="stat-card {{ status }}">
@@ -49,15 +56,17 @@
         </div>
         {% endfor %}
     </div>
-    <section>
+    {% endif %}
+
+    <div class="card">
         {% if queue %}
         <table>
             <thead>
                 <tr>
                     <th>Transaction ID</th>
-                    <th>Received At</th>
+                    <th>Received</th>
                     <th>Status</th>
-                    <th>Requests Sent</th>
+                    <th>Requests</th>
                     <th></th>
                 </tr>
             </thead>
@@ -81,9 +90,9 @@
             </tbody>
         </table>
         {% else %}
-        <div class="empty">Queue is empty</div>
+        <div class="empty">No transactions in the queue</div>
         {% endif %}
-    </section>
+    </div>
 
 </main>
 
