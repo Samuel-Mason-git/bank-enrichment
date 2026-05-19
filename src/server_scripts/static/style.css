@@ -161,6 +161,57 @@ a:hover { text-decoration: underline; }
     color: #999;
 }
 
+/* Enrichment card */
+.enrichment-card {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+}
+
+.enrichment-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #16a34a;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.enrichment-context {
+    font-size: 1rem;
+    color: #14532d;
+    font-style: italic;
+    margin-bottom: 6px;
+}
+
+.enrichment-meta {
+    font-size: 0.78rem;
+    color: #86efac;
+}
+
+/* Action bar */
+.action-bar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.btn-reset, .btn-delete {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-reset  { background: #f0f0f0; color: #444; }
+.btn-reset:hover { background: #e0e0e0; }
+.btn-delete { background: #fee2e2; color: #991b1b; }
+.btn-delete:hover { background: #fecaca; }
+
 /* Transaction hero */
 .tx-hero {
     border-radius: 16px;

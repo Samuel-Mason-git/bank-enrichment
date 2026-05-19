@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Depends, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -171,9 +171,9 @@ async def recieve_monzo(request: Request):
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
     if is_new and bot:
+        con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
         try:
             bot.send_card(json.loads(body))
-            con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)
 
@@ -198,7 +198,7 @@ async def recieve_telegram(request: Request):
         if cq.data and cq.data.startswith("enrich:"):
             transaction_id = cq.data.split(":", 1)[1]
             _sessions[chat_id] = {"transaction_id": transaction_id}
-            bot.send_message(chat_id, "What was this transaction? Send a one-line description.")
+            bot.send_message(chat_id, f"Enriching <code>{transaction_id}</code>\n\nWhat was this transaction? Send a one-line description.")
 
     elif update.message and update.message.text:
         msg = update.message
@@ -236,7 +236,7 @@ async def recieve_telegram(request: Request):
 async def transaction_detail(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     row = con.execute(
-        "SELECT id, payload, received_at, status FROM webhook_queue WHERE id = ?",
+        "SELECT id, payload, received_at, status, user_context, enriched_at FROM webhook_queue WHERE id = ?",
         [transaction_id]
     ).fetchone()
 
@@ -255,6 +255,8 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "transaction_id": row[0],
             "received_at": row[2],
             "status": row[3],
+            "user_context": row[4],
+            "enriched_at": row[5],
             "amount": amount_str,
             "is_debit": amount_pence < 0,
             "description": data.get("description", ""),
@@ -268,6 +270,24 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "raw": json.dumps(payload, indent=2),
         }
     )
+
+
+@app.post("/dashboard/transaction/{transaction_id}/delete", response_class=HTMLResponse)
+async def delete_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    con.execute("DELETE FROM webhook_queue WHERE id = ?", [transaction_id])
+    con.execute("UPDATE stats SET total_received = total_received - 1 WHERE id = 1")
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.post("/dashboard/transaction/{transaction_id}/reset", response_class=HTMLResponse)
+async def reset_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    con.execute(
+        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL WHERE id = ?",
+        [transaction_id]
+    )
+    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

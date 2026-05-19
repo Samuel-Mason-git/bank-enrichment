@@ -28,3 +28,5 @@ def init_db() -> None:
     _con.execute(
         "ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS request_count INTEGER DEFAULT 0"
     )
+    _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_category")
+    _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_tags")

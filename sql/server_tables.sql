@@ -16,8 +16,6 @@ CREATE TABLE IF NOT EXISTS webhook_queue (
     status          VARCHAR(20)  DEFAULT 'pending'
         CHECK (status IN ('pending', 'enriched', 'processed')),
     user_context    TEXT,
-    user_category   VARCHAR(255),
-    user_tags       TEXT,
     enriched_at     TIMESTAMP,
     request_count   INTEGER      DEFAULT 0
 );

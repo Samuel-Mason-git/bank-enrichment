@@ -16,6 +16,14 @@
 <main>
     <a href="/dashboard" class="back">← Back to Dashboard</a>
 
+    {% if user_context %}
+    <div class="enrichment-card">
+        <div class="enrichment-label">Enrichment</div>
+        <div class="enrichment-context">"{{ user_context }}"</div>
+        <div class="enrichment-meta">Enriched {{ enriched_at }}</div>
+    </div>
+    {% endif %}
+
     <div class="tx-hero {% if is_debit %}debit{% else %}credit{% endif %}">
         <div class="tx-hero-amount">{{ amount }}</div>
         <div class="tx-hero-desc">{{ description }}</div>
@@ -66,6 +74,15 @@
         </div>
         {% endif %}
 
+    </div>
+
+    <div class="action-bar">
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
+            <button type="submit" class="btn-reset">↩ Reset to Pending</button>
+        </form>
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">
+            <button type="submit" class="btn-delete">✕ Delete</button>
+        </form>
     </div>
 
     <details class="raw-section">
