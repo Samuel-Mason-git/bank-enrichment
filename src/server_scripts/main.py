@@ -160,7 +160,7 @@ async def recieve_monzo(request: Request):
 
         if is_new:
             con.execute(
-                "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ? WHERE id = 1",
+                "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ?, requests_sent = requests_sent + 1 WHERE id = 1",
                 [monzo_data.data.amount]
             )
             log.info(f"Transaction stored: {transaction_id}")
@@ -171,7 +171,6 @@ async def recieve_monzo(request: Request):
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
     if is_new and bot:
-        con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
         try:
             bot.send_card(json.loads(body))
         except Exception as e:

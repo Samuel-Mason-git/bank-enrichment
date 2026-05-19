@@ -14,15 +14,19 @@
 </header>
 
 <main>
-    <a href="/dashboard" class="back">← Back to Dashboard</a>
-
-    {% if user_context %}
-    <div class="enrichment-card">
-        <div class="enrichment-label">Enrichment</div>
-        <div class="enrichment-context">"{{ user_context }}"</div>
-        <div class="enrichment-meta">Enriched {{ enriched_at }}</div>
+    <div class="tx-nav">
+        <a href="/dashboard" class="back">← Back to Dashboard</a>
+        <div class="tx-actions">
+            {% if status == 'enriched' %}
+            <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
+                <button type="submit" class="btn-reset">↩ Reset to Pending</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">
+                <button type="submit" class="btn-delete">✕ Delete</button>
+            </form>
+        </div>
     </div>
-    {% endif %}
 
     <div class="tx-hero {% if is_debit %}debit{% else %}credit{% endif %}">
         <div class="tx-hero-amount">{{ amount }}</div>
@@ -35,6 +39,14 @@
             <span class="badge {{ status }}">{{ status }}</span>
         </div>
     </div>
+
+    {% if user_context %}
+    <div class="enrichment-card">
+        <div class="enrichment-label">Enrichment</div>
+        <div class="enrichment-context">"{{ user_context }}"</div>
+        <div class="enrichment-meta">Enriched {{ enriched_at }}</div>
+    </div>
+    {% endif %}
 
     <div class="detail-grid">
 
@@ -63,26 +75,32 @@
         </div>
         {% endif %}
 
-        {% if merchant %}
+        {% if merchant and merchant is mapping %}
         <div class="detail-card">
             <div class="detail-card-title">Merchant</div>
-            {% for key, value in merchant.items() %}
-            {% if value %}
-            <div class="detail-row"><span>{{ key | replace('_', ' ') | capitalize }}</span><span>{{ value }}</span></div>
+            {% if merchant.name %}
+            <div class="detail-row"><span>Name</span><span>{{ merchant.name }}</span></div>
             {% endif %}
-            {% endfor %}
+            {% if merchant.category %}
+            <div class="detail-row"><span>Category</span><span>{{ merchant.category | replace('_', ' ') | capitalize }}</span></div>
+            {% endif %}
+            {% if merchant.address and merchant.address is mapping %}
+                {% if merchant.address.address %}
+                <div class="detail-row"><span>Street</span><span>{{ merchant.address.address }}</span></div>
+                {% endif %}
+                {% if merchant.address.city %}
+                <div class="detail-row"><span>City</span><span>{{ merchant.address.city }}</span></div>
+                {% endif %}
+                {% if merchant.address.postcode %}
+                <div class="detail-row"><span>Postcode</span><span>{{ merchant.address.postcode }}</span></div>
+                {% endif %}
+                {% if merchant.address.country %}
+                <div class="detail-row"><span>Country</span><span>{{ merchant.address.country }}</span></div>
+                {% endif %}
+            {% endif %}
         </div>
         {% endif %}
 
-    </div>
-
-    <div class="action-bar">
-        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/reset">
-            <button type="submit" class="btn-reset">↩ Reset to Pending</button>
-        </form>
-        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/delete" onsubmit="return confirm('Delete this transaction?')">
-            <button type="submit" class="btn-delete">✕ Delete</button>
-        </form>
     </div>
 
     <details class="raw-section">

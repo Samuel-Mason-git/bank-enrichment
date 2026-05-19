@@ -155,11 +155,37 @@ a { color: #6366f1; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .back {
-    display: inline-block;
-    margin-bottom: 20px;
     font-size: 0.85rem;
     color: #999;
 }
+
+/* Transaction nav */
+.tx-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.tx-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-reset, .btn-delete {
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.btn-reset  { background: #f0f0f0; color: #555; }
+.btn-reset:hover { background: #e0e0e0; }
+.btn-delete { background: #fee2e2; color: #991b1b; }
+.btn-delete:hover { background: #fecaca; }
 
 /* Enrichment card */
 .enrichment-card {
@@ -180,37 +206,17 @@ a:hover { text-decoration: underline; }
 }
 
 .enrichment-context {
-    font-size: 1rem;
+    font-size: 1.05rem;
     color: #14532d;
     font-style: italic;
     margin-bottom: 6px;
+    line-height: 1.5;
 }
 
 .enrichment-meta {
     font-size: 0.78rem;
-    color: #86efac;
+    color: #6b7280;
 }
-
-/* Action bar */
-.action-bar {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 16px;
-}
-
-.btn-reset, .btn-delete {
-    padding: 8px 16px;
-    border-radius: 8px;
-    border: none;
-    font-size: 0.82rem;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-.btn-reset  { background: #f0f0f0; color: #444; }
-.btn-reset:hover { background: #e0e0e0; }
-.btn-delete { background: #fee2e2; color: #991b1b; }
-.btn-delete:hover { background: #fecaca; }
 
 /* Transaction hero */
 .tx-hero {
