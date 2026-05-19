@@ -1,113 +1,85 @@
-## Monzo Webhook Setup
+## Prerequisites
 
-### Prerequisites
-- A Monzo account with developer access enabled at developers.monzo.com
-- A server with a public IP address and Docker installed
+- A Monzo account with developer access enabled at [developers.monzo.com](https://developers.monzo.com)
+- A server with a public IP address and Docker installed (e.g. Oracle Cloud free tier)
 - A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
-
-### Telegram Bot Setup
-
-The system sends push notifications via a Telegram bot when a transaction arrives.
-
-#### 1. Create a bot
-
-1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts to choose a name and username
-3. BotFather will give you a token that looks like `123456789:ABCdef...` — this is your `TELEGRAM_API` key
-
-#### 2. Get your chat ID
-
-1. Search for your bot's username in Telegram and send it any message
-2. Visit the following URL in your browser (replace with your token):
-
-```
-https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
-```
-
-3. In the JSON response, find `result[0].message.chat.id` — that number is your `TELEGRAM_CHAT_ID`
+- Python 3.11+ and [Poetry](https://python-poetry.org) installed on your local machine
 
 ---
 
-### Registering the Monzo Webhook
+## Part 1 — Server Setup
 
-Do this after the server is running with HTTPS (see steps 6–8 in Setting Up the Server).
+### 1. Install Docker
 
-1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
-2. Note your **Account ID** displayed at the top of the playground
-3. Click **Register webhook** in the left sidebar
-4. In the request body, replace the placeholder values with your own:
-
-```json
-{
-    "account_id": "your_account_id_here",
-    "url": "https://your-name.duckdns.org/recieve_monzo/"
-}
-```
-
-5. Click **Send** — you should get back a webhook ID confirming registration
-
-### Setting Up the Server
-
-The webhook listener runs as a Docker container on a Linux server.
-The server receives transaction events from Monzo in real time and stores them
-for processing by your local machine.
-
----
-
-#### 1. Install Docker
+SSH into your server and run:
 
 ```bash
 curl -fsSL https://get.docker.com | sh
 ```
 
-#### 2. Clone the Repository
-
-SSH into your server and clone the project:
+### 2. Clone the Repository
 
 ```bash
 git clone git@github.com:your-username/bank-enrichment.git
 cd bank-enrichment
 ```
 
-#### 3. Configure Environment Variables
+### 3. Create a Telegram Bot
 
-Copy the example environment file and fill in your own values:
+The system sends push notifications via a Telegram bot when a transaction arrives.
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts to choose a name and username
+3. BotFather will give you a token like `123456789:ABCdef...` — this is your `TELEGRAM_API` key
+
+**Get your chat ID:**
+
+1. Search for your bot in Telegram and send it any message
+2. Visit this URL in your browser (replace with your token):
+
+```
+https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
+```
+
+3. Find `result[0].message.chat.id` in the response — that number is your `TELEGRAM_CHAT_ID`
+
+### 4. Configure Environment Variables
+
+Copy the example file and fill in your values:
 
 ```bash
 cp config/.env.example config/.env
 nano config/.env
 ```
 
-The file contains the following keys:
+**Server variables** (used by the Docker container):
 
 | Key | Description |
 |---|---|
 | `DASHBOARD_USER` | Username for the dashboard login |
 | `DASHBOARD_PASSWORD` | Password for the dashboard login |
 | `TELEGRAM_API` | Your Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID (see Telegram Bot Setup above) |
+| `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID (see step 3) |
+| `LOCAL_API_KEY` | A random hex key used to authenticate the local processing script — generate one at [browserling.com/tools/random-hex](https://www.browserling.com/tools/random-hex) (set length to 64) |
 
-`config/.env` is gitignored and stays on your server only — `git pull` will never overwrite it.
+`config/.env` is gitignored — `git pull` will never overwrite it.
 
-To get it onto the server you have two options:
-
-**Option A — Copy from your local machine:**
+To copy it to the server from your local machine:
 ```bash
 scp config/.env ubuntu@your_server_ip:~/bank-enrichment/config/.env
 ```
 
-**Option B — Create it directly on the server via SSH:**
+Or create it directly on the server:
 ```bash
 nano ~/bank-enrichment/config/.env
 ```
-Paste your values in, then `Ctrl+X`, `Y`, `Enter` to save.
 
-#### 4. Set Up DuckDNS
+### 5. Set Up DuckDNS
 
-Telegram requires HTTPS. This project uses [DuckDNS](https://www.duckdns.org) (free) for a domain and Caddy (included in docker-compose) for automatic SSL.
+Telegram requires HTTPS. This project uses [DuckDNS](https://www.duckdns.org) (free) for a domain and Caddy for automatic SSL.
 
 1. Go to [duckdns.org](https://www.duckdns.org) and log in
-2. Create a subdomain (e.g. `your-name.duckdns.org`) and set the IP to your server's public IP
+2. Create a subdomain (e.g. `your-name.duckdns.org`) and point it at your server's public IP
 3. Update the `Caddyfile` in the project root — replace `bank-enrichment.duckdns.org` with your subdomain:
 
 ```
@@ -116,11 +88,9 @@ your-name.duckdns.org {
 }
 ```
 
-#### 5. Open the Firewall
+### 6. Open the Firewall
 
-You need to open ports 80 and 443 at two levels:
-
-**OS level** — run these on your server:
+**OS level:**
 ```bash
 sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
@@ -128,31 +98,30 @@ sudo netfilter-persistent save
 sudo systemctl enable netfilter-persistent
 ```
 
-**Cloud provider level** — add two ingress security rules (source `0.0.0.0/0`, TCP) for ports 80 and 443 in your cloud provider's network security settings. On Oracle Cloud this is done via Network Security Groups on your instance's VNIC.
+**Cloud provider level** — add ingress rules for TCP ports 80 and 443 from `0.0.0.0/0` in your cloud provider's network security settings. On Oracle Cloud this is done via Network Security Groups on your instance's VNIC.
 
-#### 6. Start the Server
+### 7. Start the Server
 
 ```bash
 sudo docker compose up -d
 ```
 
-Docker will build the app image and pull Caddy, then start both containers. Caddy automatically obtains and renews a free SSL certificate via Let's Encrypt — this requires port 80 to be open and your DuckDNS domain pointing at the server.
+Docker builds the app image and pulls Caddy, then starts both containers. Caddy automatically obtains a free SSL certificate via Let's Encrypt — requires port 80 open and your DuckDNS domain pointing at the server.
 
 The containers restart automatically on failure and on server reboot.
 
-A `data/` directory is created automatically in the project folder containing:
-- `bank_enrichment_server.db` — the DuckDB database
+A `data/` directory is created automatically containing:
+- `bank_enrichment_server.db` — the server DuckDB database
 - `server.log` — rotating log file (capped at ~3MB total)
 
 To view live logs:
-
 ```bash
 sudo docker compose logs -f
 ```
 
-#### 7. Register the Telegram Webhook
+### 8. Register the Telegram Webhook
 
-Once the server is running, register your HTTPS URL with Telegram (replace with your token and subdomain):
+Once the server is running, register your URL with Telegram (replace with your token and subdomain):
 
 ```
 https://api.telegram.org/bot{YOUR_TOKEN}/setWebhook?url=https://your-name.duckdns.org/recieve_telegram/
@@ -164,26 +133,11 @@ You should get back `{"ok":true,"result":true}`. Verify with:
 https://api.telegram.org/bot{YOUR_TOKEN}/getWebhookInfo
 ```
 
-#### 8. Access the Dashboard
-
-Open `https://your-name.duckdns.org/dashboard` in your browser. You will be prompted
-for the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
-
-The dashboard has two sections:
-
-- **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed) stored in a dedicated `stats` table that survives queue clears
-- **Current Queue** — paginated list of all unprocessed transactions with amount, status, and inline controls to enrich or delete without leaving the page. Each row links to a detail page where you can view the full payload, enrich, skip, reset to pending, or delete the transaction.
-
-A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
-
-A **Database view** at `https://your-name.duckdns.org/dashboard/db` lets you inspect the raw `stats` and `webhook_queue` tables directly without needing to exec into the container.
-
-#### 9. Register the Monzo Webhook
-
-Update the Monzo webhook URL to use your HTTPS domain:
+### 9. Register the Monzo Webhook
 
 1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
-2. Click **Register webhook** and use your HTTPS URL:
+2. Note your **Account ID** at the top of the playground
+3. Click **Register webhook** and send:
 
 ```json
 {
@@ -192,7 +146,81 @@ Update the Monzo webhook URL to use your HTTPS domain:
 }
 ```
 
-#### 10. Deploying Updates
+You should get back a webhook ID confirming registration.
+
+### 10. Access the Dashboard
+
+Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
+
+- **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed)
+- **Current Queue** — paginated list of all unprocessed transactions with inline controls to enrich, skip, or delete. Each row links to a detail page with the full payload and all actions.
+- **Database view** at `/dashboard/db` — inspect the raw `stats` and `webhook_queue` tables directly
+
+A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
+
+---
+
+## Part 2 — Local Script Setup
+
+The local processing script runs on your own machine and pulls enriched transactions from the server into a local DuckDB database.
+
+### 1. Install Dependencies
+
+From the project root on your local machine:
+
+```bash
+poetry install
+```
+
+### 2. Add Local Variables to config/.env
+
+The same `config/.env` file is used by both the server and the local script. Add these additional keys to your local copy:
+
+| Key | Description |
+|---|---|
+| `LOCAL_API_KEY` | Must match the value set on the server |
+| `SERVER_URL` | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
+| `DB_PATH` | Full path where you want your local DuckDB database created — e.g. `C:/Users/you/Documents/bank_enrichment.db` on Windows or `/home/you/bank_enrichment.db` on Mac/Linux |
+
+### 3. Run the Script
+
+```bash
+poetry run python src/local_scripts/process.py
+```
+
+On first run this will:
+1. Create the local database file at `DB_PATH`
+2. Create the `transactions` table
+3. Fetch all enriched transactions from the server
+4. Write them to the local database
+5. Mark them as processed on the server (removing them from the queue)
+
+A log file is created automatically alongside the database file (same name, `.log` extension).
+
+### 4. Schedule It
+
+To run the script automatically on a schedule:
+
+**Windows — Task Scheduler:**
+1. Open Task Scheduler and click **Create Basic Task**
+2. Set the trigger to your preferred schedule (e.g. daily)
+3. Set the action to **Start a program**
+4. Program: path to your Poetry Python executable (run `poetry env info --executable` to find it)
+5. Arguments: `src/local_scripts/process.py`
+6. Start in: your project root directory
+
+**Mac/Linux — cron:**
+```bash
+crontab -e
+```
+Add a line like this to run daily at 8am:
+```
+0 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
+```
+
+---
+
+## Deploying Updates
 
 When you push changes to the repository, SSH into your server and run:
 
@@ -202,7 +230,7 @@ git pull
 sudo docker compose up -d --build && sudo docker image prune -f
 ```
 
-**If the database schema has changed**, check the release notes. Most additive changes (new columns, new tables) apply automatically on restart via migrations in `init_db()` — no wipe needed. If a breaking change requires a full reset:
+**If the database schema has changed**, most additive changes (new columns, new tables) apply automatically on restart via migrations in `init_db()` — no wipe needed. If a breaking change requires a full reset:
 
 ```bash
 sudo docker compose down

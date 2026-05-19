@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Depends, Request, status, Query
+from fastapi import FastAPI, HTTPException, Depends, Request, status, Query, Security
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +58,15 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
 
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY")
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+async def verify_api_key(api_key: str = Security(API_KEY_HEADER)):
+    if not LOCAL_API_KEY or api_key != LOCAL_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing API key"
+        )
+    return api_key
 
 bot: TelegramBot | None = None
 
@@ -460,6 +469,46 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "total_queue": total_queue,
         }
     )
+
+
+@app.get('/export')
+async def export(api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    con = get_con()
+    rows = con.execute(
+        """SELECT id, payload, received_at, user_context, enriched_at, skipped
+           FROM webhook_queue
+           WHERE status = 'enriched'
+           ORDER BY enriched_at ASC"""
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "payload": json.loads(row[1]),
+            "received_at": str(row[2]),
+            "user_context": row[3],
+            "enriched_at": str(row[4]),
+            "skipped": row[5],
+        }
+        for row in rows
+    ]
+
+
+class MarkProcessedRequest(BaseModel):
+    ids: list[str]
+
+@app.post('/mark-processed')
+async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    con = get_con()
+    placeholders = ", ".join("?" * len(body.ids))
+    con.execute(f"DELETE FROM webhook_queue WHERE id IN ({placeholders})", body.ids)
+    con.execute(
+        "UPDATE stats SET total_processed = total_processed + ? WHERE id = 1",
+        [len(body.ids)]
+    )
+    log.info(f"Marked {len(body.ids)} transactions as processed")
+    return {"marked": len(body.ids)}
 
 
 if __name__ == "__main__":

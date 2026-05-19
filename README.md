@@ -45,6 +45,7 @@ context sentences tell it exactly what each transaction was.
 4. You reply with one sentence of context — or tap Skip to dismiss
 5. Enrichment stored alongside the raw transaction in the queue
 6. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
+7. Local processing script runs on your PC, pulls enriched transactions from the server, writes them to a local DuckDB database, and clears them from the queue
 
 ## Dashboard
 
@@ -69,14 +70,33 @@ A **Database view** at `/dashboard/db` lets you inspect the raw `stats` and
 
 Credentials are set via environment variables — see SETUP.md.
 
+## Local Processing
+
+A local processing script (`src/local_scripts/process.py`) runs on your own 
+machine on a schedule (Windows Task Scheduler or cron) and pulls enriched 
+transactions off the server:
+
+1. Calls `GET /export` on the server to fetch all enriched transactions
+2. Writes them to a local DuckDB database at the path you configure
+3. Calls `POST /mark-processed` to remove them from the server queue
+
+The local database stores every transaction with the full raw Monzo payload 
+preserved alongside flattened fields (amount, merchant, category, timestamps) 
+so the data is immediately queryable. LLM classification runs as a separate 
+step against this local database.
+
+The server and local script share a `LOCAL_API_KEY` — set it once in 
+`config/.env` and both sides use it automatically.
+
 ## What You End Up With
 
-A growing queue of transactions, each with:
+A local DuckDB database of every transaction, each row containing:
 
-- The raw bank data (amount, merchant, timestamp, counterparty)
+- The raw bank data (amount, merchant, timestamp, counterparty, full payload)
 - Your one-sentence human context (what it actually was)
-- Status tracking (pending / enriched / skipped / auto-skipped)
+- Status tracking (enriched / skipped / auto-skipped)
 
-The enriched dataset is designed to feed into a downstream processing step — 
-an LLM classification layer, a local database, or any analysis pipeline — 
-without ever losing the original context you captured.
+The enriched dataset is designed to feed into a downstream LLM classification 
+step — without ever losing the original context you captured. Because context 
+is stored separately from any classification, you can re-run labelling at any 
+point using a new taxonomy and it will classify correctly every time.
