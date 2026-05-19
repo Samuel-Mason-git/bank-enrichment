@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
+import asyncio
 import uvicorn
 import logging
 import secrets
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from server_db import init_db, get_con
 from telegram import TelegramBot
+from follow_up_tg import requester_loop
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -58,6 +60,7 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
 
 bot: TelegramBot | None = None
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot
@@ -68,7 +71,14 @@ async def lifespan(app: FastAPI):
         log.info("Telegram bot initialised")
     except ValueError as e:
         log.warning(f"Telegram bot not initialised: {e}")
+    task = asyncio.create_task(requester_loop(bot))
+    log.info("Requester loop started")
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -174,8 +184,8 @@ async def recieve_monzo(request: Request):
         try:
             bot.send_card(json.loads(body))
             con.execute(
-                "UPDATE webhook_queue SET request_count = request_count + 1 WHERE id = ?",
-                [transaction_id]
+                "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
+                [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
             )
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)

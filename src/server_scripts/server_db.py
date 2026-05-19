@@ -31,5 +31,8 @@ def init_db() -> None:
     _con.execute(
         "ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS skipped BOOLEAN DEFAULT FALSE"
     )
+    _con.execute(
+        "ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS last_requested_at TIMESTAMP"
+    )
     _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_category")
     _con.execute("ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_tags")

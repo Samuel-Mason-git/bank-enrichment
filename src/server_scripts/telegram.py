@@ -47,7 +47,7 @@ class TelegramBot:
 
 
 
-    def send_card(self, payload):
+    def send_card(self, payload, follow_up: int = 0):
         from datetime import datetime
         url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
         data = payload['data']
@@ -86,8 +86,10 @@ class TelegramBot:
         ] if p]
         location = ", ".join(location_parts)
 
+        follow_up_labels = {1: "1 hour", 2: "1 day", 3: "2 days"}
         lines = [
             f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
+            *([ f"⏰ <i>Follow-up reminder ({follow_up_labels.get(follow_up, f'#{follow_up}')} ago)</i>" ] if follow_up > 0 else []),
             "",
         ]
 
