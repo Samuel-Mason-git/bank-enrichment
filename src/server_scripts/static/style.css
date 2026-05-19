@@ -166,6 +166,19 @@ tr:hover td      { background: #fafafa; }
 .badge.enriched  { background: #ede9fe; color: #5b21b6; }
 .badge.processed { background: #d1fae5; color: #065f46; }
 
+.amount-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.amount-badge.debit  { background: #fee2e2; color: #dc2626; }
+.amount-badge.credit { background: #dcfce7; color: #16a34a; }
+
 /* ── Links ──────────────────────────────────────────────────── */
 a { color: #6366f1; text-decoration: none; }
 a:hover { text-decoration: underline; }

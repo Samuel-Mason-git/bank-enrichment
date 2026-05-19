@@ -161,7 +161,7 @@ async def recieve_monzo(request: Request):
         if is_new:
             con.execute(
                 "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ?, requests_sent = requests_sent + 1 WHERE id = 1",
-                [monzo_data.data.amount]
+                [abs(monzo_data.data.amount)]
             )
             log.info(f"Transaction stored: {transaction_id}")
         else:
@@ -299,7 +299,6 @@ async def enrich_transaction_dashboard(transaction_id: str, request: Request, cr
 async def delete_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     con.execute("DELETE FROM webhook_queue WHERE id = ?", [transaction_id])
-    con.execute("UPDATE stats SET total_received = total_received - 1 WHERE id = 1")
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
@@ -343,9 +342,21 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
     queue_stats = con.execute(
         "SELECT status, COUNT(*) FROM webhook_queue WHERE status != 'processed' GROUP BY status"
     ).fetchall()
-    queue = con.execute(
-        "SELECT id, received_at, status, request_count FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC"
+    rows = con.execute(
+        "SELECT id, received_at, status, request_count, payload FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC"
     ).fetchall()
+
+    queue = []
+    for row in rows:
+        amount_pence = json.loads(row[4]).get("data", {}).get("amount", 0)
+        queue.append({
+            "id": row[0],
+            "received_at": row[1],
+            "status": row[2],
+            "request_count": row[3] or 0,
+            "amount": f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}",
+            "is_debit": amount_pence < 0,
+        })
 
     total_received, total_amount_pence, requests_sent, total_enriched, total_processed = lifetime or (0, 0, 0, 0, 0)
     total_amount_str = f"£{abs(total_amount_pence) / 100:,.2f}"

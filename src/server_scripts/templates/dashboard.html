@@ -64,6 +64,7 @@
             <thead>
                 <tr>
                     <th>Transaction ID</th>
+                    <th>Amount</th>
                     <th>Received</th>
                     <th>Status</th>
                     <th>Requests</th>
@@ -73,14 +74,15 @@
             <tbody>
                 {% for row in queue %}
                 <tr>
-                    <td><a href="/dashboard/transaction/{{ row[0] }}">{{ row[0] }}</a></td>
-                    <td>{{ row[1] }}</td>
-                    <td><span class="badge {{ row[2] }}">{{ row[2] }}</span></td>
-                    <td>{{ row[3] if row[3] is not none else 0 }}</td>
+                    <td><a href="/dashboard/transaction/{{ row.id }}">{{ row.id }}</a></td>
+                    <td><span class="amount-badge {% if row.is_debit %}debit{% else %}credit{% endif %}">{{ row.amount }}</span></td>
+                    <td>{{ row.received_at }}</td>
+                    <td><span class="badge {{ row.status }}">{{ row.status }}</span></td>
+                    <td>{{ row.request_count }}</td>
                     <td>
                         <div class="row-actions">
-                            <button class="btn-row-enrich" onclick="openEnrich('{{ row[0] }}')">✏ Enrich</button>
-                            <form method="post" action="/dashboard/transaction/{{ row[0] }}/delete" onsubmit="return confirm('Delete this transaction?')">
+                            <button class="btn-row-enrich" onclick="openEnrich('{{ row.id }}')">✏ Enrich</button>
+                            <form method="post" action="/dashboard/transaction/{{ row.id }}/delete" onsubmit="return confirm('Delete this transaction?')">
                                 <button type="submit" class="btn-row-delete">✕</button>
                             </form>
                         </div>
