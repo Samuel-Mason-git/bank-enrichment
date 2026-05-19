@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 _sessions: dict = {}
+_pending_skips: dict = {}
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -59,6 +60,24 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
 
 
 bot: TelegramBot | None = None
+
+SESSION_TIMEOUT = 180  # seconds
+
+
+async def _enrich_timeout(chat_id: int, transaction_id: str):
+    await asyncio.sleep(SESSION_TIMEOUT)
+    session = _sessions.get(chat_id)
+    if session and session.get("transaction_id") == transaction_id:
+        del _sessions[chat_id]
+        if bot:
+            bot.send_message(chat_id, "⏱ Enrich session expired. Tap ✏️ Enrich again when ready.")
+
+
+async def _skip_timeout(chat_id: int, message_id: int):
+    await asyncio.sleep(SESSION_TIMEOUT)
+    _pending_skips.pop(chat_id, None)
+    if bot and message_id:
+        bot.delete_message(chat_id, message_id)
 
 
 @asynccontextmanager
@@ -210,15 +229,25 @@ async def recieve_telegram(request: Request):
 
         if cq.data and cq.data.startswith("enrich:"):
             transaction_id = cq.data.split(":", 1)[1]
-            _sessions[chat_id] = {"transaction_id": transaction_id}
+            if chat_id in _sessions:
+                _sessions[chat_id].get("timeout_task") and _sessions[chat_id]["timeout_task"].cancel()
+            task = asyncio.create_task(_enrich_timeout(chat_id, transaction_id))
+            _sessions[chat_id] = {"transaction_id": transaction_id, "timeout_task": task}
             bot.send_message(chat_id, f"Enriching <code>{transaction_id}</code>\n\nWhat was this transaction? Send a one-line description.")
 
         elif cq.data and cq.data.startswith("skip_confirm:"):
             transaction_id = cq.data.split(":", 1)[1]
-            bot.send_skip_confirm(chat_id, transaction_id)
+            if chat_id in _pending_skips:
+                _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
+            message_id = bot.send_skip_confirm(chat_id, transaction_id)
+            task = asyncio.create_task(_skip_timeout(chat_id, message_id))
+            _pending_skips[chat_id] = {"message_id": message_id, "timeout_task": task}
 
         elif cq.data and cq.data.startswith("skip_do:"):
             transaction_id = cq.data.split(":", 1)[1]
+            if chat_id in _pending_skips:
+                _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
+                del _pending_skips[chat_id]
             try:
                 con = get_con()
                 con.execute(
@@ -233,6 +262,9 @@ async def recieve_telegram(request: Request):
             bot.send_message(chat_id, "⏭ Skipped.")
 
         elif cq.data == "skip_cancel":
+            if chat_id in _pending_skips:
+                _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
+                del _pending_skips[chat_id]
             bot.send_message(chat_id, "Cancelled.")
 
     elif update.message and update.message.text:
@@ -243,6 +275,7 @@ async def recieve_telegram(request: Request):
         if not session:
             return {"ok": True}
 
+        session.get("timeout_task") and session["timeout_task"].cancel()
         context = msg.text.strip()
         transaction_id = session["transaction_id"]
 

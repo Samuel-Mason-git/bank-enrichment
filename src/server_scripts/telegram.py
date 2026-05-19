@@ -27,7 +27,7 @@ class TelegramBot:
 
     def send_skip_confirm(self, chat_id: int, transaction_id: str):
         url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
-        requests.post(url, json={
+        resp = requests.post(url, json={
             "chat_id": chat_id,
             "text": f"Skip this transaction?\n\n<code>{transaction_id}</code>",
             "parse_mode": "HTML",
@@ -38,6 +38,16 @@ class TelegramBot:
                 ]]
             }
         })
+        data = resp.json()
+        if data.get("ok"):
+            return data["result"]["message_id"]
+        return None
+
+    def delete_message(self, chat_id: int, message_id: int):
+        requests.post(
+            f"https://api.telegram.org/bot{self.api_key}/deleteMessage",
+            json={"chat_id": chat_id, "message_id": message_id}
+        )
 
     def ack_callback(self, callback_query_id: str):
         requests.post(
@@ -90,8 +100,8 @@ class TelegramBot:
 
         follow_up_labels = {1: "1 hour", 2: "1 day", 3: "2 days"}
         lines = [
+            *([ f"⏰ <b>Follow-up reminder — {follow_up_labels.get(follow_up, f'#{follow_up}')} ago</b>" ] if follow_up > 0 else []),
             f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
-            *([ f"⏰ <i>Follow-up reminder ({follow_up_labels.get(follow_up, f'#{follow_up}')} ago)</i>" ] if follow_up > 0 else []),
             "",
         ]
 

@@ -30,7 +30,8 @@ def run_requester(bot) -> None:
            WHERE status = 'pending'
            AND skipped = FALSE
            AND request_count = 0
-           AND received_at <= ?""",
+           AND received_at <= ?
+           LIMIT 1""",
         [missed_cutoff]
     ).fetchall()
 
@@ -44,6 +45,7 @@ def run_requester(bot) -> None:
             )
             con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
             log.info(f"Missed initial send recovered for {transaction_id}")
+            return
         except Exception as e:
             log.error(f"Missed send recovery failed for {transaction_id}: {e}", exc_info=True)
 
@@ -54,7 +56,8 @@ def run_requester(bot) -> None:
                WHERE status = 'pending'
                AND skipped = FALSE
                AND request_count = ?
-               AND last_requested_at <= ?""",
+               AND last_requested_at <= ?
+               LIMIT 1""",
             [request_count, cutoff]
         ).fetchall()
 
@@ -76,6 +79,7 @@ def run_requester(bot) -> None:
                     )
                     con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
                     log.info(f"Follow-up {request_count} sent for {transaction_id}")
+                    return
                 except Exception as e:
                     log.error(f"Follow-up {request_count} failed for {transaction_id}: {e}", exc_info=True)
 
