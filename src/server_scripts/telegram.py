@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import requests
 
@@ -64,7 +65,8 @@ class TelegramBot:
         prefix = "-" if amount_pence < 0 else "+"
         amount_str = f"{prefix}{symbol}{abs(amount_pence) / 100:.2f}"
 
-        dt = datetime.fromisoformat(data['created'].replace("Z", "+00:00"))
+        created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(created)
         date_str = dt.strftime("%d %b %Y · %H:%M")
 
         merchant = data.get('merchant')
@@ -111,7 +113,8 @@ class TelegramBot:
         ]
 
         if data.get('settled'):
-            settled_dt = datetime.fromisoformat(data['settled'].replace("Z", "+00:00"))
+            settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
+            settled_dt = datetime.fromisoformat(settled_str)
             lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
 
         if location:

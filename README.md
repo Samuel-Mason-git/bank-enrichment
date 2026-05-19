@@ -22,31 +22,29 @@ Traditional budgeting tools ask you to categorise transactions at the end of
 the month. By then, you've forgotten why you spent £12 at a service station or 
 what that random Amazon charge was.
 
-This system sends you a notification the moment a transaction happens and asks 
-for three things: a one-line description, a category, and a tag. That's it. 
-Thirty seconds while the memory is still there.
+This system sends you a Telegram notification the moment a transaction happens 
+and asks for one sentence of context. That's it. Thirty seconds while the memory 
+is still there.
 
 ## Why Store Context Separately From Labels?
 
 Labels change. The categories you care about today won't be the same in five 
-years. By storing your raw context separately from the classification layer, 
+years. By storing your raw context separately from any classification layer, 
 you can re-run labelling at any point using a new taxonomy — without losing 
 any of your original data.
 
-Feed your enriched transaction history to an LLM in 2030 with a completely 
-different set of categories and it will reclassify everything correctly, 
-because the context sentences tell it exactly what each transaction was.
+Feed your enriched transaction history to an LLM with a completely different 
+set of categories and it will reclassify everything correctly, because the 
+context sentences tell it exactly what each transaction was.
 
 ## How It Works
 
 1. Monzo transaction fires a webhook
 2. Always-on server receives and stores the raw payload
-3. Push notification sent to your phone
-4. You provide one sentence of context, a category, and a tag
-5. Enrichment stored alongside the raw transaction in a queue
-6. Local machine picks up completed transactions via a scheduled job
-7. LLM reads context and applies or creates labels from your label taxonomy
-8. Final enriched dataset stored locally — queryable by category, tag, label, sublabel, date, merchant, or any combination
+3. Telegram notification sent to your phone with transaction details
+4. You reply with one sentence of context — or tap Skip to dismiss
+5. Enrichment stored alongside the raw transaction in the queue
+6. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
 
 ## Dashboard
 
@@ -57,24 +55,28 @@ The server exposes a password-protected dashboard at `https://your-name.duckdns.
 - Total Telegram notifications sent, enriched, and processed
 
 **Current Queue** — live state of unprocessed transactions:
-- Status breakdown (pending / enriched) with counts
-- Paginated transaction list with amount, status, and inline actions
-- Enrich any transaction directly from the dashboard via a modal
-- Delete transactions inline
+- Status breakdown (pending / enriched / skipped) with counts
+- Paginated transaction list with amount and status
+- Enrich any pending transaction directly from the dashboard via a modal
+- Skip or delete transactions inline
 
-Each transaction links to a detail page showing the full payload, merchant/counterparty info, enrichment context, and controls to reset or delete.
+Each transaction links to a detail page showing the full payload, 
+merchant/counterparty info, enrichment context, and controls to enrich, 
+skip, reset, or delete.
 
-A **Database view** at `/dashboard/db` lets you inspect the raw `stats` and `webhook_queue` tables directly without needing to exec into the container.
+A **Database view** at `/dashboard/db` lets you inspect the raw `stats` and 
+`webhook_queue` tables directly without needing to exec into the container.
 
 Credentials are set via environment variables — see SETUP.md.
 
 ## What You End Up With
 
-A clean, structured, personal financial dataset where every transaction has:
+A growing queue of transactions, each with:
 
-- The raw bank data (amount, merchant, timestamp)
-- Your human context (what it actually was)
-- Your manual categorisation (how you thought about it)
-- An LLM classification (how it fits into your label taxonomy)
+- The raw bank data (amount, merchant, timestamp, counterparty)
+- Your one-sentence human context (what it actually was)
+- Status tracking (pending / enriched / skipped / auto-skipped)
 
-All linked by primary and foreign keys, so you can join any layer together and query across the full history — *how much did I spend on socialising in 2026*, *what was my biggest impulse spending month*, *show me every work-related expense this year*.
+The enriched dataset is designed to feed into a downstream processing step — 
+an LLM classification layer, a local database, or any analysis pipeline — 
+without ever losing the original context you captured.

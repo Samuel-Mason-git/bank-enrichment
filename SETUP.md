@@ -86,8 +86,6 @@ The file contains the following keys:
 | `DASHBOARD_PASSWORD` | Password for the dashboard login |
 | `TELEGRAM_API` | Your Telegram bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID (see Telegram Bot Setup above) |
-| `OPENAI_SECRET` | Your OpenAI API key |
-| `CLAUDE_SECRET` | Your Anthropic API key |
 
 `config/.env` is gitignored and stays on your server only — `git pull` will never overwrite it.
 
@@ -174,7 +172,11 @@ for the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
 The dashboard has two sections:
 
 - **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed) stored in a dedicated `stats` table that survives queue clears
-- **Current Queue** — live status breakdown and full list of all pending and enriched transactions, each linking to a detail page
+- **Current Queue** — paginated list of all unprocessed transactions with amount, status, and inline controls to enrich or delete without leaving the page. Each row links to a detail page where you can view the full payload, enrich, skip, reset to pending, or delete the transaction.
+
+A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
+
+A **Database view** at `https://your-name.duckdns.org/dashboard/db` lets you inspect the raw `stats` and `webhook_queue` tables directly without needing to exec into the container.
 
 #### 9. Register the Monzo Webhook
 
