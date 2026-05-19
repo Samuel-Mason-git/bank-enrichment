@@ -10,9 +10,6 @@ class TelegramBot:
         self.api_key = os.getenv("TELEGRAM_API")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-        self.api_key = "8336472072:AAGQLvDOz46Ei3lYCN2QiFpIk8tFBwmTONg"
-        self.chat_id = "8986826697"
-
         if not self.api_key:
             raise ValueError("Missing TELEGRAM_API env variable")
 
@@ -130,4 +127,3 @@ class TelegramBot:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     bot = TelegramBot()
-    bot.send_card(test_payload)

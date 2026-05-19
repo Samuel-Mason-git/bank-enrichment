@@ -152,11 +152,11 @@ async def recieve_monzo(request: Request):
 
     try:
         con = get_con()
-        con.execute(
-            "INSERT INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+        result = con.execute(
+            "INSERT INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
             [transaction_id, body.decode(), received_at]
-        )
-        is_new = con.rowcount > 0
+        ).fetchone()
+        is_new = result is not None
 
         if is_new:
             con.execute(
