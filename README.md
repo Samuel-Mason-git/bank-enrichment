@@ -50,11 +50,15 @@ because the context sentences tell it exactly what each transaction was.
 
 ## Dashboard
 
-The server exposes a password-protected dashboard at `http://your_server_ip:8000/dashboard` showing:
+The server exposes a password-protected dashboard at `http://your_server_ip:8000/dashboard` with two sections:
 
-- Total transactions received
-- Breakdown by status (pending, enriched, processed)
-- The 20 most recent transactions
+**Lifetime Stats** — counters that persist permanently regardless of queue state:
+- Total transactions received and total monetary value
+- Total notifications sent, enriched, and processed to local DB
+
+**Current Queue** — the live state of the processing queue:
+- Status breakdown (pending / enriched) with counts
+- Full list of all unprocessed transactions, each linking to a detail page
 
 Credentials are set via environment variables — see SETUP.md.
 

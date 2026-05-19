@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import uvicorn
 import logging
@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from server_db import init_db, get_con
+from telegram import TelegramBot
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+_sessions: dict = {}
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -54,10 +56,18 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
 
 
+bot: TelegramBot | None = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global bot
     init_db()
     log.info("Database initialised")
+    try:
+        bot = TelegramBot()
+        log.info("Telegram bot initialised")
+    except ValueError as e:
+        log.warning(f"Telegram bot not initialised: {e}")
     yield
 
 
@@ -72,7 +82,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
-class inner(BaseModel):
+class MonzoInner(BaseModel):
     model_config = ConfigDict(extra='ignore')
     account_id: str
     amount: int
@@ -84,18 +94,55 @@ class inner(BaseModel):
     is_load: bool
     settled: Optional[str] = None
     merchant: Optional[dict] = None
+    counterparty: Optional[dict] = None
 
-class outer(BaseModel):
+class MonzoOuter(BaseModel):
     model_config = ConfigDict(extra='ignore')
     type: str
-    data: inner
+    data: MonzoInner
+
+class TelegramUser(BaseModel):
+    id: int
+    first_name: str
+    is_bot: bool
+    last_name: Optional[str] = None
+    username: Optional[str] = None
+
+class TelegramChat(BaseModel):
+    id: int
+    type: str
+    title: Optional[str] = None
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+
+class TelegramMessage(BaseModel):
+    model_config = ConfigDict(extra='ignore', populate_by_name=True)
+    message_id: int
+    chat: TelegramChat
+    date: int
+    from_user: Optional[TelegramUser] = Field(None, alias="from")
+    text: Optional[str] = None
+
+class TelegramCallbackQuery(BaseModel):
+    model_config = ConfigDict(extra='ignore', populate_by_name=True)
+    id: str
+    from_user: TelegramUser = Field(alias="from")
+    message: Optional[TelegramMessage] = None
+    data: Optional[str] = None
+
+class TelegramUpdate(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    update_id: int
+    message: Optional[TelegramMessage] = None
+    edited_message: Optional[TelegramMessage] = None
+    callback_query: Optional[TelegramCallbackQuery] = None
 
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     body = await request.body()
     try:
-        monzo_data = outer.model_validate_json(body)
+        monzo_data = MonzoOuter.model_validate_json(body)
     except Exception as e:
         log.error(f"Validation error: {e}. Body: {body.decode()}")
         raise HTTPException(status_code=422, detail="Invalid payload")
@@ -106,19 +153,83 @@ async def recieve_monzo(request: Request):
     try:
         con = get_con()
         con.execute(
-            "INSERT OR IGNORE INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?)",
+            "INSERT INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
             [transaction_id, body.decode(), received_at]
         )
-        con.execute(
-            "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ? WHERE id = 1",
-            [monzo_data.data.amount]
-        )
-        log.info(f"Transaction stored: {transaction_id}")
+        is_new = con.rowcount > 0
+
+        if is_new:
+            con.execute(
+                "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ? WHERE id = 1",
+                [monzo_data.data.amount]
+            )
+            log.info(f"Transaction stored: {transaction_id}")
+        else:
+            log.info(f"Duplicate webhook ignored: {transaction_id}")
     except Exception as e:
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
+    if is_new and bot:
+        try:
+            bot.send_card(json.loads(body))
+            con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
+        except Exception as e:
+            log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)
+
     return {"status": "ok"}
+
+
+
+@app.post('/recieve_telegram/')
+async def recieve_telegram(request: Request):
+    body = await request.body()
+    try:
+        update = TelegramUpdate.model_validate_json(body)
+    except Exception as e:
+        log.error(f"Telegram parse error: {e}. Body: {body.decode()}")
+        return {"ok": True}
+
+    if update.callback_query:
+        cq = update.callback_query
+        chat_id = cq.from_user.id
+        bot.ack_callback(cq.id)
+
+        if cq.data and cq.data.startswith("enrich:"):
+            transaction_id = cq.data.split(":", 1)[1]
+            _sessions[chat_id] = {"transaction_id": transaction_id}
+            bot.send_message(chat_id, "What was this transaction? Send a one-line description.")
+
+    elif update.message and update.message.text:
+        msg = update.message
+        chat_id = msg.chat.id
+        session = _sessions.get(chat_id)
+
+        if not session:
+            return {"ok": True}
+
+        context = msg.text.strip()
+        transaction_id = session["transaction_id"]
+
+        try:
+            con = get_con()
+            con.execute(
+                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+                [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+            )
+            con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+            log.info(f"Transaction enriched: {transaction_id}")
+        except Exception as e:
+            log.error(f"Failed to enrich transaction {transaction_id}: {e}", exc_info=True)
+            bot.send_message(chat_id, "Something went wrong saving that. Try again.")
+            return {"ok": True}
+
+        del _sessions[chat_id]
+        bot.send_message(chat_id, "✅ Saved.")
+
+    return {"ok": True}
+
+
 
 
 @app.get("/dashboard/transaction/{transaction_id}", response_class=HTMLResponse)

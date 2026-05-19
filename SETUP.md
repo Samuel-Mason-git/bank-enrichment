@@ -4,6 +4,29 @@
 - A Monzo account with developer access enabled at developers.monzo.com
 - A server with a public IP address and Docker installed
 
+### Telegram Bot Setup
+
+The system sends push notifications via a Telegram bot when a transaction arrives.
+
+#### 1. Create a bot
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts to choose a name and username
+3. BotFather will give you a token that looks like `123456789:ABCdef...` — this is your `TELEGRAM_API` key
+
+#### 2. Get your chat ID
+
+1. Search for your bot's username in Telegram and send it any message
+2. Visit the following URL in your browser (replace with your token):
+
+```
+https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
+```
+
+3. In the JSON response, find `result[0].message.chat.id` — that number is your `TELEGRAM_CHAT_ID`
+
+---
+
 ### Registering the Webhook
 
 1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
@@ -58,6 +81,8 @@ The file contains the following keys:
 |---|---|
 | `DASHBOARD_USER` | Username for the dashboard login |
 | `DASHBOARD_PASSWORD` | Password for the dashboard login |
+| `TELEGRAM_API` | Your Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID (see Telegram Bot Setup above) |
 | `OPENAI_SECRET` | Your OpenAI API key |
 | `CLAUDE_SECRET` | Your Anthropic API key |
 
@@ -115,8 +140,10 @@ sudo docker compose logs -f
 Open `http://your_server_ip:8000/dashboard` in your browser. You will be prompted
 for the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
 
-The dashboard shows total transactions received, a breakdown by status, and the
-20 most recent transactions.
+The dashboard has two sections:
+
+- **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed) stored in a dedicated `stats` table that survives queue clears
+- **Current Queue** — live status breakdown and full list of all pending and enriched transactions, each linking to a detail page
 
 #### 7. Deploying Updates
 
@@ -128,7 +155,7 @@ git pull
 sudo docker compose up -d --build && sudo docker image prune -f
 ```
 
-**If the database schema has changed**, wipe the existing database first so it is recreated cleanly:
+**If the database schema has changed**, check the release notes. Most additive changes (new columns, new tables) apply automatically on restart via migrations in `init_db()` — no wipe needed. If a breaking change requires a full reset:
 
 ```bash
 sudo docker compose down
