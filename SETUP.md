@@ -3,7 +3,8 @@
 - A Monzo account with developer access enabled at [developers.monzo.com](https://developers.monzo.com)
 - A server with a public IP address and Docker installed (e.g. Oracle Cloud free tier)
 - A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
-- Python 3.11+ and [Poetry](https://python-poetry.org) installed on your local machine
+- Python 3.11+ and [Poetry](https://python-poetry.org/docs/#installation) installed on your local machine
+- Git installed on both your local machine and the server
 
 ---
 
@@ -45,33 +46,31 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
 
 ### 4. Configure Environment Variables
 
-Copy the example file and fill in your values:
+`config/.env` is a single file that is used by both the server (loaded by Docker Compose) and your local machine (loaded automatically by the processing script). Fill it in once locally, then copy it to the server.
+
+On your **local machine**, from the project root:
 
 ```bash
 cp config/.env.example config/.env
-nano config/.env
 ```
 
-**Server variables** (used by the Docker container):
+Then open `config/.env` and fill in all values:
 
-| Key | Description |
-|---|---|
-| `DASHBOARD_USER` | Username for the dashboard login |
-| `DASHBOARD_PASSWORD` | Password for the dashboard login |
-| `TELEGRAM_API` | Your Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID (see step 3) |
-| `LOCAL_API_KEY` | A random hex key used to authenticate the local processing script — generate one at [browserling.com/tools/random-hex](https://www.browserling.com/tools/random-hex) (set length to 64) |
+| Key | Used by | Description |
+|---|---|---|
+| `DASHBOARD_USER` | Server | Username for the dashboard login |
+| `DASHBOARD_PASSWORD` | Server | Password for the dashboard login |
+| `TELEGRAM_API` | Server | Your Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Server | Your personal Telegram chat ID (see step 3) |
+| `LOCAL_API_KEY` | Both | A random hex key — generate one at [browserling.com/tools/random-hex](https://www.browserling.com/tools/random-hex) (set length to 64) |
+| `SERVER_URL` | Local | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
+| `DB_PATH` | Local | Full path for your local DuckDB database — e.g. `C:/Users/you/Documents/bank_enrichment.db` |
 
-`config/.env` is gitignored — `git pull` will never overwrite it.
+`config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
-To copy it to the server from your local machine:
+Once filled in, copy it to the server:
 ```bash
 scp config/.env ubuntu@your_server_ip:~/bank-enrichment/config/.env
-```
-
-Or create it directly on the server:
-```bash
-nano ~/bank-enrichment/config/.env
 ```
 
 ### 5. Set Up DuckDNS
@@ -164,25 +163,34 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 The local processing script runs on your own machine and pulls enriched transactions from the server into a local DuckDB database.
 
-### 1. Install Dependencies
+### 1. Clone the Repository Locally
 
-From the project root on your local machine:
+If you haven't already cloned the repository on your local machine:
+
+```bash
+git clone git@github.com:your-username/bank-enrichment.git
+cd bank-enrichment
+```
+
+### 2. Install Dependencies
 
 ```bash
 poetry install
 ```
 
-### 2. Add Local Variables to config/.env
+### 3. Check config/.env
 
-The same `config/.env` file is used by both the server and the local script. Add these additional keys to your local copy:
+If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains `SERVER_URL`, `DB_PATH`, and `LOCAL_API_KEY` — these are the three values the local script needs.
 
-| Key | Description |
-|---|---|
-| `LOCAL_API_KEY` | Must match the value set on the server |
-| `SERVER_URL` | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
-| `DB_PATH` | Full path where you want your local DuckDB database created — e.g. `C:/Users/you/Documents/bank_enrichment.db` on Windows or `/home/you/bank_enrichment.db` on Mac/Linux |
+If you created `config/.env` directly on the server and don't have a local copy, create one now:
 
-### 3. Run the Script
+```bash
+cp config/.env.example config/.env
+```
+
+Then fill in at minimum `LOCAL_API_KEY`, `SERVER_URL`, and `DB_PATH` (see the table in step 4 of Part 1).
+
+### 4. Run the Script
 
 ```bash
 poetry run python src/local_scripts/process.py
@@ -197,17 +205,28 @@ On first run this will:
 
 A log file is created automatically alongside the database file (same name, `.log` extension).
 
-### 4. Schedule It
-
-To run the script automatically on a schedule:
+### 5. Schedule It
 
 **Windows — Task Scheduler:**
-1. Open Task Scheduler and click **Create Basic Task**
-2. Set the trigger to your preferred schedule (e.g. daily)
-3. Set the action to **Start a program**
-4. Program: path to your Poetry Python executable (run `poetry env info --executable` to find it)
-5. Arguments: `src/local_scripts/process.py`
-6. Start in: your project root directory
+
+First, get the path to the Poetry Python executable:
+```powershell
+poetry env info --executable
+```
+
+Then:
+1. Open **Task Scheduler** (search in Start menu)
+2. Click **Create Basic Task** in the right panel
+3. Name it `Bank Enrichment Process` → Next
+4. Trigger: **Daily** → set your preferred time → Next
+5. Action: **Start a program** → Next
+6. **Program/script**: paste the full path from `poetry env info --executable`
+7. **Arguments**: `src\local_scripts\process.py`
+8. **Start in**: your project root directory (e.g. `C:\Users\you\Projects\bank-enrichment`)
+9. Click Finish, then tick **Open Properties dialog**
+10. Under **General**, tick **Run whether user is logged on or not** so it fires even if your PC is locked
+
+The script will run silently in the background. Check the log file alongside your database for output.
 
 **Mac/Linux — cron:**
 ```bash

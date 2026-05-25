@@ -45,7 +45,7 @@ context sentences tell it exactly what each transaction was.
 4. You reply with one sentence of context — or tap Skip to dismiss
 5. Enrichment stored alongside the raw transaction in the queue
 6. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-7. Local processing script runs on your PC, pulls enriched transactions from the server, writes them to a local DuckDB database, and clears them from the queue
+7. Local processing script runs daily on your PC via Task Scheduler (Windows) or cron (Mac/Linux), pulls enriched transactions from the server, writes them to a local DuckDB database, and clears them from the queue
 
 ## Dashboard
 
@@ -72,9 +72,9 @@ Credentials are set via environment variables — see SETUP.md.
 
 ## Local Processing
 
-A local processing script (`src/local_scripts/process.py`) runs on your own 
-machine on a schedule (Windows Task Scheduler or cron) and pulls enriched 
-transactions off the server:
+A local processing script (`src/local_scripts/process.py`) runs daily on your 
+own machine via Windows Task Scheduler or cron and pulls enriched transactions 
+off the server:
 
 1. Calls `GET /export` on the server to fetch all enriched transactions
 2. Writes them to a local DuckDB database at the path you configure

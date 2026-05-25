@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import time
@@ -6,7 +5,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
-import duckdb
+
+from database_functions import init_db, write_to_db
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -26,33 +26,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-_con: duckdb.DuckDBPyConnection | None = None
-
-def get_con() -> duckdb.DuckDBPyConnection:
-    global _con
-    if _con is None:
-        raise RuntimeError("Database not initialised — call init_db() first")
-    return _con
-
-def init_db() -> None:
-    global _con
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    _con = duckdb.connect(DB_PATH)
-    sql_path = os.path.join(os.path.dirname(__file__), "..", "..", "sql", "tables.sql")
-    with open(sql_path, "r") as f:
-        sql = f.read()
-    for statement in sql.split(";"):
-        statement = statement.strip()
-        if statement:
-            _con.execute(statement)
-
-
 HEADERS = {"X-API-Key": LOCAL_API_KEY}
+
 
 def fetch_enriched():
     response = requests.get(f"{SERVER_URL}/export", headers=HEADERS)
     response.raise_for_status()
     return response.json()
+
 
 def mark_processed(ids: list[str]):
     response = requests.post(
@@ -63,54 +44,35 @@ def mark_processed(ids: list[str]):
     response.raise_for_status()
     return response.json()
 
-def write_to_db(transactions: list[dict]):
-    con = get_con()
-    for t in transactions:
-        data = t["payload"].get("data", {})
-        merchant = data.get("merchant") or {}
-        counterparty = data.get("counterparty") or {}
-        con.execute(
-            """INSERT INTO transactions (
-                id, amount, currency, description, monzo_category,
-                merchant_name, merchant_category, counterparty_name,
-                is_load, created_at, settled_at, raw_payload,
-                user_context, skipped, received_at, enriched_at, processed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO NOTHING""",
-            [
-                t["id"],
-                data.get("amount", 0) / 100,
-                data.get("currency", "GBP"),
-                data.get("description"),
-                data.get("category"),
-                merchant.get("name"),
-                merchant.get("category"),
-                counterparty.get("name"),
-                data.get("is_load"),
-                data.get("created"),
-                data.get("settled"),
-                json.dumps(t["payload"]),
-                t["user_context"],
-                t["skipped"],
-                t["received_at"],
-                t["enriched_at"],
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-            ]
-        )
-    log.info(f"Wrote {len(transactions)} transactions to local DB")
-
-
 
 if __name__ == "__main__":
+    run_start = time.time()
+    log.info("--- Process run started ---")
+
+    t0 = time.time()
+    log.info(f"Connecting to local DB at {DB_PATH}")
     init_db()
+    log.info(f"Local DB ready ({time.time() - t0:.2f}s)")
+
+    t0 = time.time()
+    log.info(f"Fetching enriched transactions from {SERVER_URL}")
     enriched = fetch_enriched()
+    log.info(f"Fetch complete ({time.time() - t0:.2f}s)")
+
     if not enriched:
-        log.info("Nothing to process")
+        log.info("Nothing to process — queue is empty")
     else:
+        log.info(f"Fetched {len(enriched)} transactions")
         try:
+            t0 = time.time()
             write_to_db(enriched)
-            #mark_processed([r["id"] for r in enriched])
+            log.info(f"Stored {len(enriched)} transactions ({time.time() - t0:.2f}s)")
+
+            t0 = time.time()
+            ids = [r["id"] for r in enriched]
+            mark_processed(ids)
+            log.info(f"Marked as processed on server ({time.time() - t0:.2f}s)")
         except Exception as e:
             log.error(f"Processing failed: {e}", exc_info=True)
 
-        
+    log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
