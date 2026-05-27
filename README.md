@@ -45,9 +45,11 @@ context sentences tell it exactly what each transaction was.
 4. You reply with one sentence of context — or tap Skip to dismiss
 5. Enrichment stored alongside the raw transaction in the queue
 6. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-7. Local processing script runs daily on your PC via Task Scheduler (Windows) or cron (Mac/Linux), pulls enriched transactions from the server, writes them to a local DuckDB database, and clears them from the queue
+7. Daily local script pulls enriched transactions from the server into a local DuckDB database
+8. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
+9. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
 
-## Dashboard
+## Server Dashboard
 
 The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard`.
 
@@ -65,38 +67,89 @@ Each transaction links to a detail page showing the full payload,
 merchant/counterparty info, enrichment context, and controls to enrich, 
 skip, reset, or delete.
 
-A **Database view** at `/dashboard/db` lets you inspect the raw `stats` and 
-`webhook_queue` tables directly without needing to exec into the container.
+A **Database view** at `/dashboard/db` lets you inspect the raw tables directly 
+without needing to exec into the container.
 
-Credentials are set via environment variables — see SETUP.md.
+## LLM Classification
 
-## Local Processing
+A two-pass classification system runs locally against your DuckDB database:
 
-A local processing script (`src/local_scripts/process.py`) runs daily on your 
-own machine via Windows Task Scheduler or cron and pulls enriched transactions 
-off the server:
+**Pass 1 — Parent category:** Claude assigns each transaction to a broad category 
+(e.g. Holidays & Travel, Eating Out, Food & Groceries). If a transaction's context 
+mentions a holiday, it is always grouped under Holidays & Travel regardless of what 
+was purchased — so all your holiday spending stays together.
 
-1. Calls `GET /export` on the server to fetch all enriched transactions
-2. Writes them to a local DuckDB database at the path you configure
-3. Calls `POST /mark-processed` to remove them from the server queue
+**Pass 2 — Subcategory:** Within each parent, Claude assigns a specific subcategory 
+(e.g. Accommodation, Car Rental, Holiday Food).
 
-The local database stores every transaction with the full raw Monzo payload 
-preserved alongside flattened fields (amount, merchant, category, timestamps) 
-so the data is immediately queryable. LLM classification runs as a separate 
-step against this local database.
+The taxonomy starts empty and grows over time. Claude reuses existing categories 
+wherever they fit and only creates new ones when genuinely needed. Because context 
+is stored separately from labels, you can wipe the taxonomy and re-run classification 
+at any point — with the same categories or entirely new ones.
 
-The server and local script share a `LOCAL_API_KEY` — set it once in 
-`config/.env` and both sides use it automatically.
+## Local Dashboard
+
+A Streamlit dashboard runs on your machine and reads directly from the local DuckDB database.
+
+| Tab | Description |
+|-----|-------------|
+| Overview | KPI cards (spend, income, net, unclassified) + spend and income charts by category |
+| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net table |
+| Transactions | Full filterable and searchable table — edit labels inline, type new ones |
+| Category Drill-Down | Pick any parent category to see subcategory breakdowns and transactions |
+| Taxonomy | View, rename, and add parent categories and subcategories |
 
 ## What You End Up With
 
 A local DuckDB database of every transaction, each row containing:
 
-- The raw bank data (amount, merchant, timestamp, counterparty, full payload)
+- The raw bank data (amount, merchant, timestamp, counterparty, full JSON payload)
 - Your one-sentence human context (what it actually was)
+- LLM-assigned parent category and subcategory
 - Status tracking (enriched / skipped / auto-skipped)
+- Full audit trail (received, enriched, processed, classified timestamps)
 
-The enriched dataset is designed to feed into a downstream LLM classification 
-step — without ever losing the original context you captured. Because context 
-is stored separately from any classification, you can re-run labelling at any 
-point using a new taxonomy and it will classify correctly every time.
+Because context is stored separately from classification, you can re-run labelling 
+at any point using a new taxonomy and it will classify correctly every time.
+
+## Project Structure
+
+```
+├── src/
+│   ├── server_scripts/        # FastAPI server (runs in Docker)
+│   │   ├── main.py            # API endpoints, Telegram callbacks
+│   │   ├── telegram.py        # Telegram bot logic
+│   │   ├── follow_up_tg.py    # Follow-up notification scheduler
+│   │   └── server_db.py       # Server-side database functions
+│   └── local_scripts/         # Runs on your local machine
+│       ├── process.py         # Pull enriched transactions from server
+│       ├── llm_labelling.py   # LLM classification (Claude)
+│       ├── database_functions.py  # Shared DuckDB library
+│       ├── dashboard.py       # Streamlit dashboard
+│       ├── view_db.py         # Print all transactions to terminal
+│       ├── clear_db.py        # Wipe transaction database
+│       └── clear_taxonomy.py  # Wipe category tables
+├── sql/
+│   └── tables.sql             # Database schema
+├── config/
+│   └── .env.example           # Environment variable template
+├── Dockerfile                 # Server container
+├── docker-compose.yml         # Server + Caddy
+└── Caddyfile                  # Reverse proxy + automatic HTTPS
+```
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Server | Python, FastAPI, DuckDB |
+| Reverse proxy | Caddy (automatic HTTPS) |
+| Notifications | Telegram Bot API |
+| Local database | DuckDB |
+| LLM classification | Anthropic Claude (Sonnet) |
+| Local dashboard | Streamlit, Plotly |
+| Deployment | Docker Compose |
+
+## Setup
+
+See [SETUP.md](SETUP.md) for full setup instructions.

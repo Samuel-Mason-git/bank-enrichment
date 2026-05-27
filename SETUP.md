@@ -65,6 +65,7 @@ Then open `config/.env` and fill in all values:
 | `LOCAL_API_KEY` | Both | A random hex key — generate one at [browserling.com/tools/random-hex](https://www.browserling.com/tools/random-hex) (set length to 64) |
 | `SERVER_URL` | Local | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
 | `DB_PATH` | Local | Full path for your local DuckDB database — e.g. `C:/Users/you/Documents/bank_enrichment.db` |
+| `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
@@ -180,7 +181,7 @@ poetry install
 
 ### 3. Check config/.env
 
-If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains `SERVER_URL`, `DB_PATH`, and `LOCAL_API_KEY` — these are the three values the local script needs.
+If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains `SERVER_URL`, `DB_PATH`, `LOCAL_API_KEY`, and `CLAUDE_SECRET` — these are the values the local scripts need.
 
 If you created `config/.env` directly on the server and don't have a local copy, create one now:
 
@@ -190,51 +191,104 @@ cp config/.env.example config/.env
 
 Then fill in at minimum `LOCAL_API_KEY`, `SERVER_URL`, and `DB_PATH` (see the table in step 4 of Part 1).
 
-### 4. Run the Script
+### 4. Run the Scripts
 
+**Step 1 — Pull from server:**
 ```bash
 poetry run python src/local_scripts/process.py
 ```
 
 On first run this will:
 1. Create the local database file at `DB_PATH`
-2. Create the `transactions` table
+2. Create all tables (transactions, parent_categories, subcategories)
 3. Fetch all enriched transactions from the server
 4. Write them to the local database
 5. Mark them as processed on the server (removing them from the queue)
 
 A log file is created automatically alongside the database file (same name, `.log` extension).
 
-### 5. Schedule It
+**Step 2 — Classify with LLM:**
+```bash
+poetry run python src/local_scripts/llm_labelling.py
+```
 
-**Windows — Task Scheduler:**
+This classifies any unclassified transactions using Claude (Sonnet). On first run it builds the taxonomy from scratch — parent categories and subcategories are created automatically and grow over time. Subsequent runs only process new unclassified rows and exit immediately if everything is already classified.
+
+A separate log file (`llm_classifier.log`) is written alongside the database.
+
+### 5. Schedule Both Tasks
 
 First, get the path to the Poetry Python executable:
 ```powershell
 poetry env info --executable
 ```
 
-Then:
-1. Open **Task Scheduler** (search in Start menu)
-2. Click **Create Basic Task** in the right panel
-3. Name it `Bank Enrichment Process` → Next
-4. Trigger: **Daily** → set your preferred time → Next
-5. Action: **Start a program** → Next
-6. **Program/script**: paste the full path from `poetry env info --executable`
-7. **Arguments**: `src\local_scripts\process.py`
-8. **Start in**: your project root directory (e.g. `C:\Users\you\Projects\bank-enrichment`)
-9. Click Finish, then tick **Open Properties dialog**
-10. Under **General**, tick **Run whether user is logged on or not** so it fires even if your PC is locked
+**Windows — Task Scheduler:**
 
-The script will run silently in the background. Check the log file alongside your database for output.
+Create two tasks — one for each script. The classifier should run a few minutes after the processor so there is always something to classify.
+
+**Task 1 — Processor:**
+1. Open **Task Scheduler** → **Create Basic Task**
+2. Name it `Bank Enrichment Process` → Next
+3. Trigger: **Daily** → set your preferred time (e.g. 08:00) → Next
+4. Action: **Start a program** → Next
+5. **Program/script**: paste the full path from `poetry env info --executable`
+6. **Arguments**: `src\local_scripts\process.py`
+7. **Start in**: your project root (e.g. `C:\Users\you\Projects\bank-enrichment`)
+8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not**
+
+**Task 2 — LLM Classifier:**
+1. **Create Basic Task**
+2. Name it `Bank Enrichment Classify` → Next
+3. Trigger: **Daily** → set 5–10 minutes after the processor (e.g. 08:10) → Next
+4. Action: **Start a program** → Next
+5. **Program/script**: same Poetry Python path as above
+6. **Arguments**: `src\local_scripts\llm_labelling.py`
+7. **Start in**: same project root
+8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not**
+
+Both scripts are safe to re-run manually at any time.
 
 **Mac/Linux — cron:**
 ```bash
 crontab -e
 ```
-Add a line like this to run daily at 8am:
+Add two lines (adjust paths and times as needed):
 ```
-0 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
+0 8  * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
+10 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/llm_labelling.py
+```
+
+### 6. View the Dashboard
+
+Launch:
+```bash
+poetry run streamlit run src/local_scripts/dashboard.py
+```
+
+It opens in your browser automatically. Tabs:
+
+| Tab | Description |
+|-----|-------------|
+| Overview | KPI cards (spend, income, net, unclassified) + spend/income charts by category |
+| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net table |
+| Transactions | Full filterable/searchable table — edit labels inline, type new ones |
+| Category Drill-Down | Pick a parent category to see subcategory charts + transactions |
+| Taxonomy | View, rename, and add parent categories and subcategories |
+
+Use the sidebar to filter by date range, category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
+
+### 7. Utility Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `src/local_scripts/view_db.py` | Print all transactions and stats to the terminal |
+| `src/local_scripts/clear_db.py` | Wipe all transactions (requires typing YES to confirm) |
+| `src/local_scripts/clear_taxonomy.py` | Wipe parent categories and subcategories (useful when re-classifying from scratch) |
+
+Run any of them with:
+```bash
+poetry run python src/local_scripts/<script>.py
 ```
 
 ---

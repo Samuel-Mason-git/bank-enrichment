@@ -7,6 +7,10 @@ config/.env
 *.duckdb
 data/
 
+# Logs
+logs/
+*.log
+
 # Python
 .venv/
 __pycache__/
