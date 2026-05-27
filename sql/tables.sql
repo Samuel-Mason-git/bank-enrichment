@@ -1,3 +1,17 @@
+CREATE TABLE IF NOT EXISTS parent_categories (
+    id       INTEGER PRIMARY KEY,
+    name     VARCHAR NOT NULL UNIQUE,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS subcategories (
+    id         INTEGER PRIMARY KEY,
+    name       VARCHAR NOT NULL,
+    parent_id  INTEGER NOT NULL REFERENCES parent_categories(id),
+    created_at TIMESTAMP NOT NULL,
+    UNIQUE (name, parent_id)
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
     id VARCHAR PRIMARY KEY,
     -- Monzo data (flattened for querying)

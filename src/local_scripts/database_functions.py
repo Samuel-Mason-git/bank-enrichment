@@ -24,6 +24,12 @@ def get_con() -> duckdb.DuckDBPyConnection:
 
 def init_db(read_only: bool = False) -> None:
     global _con
+    if _con is not None:
+        try:
+            _con.close()
+        except Exception:
+            pass
+        _con = None
     if not read_only:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     _con = duckdb.connect(DB_PATH, read_only=read_only)
@@ -49,7 +55,10 @@ def get_transaction(transaction_id: str) -> dict | None:
 
 def get_unclassified() -> list[dict]:
     return _rows(
-        "SELECT * FROM transactions WHERE llm_category IS NULL AND skipped = FALSE ORDER BY created_at DESC"
+        """SELECT * FROM transactions
+           WHERE (llm_category IS NULL OR llm_subcategory IS NULL)
+           AND skipped = FALSE
+           ORDER BY created_at DESC"""
     )
 
 
@@ -71,6 +80,29 @@ def get_recent(n: int = 10) -> list[dict]:
         "SELECT * FROM transactions ORDER BY created_at DESC LIMIT ?", [n]
     )
 
+def get_parents() -> list[dict]:
+    return _rows(
+        """SELECT p.id, p.name, p.created_at,
+                  COUNT(t.id) AS transaction_count
+           FROM parent_categories p
+           LEFT JOIN transactions t ON t.llm_category = p.name
+           GROUP BY p.id, p.name, p.created_at
+           ORDER BY transaction_count DESC"""
+    )
+
+
+def get_subcategories() -> list[dict]:
+    return _rows(
+        """SELECT s.id, s.name, s.parent_id, p.name AS parent_name, s.created_at,
+                  COUNT(t.id) AS transaction_count
+           FROM subcategories s
+           JOIN parent_categories p ON p.id = s.parent_id
+           LEFT JOIN transactions t ON t.llm_subcategory = s.name
+                                    AND t.llm_category = p.name
+           GROUP BY s.id, s.name, s.parent_id, p.name, s.created_at
+           ORDER BY p.name, transaction_count DESC"""
+    )
+
 
 def search(term: str) -> list[dict]:
     like = f"%{term}%"
@@ -83,6 +115,7 @@ def search(term: str) -> list[dict]:
            ORDER BY created_at DESC""",
         [like, like, like, like]
     )
+
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -162,6 +195,42 @@ def write_to_db(transactions: list[dict]) -> None:
         desc = data.get("description", "—")
         amount = data.get("amount", 0) / 100
         log.info(f"  Stored {t['id']} | £{amount:.2f} | {desc} | {t['user_context']}")
+
+
+def upsert_parent(name: str) -> int:
+    """Get or create a parent category by name. Returns its id."""
+    con = get_con()
+    row = con.execute(
+        "SELECT id FROM parent_categories WHERE name = ?", [name]
+    ).fetchone()
+    if row:
+        return row[0]
+    next_id = con.execute(
+        "SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories"
+    ).fetchone()[0]
+    con.execute(
+        "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, ?)",
+        [next_id, name, time.strftime("%Y-%m-%d %H:%M:%S")]
+    )
+    return next_id
+
+
+def upsert_subcategory(name: str, parent_id: int) -> int:
+    """Get or create a subcategory by name + parent_id. Returns its id."""
+    con = get_con()
+    row = con.execute(
+        "SELECT id FROM subcategories WHERE name = ? AND parent_id = ?", [name, parent_id]
+    ).fetchone()
+    if row:
+        return row[0]
+    next_id = con.execute(
+        "SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories"
+    ).fetchone()[0]
+    con.execute(
+        "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
+        [next_id, name, parent_id, time.strftime("%Y-%m-%d %H:%M:%S")]
+    )
+    return next_id
 
 
 def clear_db() -> None:
