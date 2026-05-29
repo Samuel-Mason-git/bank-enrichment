@@ -86,14 +86,17 @@ Each rule specifies:
 
 | Field | Description |
 |---|---|
-| Name | A label for the rule (e.g. "Gym membership") |
+| Name | A label for the rule (e.g. "Wifi Bill") |
 | Match field | What to check — merchant name, description, counterparty name, category, or amount |
-| Match type | How to compare — `contains`, `exact`, `regex`, or `amount_range` |
-| Match value | The value to match against (e.g. `PureGym`, or `500-600` for an amount range in £) |
-| Auto context | The context sentence to store (e.g. "Monthly gym membership") |
+| Match type | How to compare — `contains`, `exact`, `regex`, `amount_range`, or `amount_exact` |
+| Match value | The value to match against (e.g. `EE`, `490-510` for a £ range, or `9.99` for exact) |
+| Auto context | The context sentence to store (e.g. "Monthly wifi bill") |
+| Second condition | Optional — a second match field/type/value that must also pass (AND logic) |
 
-Rules can be enabled or disabled at any time from the dashboard. Amount ranges are specified 
-in pounds (e.g. `490-510`) and matched against the absolute transaction value.
+Rules can be enabled or disabled at any time from the dashboard without deleting them. 
+Amount ranges and exact amounts are specified in pounds and matched against the absolute 
+transaction value. A rule with two conditions only fires if both match — useful for 
+cases like a specific merchant at a specific amount.
 
 ## LLM Classification
 
