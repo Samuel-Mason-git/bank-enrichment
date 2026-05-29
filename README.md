@@ -41,13 +41,14 @@ context sentences tell it exactly what each transaction was.
 
 1. Monzo transaction fires a webhook
 2. Always-on server receives and stores the raw payload
-3. Telegram notification sent to your phone with transaction details
-4. You reply with one sentence of context — or tap Skip to dismiss
-5. Enrichment stored alongside the raw transaction in the queue
-6. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-7. Daily local script pulls enriched transactions from the server into a local DuckDB database
-8. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
-9. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
+3. Server checks your rules — if a rule matches, the transaction is auto-enriched and Telegram is skipped entirely
+4. Otherwise, a Telegram notification is sent to your phone with transaction details
+5. You reply with one sentence of context — or tap Skip to dismiss
+6. Enrichment stored alongside the raw transaction in the queue
+7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
+8. Daily local script pulls enriched transactions from the server into a local DuckDB database
+9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
+10. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
 
 ## Server Dashboard
 
@@ -67,8 +68,32 @@ Each transaction links to a detail page showing the full payload,
 merchant/counterparty info, enrichment context, and controls to enrich, 
 skip, reset, or delete.
 
+A **Rules view** at `/dashboard/rules` lets you define auto-enrichment rules. 
+When a transaction matches a rule, it is enriched automatically and no Telegram 
+notification is sent — useful for recurring transactions like rent, gym memberships, 
+or regular transfers where you already know the context.
+
 A **Database view** at `/dashboard/db` lets you inspect the raw tables directly 
 without needing to exec into the container.
+
+## Rules
+
+Rules are matched against each incoming transaction before the Telegram notification fires. 
+If a rule matches, the transaction is auto-enriched with the rule's context and the 
+notification is skipped entirely.
+
+Each rule specifies:
+
+| Field | Description |
+|---|---|
+| Name | A label for the rule (e.g. "Gym membership") |
+| Match field | What to check — merchant name, description, counterparty name, category, or amount |
+| Match type | How to compare — `contains`, `exact`, `regex`, or `amount_range` |
+| Match value | The value to match against (e.g. `PureGym`, or `500-600` for an amount range in £) |
+| Auto context | The context sentence to store (e.g. "Monthly gym membership") |
+
+Rules can be enabled or disabled at any time from the dashboard. Amount ranges are specified 
+in pounds (e.g. `490-510`) and matched against the absolute transaction value.
 
 ## LLM Classification
 
@@ -117,7 +142,8 @@ at any point using a new taxonomy and it will classify correctly every time.
 ```
 ├── src/
 │   ├── server_scripts/        # FastAPI server (runs in Docker)
-│   │   ├── main.py            # API endpoints, Telegram callbacks
+│   │   ├── main.py            # API endpoints, Telegram callbacks, dashboard
+│   │   ├── check_rules.py     # Rule matching logic
 │   │   ├── telegram.py        # Telegram bot logic
 │   │   ├── follow_up_tg.py    # Follow-up notification scheduler
 │   │   └── server_db.py       # Server-side database functions
@@ -130,7 +156,8 @@ at any point using a new taxonomy and it will classify correctly every time.
 │       ├── clear_db.py        # Wipe transaction database
 │       └── clear_taxonomy.py  # Wipe category tables
 ├── sql/
-│   └── tables.sql             # Database schema
+│   ├── tables.sql             # Local database schema (transactions, categories)
+│   └── server_tables.sql      # Server database schema (queue, stats, rules)
 ├── config/
 │   └── .env.example           # Environment variable template
 ├── Dockerfile                 # Server container

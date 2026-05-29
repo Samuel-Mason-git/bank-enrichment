@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rules — Bank Enrichment</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .rules-form {
+            background: #fff;
+            border-radius: 10px;
+            border: 1px solid #e4e4e7;
+            padding: 24px 28px;
+            margin-bottom: 10px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr 2fr;
+            gap: 10px;
+            align-items: end;
+            margin-bottom: 14px;
+        }
+        .form-group { display: flex; flex-direction: column; gap: 5px; }
+        .form-group label {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: #a1a1aa;
+        }
+        .form-group input,
+        .form-group select {
+            padding: 8px 11px;
+            border: 1px solid #e4e4e7;
+            border-radius: 7px;
+            font-size: 0.845rem;
+            font-family: inherit;
+            color: #111;
+            background: #fff;
+            outline: none;
+            transition: border-color 0.1s, box-shadow 0.1s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+        }
+        .form-group input::placeholder { color: #a1a1aa; }
+        .btn-add-rule {
+            padding: 9px 20px;
+            border-radius: 7px;
+            border: none;
+            font-size: 0.845rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: #18181b;
+            color: #fff;
+            white-space: nowrap;
+            transition: background 0.1s;
+        }
+        .btn-add-rule:hover { background: #3f3f46; }
+        .badge-enabled  { background: #d1fae5; color: #065f46; }
+        .badge-disabled { background: #f4f4f5; color: #71717a; }
+        .match-type-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: 0.68rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            background: #ede9fe;
+            color: #5b21b6;
+        }
+        .rule-name { font-weight: 600; color: #111; }
+        .rule-context { font-style: italic; color: #52525b; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="header-brand">
+        <div class="dot"></div>
+        <h1>Bank Enrichment</h1>
+    </div>
+    <nav class="header-nav">
+        <a href="/dashboard" class="nav-link">Dashboard</a>
+        <a href="/dashboard/rules" class="nav-link active">Rules</a>
+        <a href="/dashboard/db" class="nav-link">Database</a>
+    </nav>
+</header>
+
+<main>
+
+    <div class="section-label">Add Rule</div>
+    <div class="rules-form">
+        <form method="POST" action="/dashboard/rules/add">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Rule Name</label>
+                    <input name="name" placeholder="e.g. Gym membership" required>
+                </div>
+                <div class="form-group">
+                    <label>Match Field</label>
+                    <select name="match_field" required>
+                        <option value="merchant_name">Merchant name</option>
+                        <option value="description">Description</option>
+                        <option value="counterparty_name">Counterparty name</option>
+                        <option value="category">Category</option>
+                        <option value="amount">Amount (£ range)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Match Type</label>
+                    <select name="match_type" required>
+                        <option value="contains">Contains</option>
+                        <option value="exact">Exact</option>
+                        <option value="regex">Regex</option>
+                        <option value="amount_range">Amount range</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Match Value</label>
+                    <input name="match_value" placeholder="e.g. PureGym" required>
+                </div>
+                <div class="form-group">
+                    <label>Auto Context</label>
+                    <input name="auto_context" placeholder="e.g. Monthly gym membership" required>
+                </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end;">
+                <button type="submit" class="btn-add-rule">+ Add Rule</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="section-label">{{ rules | length }} rule{{ 's' if rules | length != 1 else '' }}</div>
+    <div class="card">
+        {% if rules %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Match Field</th>
+                    <th>Type</th>
+                    <th>Match Value</th>
+                    <th>Auto Context</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in rules %}
+                <tr>
+                    <td class="rule-name">{{ rule.name }}</td>
+                    <td class="mono">{{ rule.match_field }}</td>
+                    <td><span class="match-type-badge">{{ rule.match_type }}</span></td>
+                    <td class="mono">{{ rule.match_value }}</td>
+                    <td class="rule-context">{{ rule.auto_context }}</td>
+                    <td><span class="badge {% if rule.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if rule.enabled %}enabled{% else %}disabled{% endif %}</span></td>
+                    <td>
+                        <div class="row-actions">
+                            <form method="POST" action="/dashboard/rules/{{ rule.id }}/toggle">
+                                <button type="submit" class="btn-row-enrich">{% if rule.enabled %}Disable{% else %}Enable{% endif %}</button>
+                            </form>
+                            <form method="POST" action="/dashboard/rules/{{ rule.id }}/delete" onsubmit="return confirm('Delete rule \'{{ rule.name }}\'?')">
+                                <button type="submit" class="btn-row-delete">✕</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">No rules yet — add one above to start auto-enriching transactions</div>
+        {% endif %}
+    </div>
+
+</main>
+</body>
+</html>

@@ -21,3 +21,13 @@ CREATE TABLE IF NOT EXISTS webhook_queue (
     skipped             BOOLEAN      DEFAULT FALSE,
     last_requested_at   TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    match_field VARCHAR(255) NOT NULL,
+    match_type VARCHAR(50) NOT NULL DEFAULT 'contains',
+    match_value VARCHAR(255) NOT NULL,
+    auto_context VARCHAR(255) NOT NULL,
+    enabled BOOLEAN DEFAULT TRUE
+);

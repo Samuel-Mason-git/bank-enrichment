@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from server_db import init_db, get_con
 from telegram import TelegramBot
+from check_rules import check_rules
 from follow_up_tg import requester_loop
 
 BASE_DIR = os.path.dirname(__file__)
@@ -188,6 +189,7 @@ async def recieve_monzo(request: Request):
     received_at = time.strftime("%Y-%m-%d %H:%M:%S")
     transaction_id = monzo_data.data.id
 
+    # Upload to Queue
     try:
         con = get_con()
         result = con.execute(
@@ -208,7 +210,21 @@ async def recieve_monzo(request: Request):
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
-    if is_new and bot:
+    # Check rules for auto-enrichment
+    rule_context = check_rules(monzo_data.data) if is_new else None
+    if rule_context:
+        try:
+            con.execute(
+                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+                [rule_context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+            )
+            con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+            log.info(f"Transaction auto-enriched by rule: {transaction_id} → '{rule_context}'")
+        except Exception as e:
+            log.error(f"Failed to auto-enrich transaction {transaction_id}: {e}", exc_info=True)
+
+    # Send Telegram Message
+    if is_new and not rule_context and bot:
         try:
             bot.send_card(json.loads(body))
             con.execute(
@@ -395,6 +411,51 @@ async def reset_transaction(transaction_id: str, request: Request, credentials: 
         [transaction_id]
     )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
+
+@app.post("/dashboard/rules/{rule_id}/delete", response_class=HTMLResponse)
+async def delete_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    con.execute("DELETE FROM rules WHERE id = ?", [rule_id])
+    return RedirectResponse(url="/dashboard/rules", status_code=303)
+
+@app.post("/dashboard/rules/add", response_class=HTMLResponse)
+async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    match_field = (form.get("match_field") or "").strip()
+    match_type = (form.get("match_type") or "").strip()
+    match_value = (form.get("match_value") or "").strip()
+    auto_context = (form.get("auto_context") or "").strip()
+    if name and match_field and match_type and match_value and auto_context:
+        con = get_con()
+        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
+        con.execute(
+            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context) VALUES (?, ?, ?, ?, ?, ?)",
+            [next_id, name, match_field, match_type, match_value, auto_context]
+        )
+    return RedirectResponse(url="/dashboard/rules", status_code=303)
+
+
+@app.get("/dashboard/rules", response_class=HTMLResponse)
+async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    rows = con.execute("SELECT id, name, match_field, match_type, match_value, auto_context, enabled FROM rules ORDER BY id").fetchall()
+    rules = [
+        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6]}
+        for r in rows
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="rules.html",
+        context={"rules": rules}
+    )
+
+
+@app.post("/dashboard/rules/{rule_id}/toggle", response_class=HTMLResponse)
+async def toggle_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
+    con.execute("UPDATE rules SET enabled = NOT enabled WHERE id = ?", [rule_id])
+    return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
 @app.get("/dashboard/db", response_class=HTMLResponse)

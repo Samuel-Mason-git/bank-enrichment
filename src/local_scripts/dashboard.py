@@ -62,12 +62,23 @@ def load_transactions():
 @st.cache_data(ttl=60)
 def load_taxonomy():
     parents = con.execute("SELECT name FROM parent_categories ORDER BY name").fetchall()
-    subs = con.execute("SELECT name FROM subcategories ORDER BY name").fetchall()
-    return [r[0] for r in parents], [r[0] for r in subs]
+    subs = con.execute("""
+        SELECT s.name, p.name AS parent_name
+        FROM subcategories s
+        JOIN parent_categories p ON p.id = s.parent_id
+        ORDER BY s.name
+    """).fetchall()
+    all_parent_names = [r[0] for r in parents]
+    # {parent_name: [sub_name, ...]}
+    subs_by_parent = {}
+    for sub_name, parent_name in subs:
+        subs_by_parent.setdefault(parent_name, []).append(sub_name)
+    all_sub_names = [r[0] for r in subs]
+    return all_parent_names, all_sub_names, subs_by_parent
 
 
 df = load_transactions()
-all_parents, all_subs = load_taxonomy()
+all_parents, all_subs, subs_by_parent = load_taxonomy()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 
@@ -90,7 +101,16 @@ date_from = date_range[0] if len(date_range) > 0 else min_date
 date_to = date_range[1] if len(date_range) > 1 else max_date
 
 selected_parents = st.sidebar.multiselect("Parent category", all_parents)
-selected_subs = st.sidebar.multiselect("Subcategory", all_subs)
+
+# If parent(s) selected, only show subcategories that belong to those parents
+if selected_parents:
+    available_subs = sorted({
+        sub for p in selected_parents for sub in subs_by_parent.get(p, [])
+    })
+else:
+    available_subs = all_subs
+
+selected_subs = st.sidebar.multiselect("Subcategory", available_subs)
 search = st.sidebar.text_input("Search", placeholder="merchant, description, context...")
 show_skipped = st.sidebar.checkbox("Show skipped", value=False)
 show_unclassified = st.sidebar.checkbox("Show unclassified", value=True)
