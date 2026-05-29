@@ -104,26 +104,22 @@
                 </div>
                 <div class="form-group">
                     <label>Match Field</label>
-                    <select name="match_field" required>
+                    <select name="match_field" id="match_field" required onchange="updateMatchType()">
                         <option value="merchant_name">Merchant name</option>
                         <option value="description">Description</option>
                         <option value="counterparty_name">Counterparty name</option>
                         <option value="category">Category</option>
-                        <option value="amount">Amount (£ range)</option>
+                        <option value="amount">Amount (£)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label>Match Type</label>
-                    <select name="match_type" required>
-                        <option value="contains">Contains</option>
-                        <option value="exact">Exact</option>
-                        <option value="regex">Regex</option>
-                        <option value="amount_range">Amount range</option>
-                    </select>
+                    <select name="match_type" id="match_type" required></select>
                 </div>
                 <div class="form-group">
                     <label>Match Value</label>
-                    <input name="match_value" placeholder="e.g. PureGym" required>
+                    <input name="match_value" id="match_value" placeholder="e.g. PureGym" required>
+                    <span id="match_value_hint" style="font-size:0.7rem;color:#a1a1aa;margin-top:2px;display:none;"></span>
                 </div>
                 <div class="form-group">
                     <label>Auto Context</label>
@@ -180,5 +176,41 @@
     </div>
 
 </main>
+
+<script>
+const TEXT_TYPES = [
+    { value: "contains", label: "Contains" },
+    { value: "exact",    label: "Exact" },
+    { value: "regex",    label: "Regex" },
+];
+const AMOUNT_TYPES = [
+    { value: "amount_range", label: "Amount range (e.g. 490-510)" },
+];
+
+function updateMatchType() {
+    const field = document.getElementById("match_field").value;
+    const typeSelect = document.getElementById("match_type");
+    const valueInput = document.getElementById("match_value");
+    const hint = document.getElementById("match_value_hint");
+    const isAmount = field === "amount";
+    const options = isAmount ? AMOUNT_TYPES : TEXT_TYPES;
+
+    typeSelect.innerHTML = options.map(o =>
+        `<option value="${o.value}">${o.label}</option>`
+    ).join("");
+
+    if (isAmount) {
+        valueInput.placeholder = "e.g. 490-510";
+        hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
+        hint.style.display = "block";
+    } else {
+        valueInput.placeholder = "e.g. PureGym";
+        hint.style.display = "none";
+    }
+}
+
+updateMatchType();
+</script>
+
 </body>
 </html>
