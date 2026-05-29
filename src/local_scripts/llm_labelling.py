@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 def _format_transaction(t: dict) -> str:
     parts = [
         f"ID: {t['id']}",
-        f"Amount: £{t['amount']:.2f}",
+        f"Amount: £{t['amount']:.2f} ({'money in' if t['amount'] > 0 else 'money out'})",
     ]
     if t.get("merchant_name"):
         parts.append(f"Merchant: {t['merchant_name']}")
