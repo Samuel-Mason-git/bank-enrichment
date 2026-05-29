@@ -119,14 +119,41 @@
                 <div class="form-group">
                     <label>Match Value</label>
                     <input name="match_value" id="match_value" placeholder="e.g. PureGym" required>
-                    <span id="match_value_hint" style="font-size:0.7rem;color:#a1a1aa;margin-top:2px;display:none;"></span>
                 </div>
                 <div class="form-group">
                     <label>Auto Context</label>
                     <input name="auto_context" placeholder="e.g. Monthly gym membership" required>
                 </div>
             </div>
-            <div style="display:flex; justify-content:flex-end;">
+            <div style="margin:10px 0 4px;">
+                <span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;">Second Condition <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — both must match)</span></span>
+            </div>
+            <div class="form-grid" style="margin-bottom:0;">
+                <div class="form-group">
+                    <label>Match Field</label>
+                    <select name="match_field_2" id="match_field_2" onchange="updateMatchType2()">
+                        <option value="">— None —</option>
+                        <option value="merchant_name">Merchant name</option>
+                        <option value="description">Description</option>
+                        <option value="counterparty_name">Counterparty name</option>
+                        <option value="category">Category</option>
+                        <option value="amount">Amount (£)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Match Type</label>
+                    <select name="match_type_2" id="match_type_2"></select>
+                </div>
+                <div class="form-group">
+                    <label>Match Value</label>
+                    <input name="match_value_2" id="match_value_2" placeholder="—">
+                </div>
+                <div class="form-group" style="grid-column: span 2;"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
+                <span id="match_value_hint" style="font-size:0.7rem;color:#a1a1aa;display:none;"></span>
+                <span id="match_value_hint_2" style="font-size:0.7rem;color:#a1a1aa;display:none;"></span>
+                <span></span>
                 <button type="submit" class="btn-add-rule">+ Add Rule</button>
             </div>
         </form>
@@ -139,9 +166,8 @@
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Match Field</th>
-                    <th>Type</th>
-                    <th>Match Value</th>
+                    <th>Condition 1</th>
+                    <th>Condition 2</th>
                     <th>Auto Context</th>
                     <th>Status</th>
                     <th></th>
@@ -151,9 +177,8 @@
                 {% for rule in rules %}
                 <tr>
                     <td class="rule-name">{{ rule.name }}</td>
-                    <td class="mono">{{ rule.match_field }}</td>
-                    <td><span class="match-type-badge">{{ rule.match_type }}</span></td>
-                    <td class="mono">{{ rule.match_value }}</td>
+                    <td><span class="mono">{{ rule.match_field }}</span> <span class="match-type-badge">{{ rule.match_type }}</span> <span class="mono">{{ rule.match_value }}</span></td>
+                    <td>{% if rule.match_field_2 %}<span class="mono">{{ rule.match_field_2 }}</span> <span class="match-type-badge">{{ rule.match_type_2 }}</span> <span class="mono">{{ rule.match_value_2 }}</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
                     <td class="rule-context">{{ rule.auto_context }}</td>
                     <td><span class="badge {% if rule.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if rule.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                     <td>
@@ -184,7 +209,8 @@ const TEXT_TYPES = [
     { value: "regex",    label: "Regex" },
 ];
 const AMOUNT_TYPES = [
-    { value: "amount_range", label: "Amount range (e.g. 490-510)" },
+    { value: "amount_range", label: "Amount range" },
+    { value: "amount_exact", label: "Exact amount" },
 ];
 
 function updateMatchType() {
@@ -200,16 +226,74 @@ function updateMatchType() {
     ).join("");
 
     if (isAmount) {
-        valueInput.placeholder = "e.g. 490-510";
-        hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
         hint.style.display = "block";
+        updateAmountHint();
+        typeSelect.addEventListener("change", updateAmountHint);
     } else {
         valueInput.placeholder = "e.g. PureGym";
         hint.style.display = "none";
     }
 }
 
+function updateMatchType2() {
+    const field = document.getElementById("match_field_2").value;
+    const typeSelect = document.getElementById("match_type_2");
+    const valueInput = document.getElementById("match_value_2");
+    const hint = document.getElementById("match_value_hint_2");
+
+    if (!field) {
+        typeSelect.innerHTML = "";
+        valueInput.placeholder = "—";
+        valueInput.disabled = true;
+        typeSelect.disabled = true;
+        hint.style.display = "none";
+        return;
+    }
+
+    valueInput.disabled = false;
+    typeSelect.disabled = false;
+    const isAmount = field === "amount";
+    const options = isAmount ? AMOUNT_TYPES : TEXT_TYPES;
+    typeSelect.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join("");
+
+    if (isAmount) {
+        hint.style.display = "block";
+        updateAmountHint2();
+        typeSelect.addEventListener("change", updateAmountHint2);
+    } else {
+        valueInput.placeholder = "e.g. PureGym";
+        hint.style.display = "none";
+    }
+}
+
+function updateAmountHint2() {
+    const typeSelect = document.getElementById("match_type_2");
+    const valueInput = document.getElementById("match_value_2");
+    const hint = document.getElementById("match_value_hint_2");
+    if (typeSelect.value === "amount_exact") {
+        valueInput.placeholder = "e.g. 9.99";
+        hint.textContent = "Enter an exact £ amount — e.g. 9.99";
+    } else {
+        valueInput.placeholder = "e.g. 490-510";
+        hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
+    }
+}
+
+function updateAmountHint() {
+    const typeSelect = document.getElementById("match_type");
+    const valueInput = document.getElementById("match_value");
+    const hint = document.getElementById("match_value_hint");
+    if (typeSelect.value === "amount_exact") {
+        valueInput.placeholder = "e.g. 9.99";
+        hint.textContent = "Enter an exact £ amount — e.g. 9.99";
+    } else {
+        valueInput.placeholder = "e.g. 490-510";
+        hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
+    }
+}
+
 updateMatchType();
+updateMatchType2();
 </script>
 
 </body>

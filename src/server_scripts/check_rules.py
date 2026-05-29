@@ -25,21 +25,29 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
     if match_type == "amount_range":
         low, high = match_value.split("-")
         return int(low) * 100 <= abs(int(field_value)) <= int(high) * 100
+    if match_type == "amount_exact":
+        return abs(int(field_value)) == round(float(match_value) * 100)
     return False
 
 def check_rules(data) -> str | None:
     con = get_con()
-    rules = con.execute("SELECT * FROM rules WHERE enabled = TRUE").fetchall()
+    rules = con.execute(
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2 FROM rules WHERE enabled = TRUE"
+    ).fetchall()
 
     for rule in rules:
-        _, _, match_field, match_type, match_value, auto_context, _ = rule
+        _, _, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2 = rule
 
         field_value = _extract_field(data, match_field)
-        if field_value is None:
+        if field_value is None or not _matches(field_value, match_type, match_value):
             continue
 
-        if _matches(field_value, match_type, match_value):
-            return auto_context
+        if match_field_2 and match_type_2 and match_value_2:
+            field_value_2 = _extract_field(data, match_field_2)
+            if field_value_2 is None or not _matches(field_value_2, match_type_2, match_value_2):
+                continue
+
+        return auto_context
 
     return None
 
