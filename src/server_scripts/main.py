@@ -566,7 +566,10 @@ async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API
     await verify_api_key(api_key)
     con = get_con()
     placeholders = ", ".join("?" * len(body.ids))
-    con.execute(f"DELETE FROM webhook_queue WHERE id IN ({placeholders})", body.ids)
+    con.execute(
+        f"UPDATE webhook_queue SET status = 'processed' WHERE id IN ({placeholders})",
+        body.ids
+    )
     con.execute(
         "UPDATE stats SET total_processed = total_processed + ? WHERE id = 1",
         [len(body.ids)]

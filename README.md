@@ -46,7 +46,7 @@ context sentences tell it exactly what each transaction was.
 5. You reply with one sentence of context — or tap Skip to dismiss
 6. Enrichment stored alongside the raw transaction in the queue
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-8. Daily local script pulls enriched transactions from the server into a local DuckDB database
+8. Daily local script pulls enriched transactions from the server into a local DuckDB database — processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
 10. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
 
@@ -76,6 +76,12 @@ or regular transfers where you already know the context.
 A **Database view** at `/dashboard/db` lets you inspect the raw tables directly 
 without needing to exec into the container.
 
+Processed transactions are retained on the server for 5 days before being automatically 
+cleaned up. This acts as a deduplication buffer — some merchants (e.g. Aldi, Lidl) do 
+not send a pending webhook and only fire when the transaction settles, which can be days 
+after the original purchase. Without this buffer, the settlement webhook would be treated 
+as a new transaction.
+
 ## Rules
 
 Rules are matched against each incoming transaction before the Telegram notification fires. 
@@ -100,19 +106,25 @@ cases like a specific merchant at a specific amount.
 
 ## LLM Classification
 
-A two-pass classification system runs locally against your DuckDB database:
+A three-pass classification system runs locally against your DuckDB database:
 
-**Pass 1 — Parent category:** Claude assigns each transaction to a broad category 
-(e.g. Holidays & Travel, Eating Out, Food & Groceries). If a transaction's context 
-mentions a holiday, it is always grouped under Holidays & Travel regardless of what 
-was purchased — so all your holiday spending stays together.
+**Pass 0 — Match existing taxonomy:** Claude first checks whether each transaction 
+confidently matches an already-existing subcategory. If it does, the transaction is 
+classified immediately and Passes 1 and 2 are skipped. This keeps the taxonomy 
+consistent over time — a transaction classified as "Tobacco & Nicotine" once will 
+always land there on future runs.
+
+**Pass 1 — Parent category:** For transactions that didn't match in Pass 0, Claude 
+assigns a broad parent category (e.g. Holidays & Travel, Eating Out, Food & Groceries). 
+If a transaction's context mentions a holiday, it is always grouped under 
+Holidays & Travel regardless of what was purchased — so all holiday spending stays together.
 
 **Pass 2 — Subcategory:** Within each parent, Claude assigns a specific subcategory 
-(e.g. Accommodation, Car Rental, Holiday Food).
+(e.g. Accommodation, Car Rental, Holiday Food), creating new ones only when genuinely needed.
 
-The taxonomy starts empty and grows over time. Claude reuses existing categories 
-wherever they fit and only creates new ones when genuinely needed. Because context 
-is stored separately from labels, you can wipe the taxonomy and re-run classification 
+The taxonomy starts empty and grows over time. As it matures, most transactions will 
+match in Pass 0, making classification faster and more consistent. Because context is 
+stored separately from labels, you can wipe the taxonomy and re-run classification 
 at any point — with the same categories or entirely new ones.
 
 ## Local Dashboard

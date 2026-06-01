@@ -421,6 +421,7 @@ with tab_taxonomy:
 
     if st.button("Save parent categories", type="primary"):
         changes = 0
+        # Deletions handled separately below
         # Renames
         for i in range(min(len(parents_df), len(edited_parents))):
             old_name = parents_df.at[i, "Name"]
@@ -442,6 +443,18 @@ with tab_taxonomy:
             st.rerun()
         else:
             st.info("No changes detected.")
+
+    if parents_df is not None and not parents_df.empty:
+        with st.expander("Delete a parent category"):
+            del_parent = st.selectbox("Select category to delete", parents_df["Name"].tolist(), key="del_parent")
+            st.caption("⚠️ This will also delete all its subcategories and clear the label from all transactions.")
+            if st.button("Delete", type="primary", key="del_parent_btn"):
+                row = parents_df[parents_df["Name"] == del_parent].iloc[0]
+                con.execute("DELETE FROM subcategories WHERE parent_id = ?", [int(row["id"])])
+                con.execute("DELETE FROM parent_categories WHERE id = ?", [int(row["id"])])
+                con.execute("UPDATE transactions SET llm_category = NULL, llm_subcategory = NULL WHERE llm_category = ?", [del_parent])
+                st.cache_data.clear()
+                st.rerun()
 
     st.divider()
 
@@ -477,6 +490,7 @@ with tab_taxonomy:
 
     if st.button("Save subcategories", type="primary"):
         changes = 0
+        # Deletions handled separately below
         # Renames
         for i in range(min(len(subs_df), len(edited_subs))):
             old_name = subs_df.at[i, "Name"]
@@ -504,3 +518,19 @@ with tab_taxonomy:
             st.rerun()
         else:
             st.info("No changes detected.")
+
+    if subs_df is not None and not subs_df.empty:
+        with st.expander("Delete a subcategory"):
+            sub_options = [f"{r['Name']} ({r['Parent']})" for _, r in subs_df.iterrows()]
+            del_sub = st.selectbox("Select subcategory to delete", sub_options, key="del_sub")
+            st.caption("⚠️ This will clear the subcategory label from all affected transactions.")
+            if st.button("Delete", type="primary", key="del_sub_btn"):
+                del_idx = sub_options.index(del_sub)
+                row = subs_df.iloc[del_idx]
+                con.execute("DELETE FROM subcategories WHERE id = ?", [int(row["id"])])
+                con.execute(
+                    "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
+                    [row["Name"], row["Parent"]],
+                )
+                st.cache_data.clear()
+                st.rerun()

@@ -84,10 +84,22 @@ def run_requester(bot) -> None:
                     log.error(f"Follow-up {request_count} failed for {transaction_id}: {e}", exc_info=True)
 
 
+def run_cleanup() -> None:
+    con = get_con()
+    cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400 * 5))
+    result = con.execute(
+        "DELETE FROM webhook_queue WHERE status = 'processed' AND enriched_at <= ?",
+        [cutoff]
+    ).rowcount
+    if result:
+        log.info(f"Cleaned up {result} processed transactions older than 5 days")
+
+
 async def requester_loop(bot) -> None:
     while True:
         await asyncio.sleep(300)  # check every 5 minutes
         try:
             run_requester(bot)
+            run_cleanup()
         except Exception as e:
             log.error(f"Requester loop error: {e}", exc_info=True)

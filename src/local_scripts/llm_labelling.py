@@ -51,6 +51,31 @@ def _format_transaction(t: dict) -> str:
     return " | ".join(parts)
 
 
+def _pass0_prompt(transactions: list[dict], subcategories: list[dict]) -> str:
+    sub_lines = "\n".join(
+        f"  - {s['name']} (under: {s['parent_name']})"
+        for s in subcategories
+    )
+    txn_lines = "\n".join(
+        f"{i+1}. {_format_transaction(t)}" for i, t in enumerate(transactions)
+    )
+    return f"""You are classifying personal bank transactions. Your job is to check whether each transaction clearly matches an existing subcategory.
+
+Existing subcategories (with their parent category):
+{sub_lines}
+
+Instructions:
+- For each transaction, return the best matching subcategory and its parent — BUT ONLY if you are confident it is the right match.
+- If the transaction does not clearly fit any existing subcategory, return null for both fields.
+- Do not force a match. It is better to return null than to assign the wrong category.
+- Respond ONLY with valid JSON: an array of objects with "id", "category", and "subcategory" keys.
+- Use null (not a string) when there is no confident match.
+- Example: [{{"id": "tx_abc", "category": "Consumables", "subcategory": "Tobacco & Nicotine"}}, {{"id": "tx_xyz", "category": null, "subcategory": null}}]
+
+Transactions:
+{txn_lines}"""
+
+
 def _pass1_prompt(transactions: list[dict], parents: list[dict]) -> str:
     existing = ""
     if parents:
@@ -122,6 +147,30 @@ def _extract_json(raw: str) -> list:
         return json.loads(raw[start:end])
     except (ValueError, json.JSONDecodeError) as e:
         raise ValueError(f"Could not extract JSON array from response: {e}\nRaw: {raw[:200]}")
+
+
+def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcategories: list[dict]) -> dict[str, dict]:
+    """Returns {transaction_id: {"category": ..., "subcategory": ...}} for confident matches only."""
+    if not subcategories:
+        return {}
+    prompt = _pass0_prompt(transactions, subcategories)
+    log.info("Pass 0: matching against existing taxonomy")
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        results = _extract_json(raw)
+        matched = {}
+        for r in results:
+            if r.get("category") and r.get("subcategory"):
+                matched[r["id"]] = {"category": r["category"], "subcategory": r["subcategory"]}
+        return matched
+    except Exception as e:
+        log.error(f"Pass 0 LLM error: {e}")
+        return {}
 
 
 def classify_parents(client: anthropic.Anthropic, transactions: list[dict], parents: list[dict]) -> dict[str, str]:
@@ -211,48 +260,68 @@ if __name__ == "__main__":
         parents = get_parents()
         subcategories = get_subcategories()
 
-        # ── Pass 1: parent categories ──────────────────────────────────────────
+        # ── Pass 0: match against existing taxonomy ────────────────────────────
         t0 = time.time()
-        parent_map = classify_parents(client, batch, parents)
-        log.info(f"Pass 1 complete ({time.time() - t0:.2f}s) — {len(parent_map)}/{len(batch)} assigned")
+        existing_map = match_existing(client, batch, subcategories)
+        unmatched = [t for t in batch if t["id"] not in existing_map]
+        log.info(f"Pass 0 complete ({time.time() - t0:.2f}s) — {len(existing_map)} matched, {len(unmatched)} need classification")
 
-        if not parent_map:
-            log.warning("Pass 1 returned no results — skipping batch")
-            continue
+        # ── Pass 1: parent categories (unmatched only) ─────────────────────────
+        parent_map: dict[str, str] = {}
+        if unmatched:
+            t0 = time.time()
+            parent_map = classify_parents(client, unmatched, parents)
+            log.info(f"Pass 1 complete ({time.time() - t0:.2f}s) — {len(parent_map)}/{len(unmatched)} assigned")
 
         # Upsert any new parent categories
         parent_id_map: dict[str, int] = {}
         for name in set(parent_map.values()):
             parent_id_map[name] = upsert_parent(name)
+        for match in existing_map.values():
+            name = match["category"]
+            if name not in parent_id_map:
+                parent_id_map[name] = upsert_parent(name)
 
-        # ── Pass 2: subcategories ──────────────────────────────────────────────
-        subcategories = get_subcategories()
-        all_parent_names = list(parent_id_map.keys())
-
-        by_parent: dict[str, list[dict]] = {}
-        for t in batch:
-            p_name = parent_map.get(t["id"])
-            if p_name:
-                by_parent.setdefault(p_name, []).append(t)
-
+        # ── Pass 2: subcategories (unmatched only) ─────────────────────────────
         sub_map: dict[str, str] = {}
-        for p_name, txns in by_parent.items():
-            t0 = time.time()
-            result = classify_subcategories(client, txns, p_name, subcategories, all_parent_names)
-            sub_map.update(result)
-            log.info(f"Pass 2 '{p_name}' ({time.time() - t0:.2f}s) — {len(result)}/{len(txns)} assigned")
+        if unmatched and parent_map:
+            subcategories = get_subcategories()
+            all_parent_names = list(parent_id_map.keys())
 
-        # Upsert subcategories
-        for txn_id, sub_name in sub_map.items():
-            p_name = parent_map.get(txn_id)
-            if p_name:
-                upsert_subcategory(sub_name, parent_id_map[p_name])
+            by_parent: dict[str, list[dict]] = {}
+            for t in unmatched:
+                p_name = parent_map.get(t["id"])
+                if p_name:
+                    by_parent.setdefault(p_name, []).append(t)
+
+            for p_name, txns in by_parent.items():
+                t0 = time.time()
+                result = classify_subcategories(client, txns, p_name, subcategories, all_parent_names)
+                sub_map.update(result)
+                log.info(f"Pass 2 '{p_name}' ({time.time() - t0:.2f}s) — {len(result)}/{len(txns)} assigned")
+
+            # Upsert new subcategories
+            for txn_id, sub_name in sub_map.items():
+                p_name = parent_map.get(txn_id)
+                if p_name:
+                    upsert_subcategory(sub_name, parent_id_map[p_name])
+
+        # Upsert subcategories from Pass 0 matches (ensure they exist in taxonomy)
+        for match in existing_map.values():
+            p_id = parent_id_map.get(match["category"])
+            if p_id:
+                upsert_subcategory(match["subcategory"], p_id)
 
         # ── Write classifications back ─────────────────────────────────────────
         for t in batch:
             txn_id = t["id"]
-            p_name = parent_map.get(txn_id)
-            s_name = sub_map.get(txn_id)
+            if txn_id in existing_map:
+                p_name = existing_map[txn_id]["category"]
+                s_name = existing_map[txn_id]["subcategory"]
+            else:
+                p_name = parent_map.get(txn_id)
+                s_name = sub_map.get(txn_id)
+
             if p_name:
                 update_classification(
                     transaction_id=txn_id,
@@ -262,7 +331,8 @@ if __name__ == "__main__":
                     model=MODEL,
                 )
                 total_classified += 1
-                log.info(f"  Saved {txn_id} -> {p_name} / {s_name or '—'}")
+                source = "P0" if txn_id in existing_map else "P1+2"
+                log.info(f"  [{source}] {txn_id} -> {p_name} / {s_name or '—'}")
             else:
                 log.warning(f"  No classification for {txn_id} — skipping")
 
