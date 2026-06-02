@@ -245,7 +245,7 @@ def run():
 
     if not unclassified:
         log.info("Nothing to classify -- database is fully classified")
-        exit()
+        return
 
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
 

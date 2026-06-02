@@ -48,7 +48,8 @@ context sentences tell it exactly what each transaction was.
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
 8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
-10. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
+10. At the end of each month, a summary is automatically sent to your Telegram — spend, income, net, and a full breakdown by category
+11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
 
 ## Server Dashboard
 
@@ -104,6 +105,16 @@ Amount ranges and exact amounts are specified in pounds and matched against the 
 transaction value. A rule with two conditions only fires if both match — useful for 
 cases like a specific merchant at a specific amount.
 
+## Monthly Summary
+
+At the end of each month, the daily processing script automatically sends a Telegram message summarising your finances for that month:
+
+- Total spend and income
+- Net (saved or overspent)
+- Full breakdown by parent category for both spend and income
+
+The summary is sent the next time the script runs after the month ends. If the script was inactive for several months, it will catch up and send a summary for each missed month in order. Each summary is recorded locally so it is never sent twice.
+
 ## LLM Classification
 
 A three-pass classification system runs locally against your DuckDB database:
@@ -134,10 +145,11 @@ A Streamlit dashboard runs on your machine and reads directly from the local Duc
 | Tab | Description |
 |-----|-------------|
 | Overview | KPI cards (spend, income, net, unclassified) + spend and income charts by category |
-| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net table |
+| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net/transaction count table |
 | Transactions | Full filterable and searchable table — edit labels inline, type new ones |
 | Category Drill-Down | Pick any parent category to see subcategory breakdowns and transactions |
-| Taxonomy | View, rename, and add parent categories and subcategories |
+| Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, monthly and annual cost totals |
+| Taxonomy | View, rename, delete, and add parent categories and subcategories |
 
 ## What You End Up With
 
@@ -163,8 +175,9 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── follow_up_tg.py    # Follow-up notification scheduler
 │   │   └── server_db.py       # Server-side database functions
 │   └── local_scripts/         # Runs on your local machine
-│       ├── process.py         # Pull enriched transactions from server
+│       ├── process.py         # Pull, classify, and send monthly summary — one task does all
 │       ├── llm_labelling.py   # LLM classification (Claude)
+│       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── database_functions.py  # Shared DuckDB library
 │       ├── dashboard.py       # Streamlit dashboard
 │       ├── view_db.py         # Print all transactions to terminal
