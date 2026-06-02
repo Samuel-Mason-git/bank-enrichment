@@ -12,6 +12,16 @@ CREATE TABLE IF NOT EXISTS subcategories (
     UNIQUE (name, parent_id)
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id            INTEGER PRIMARY KEY,
+    name          VARCHAR(255) NOT NULL,
+    merchant_name VARCHAR(255),
+    amount        DECIMAL(19,4) NOT NULL,
+    frequency     VARCHAR(20) NOT NULL CHECK (frequency IN ('weekly', 'fortnightly', 'monthly', 'annual')),
+    active        BOOLEAN DEFAULT TRUE,
+    created_at    TIMESTAMP NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
     id VARCHAR PRIMARY KEY,
     -- Monzo data (flattened for querying)
@@ -40,4 +50,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     llm_confidence DECIMAL(5,4),
     llm_model VARCHAR(255),
     classified_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS monthly_summaries (
+    id           INTEGER PRIMARY KEY,
+    send_date    VARCHAR(7) NOT NULL UNIQUE,  -- e.g. '2026-05'
+    total_spend  DECIMAL(19,4) NOT NULL,
+    total_income DECIMAL(19,4) NOT NULL,
+    net          DECIMAL(19,4) NOT NULL,
+    sent_at      TIMESTAMP NOT NULL
 );

@@ -176,6 +176,11 @@ class TelegramUpdate(BaseModel):
     edited_message: Optional[TelegramMessage] = None
     callback_query: Optional[TelegramCallbackQuery] = None
 
+class MarkProcessedRequest(BaseModel):
+    ids: list[str]
+    
+class MonthlyReportRequest(BaseModel):
+    message: str
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
@@ -557,10 +562,6 @@ async def export(api_key: str = Security(API_KEY_HEADER)):
         for row in rows
     ]
 
-
-class MarkProcessedRequest(BaseModel):
-    ids: list[str]
-
 @app.post('/mark-processed')
 async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
     await verify_api_key(api_key)
@@ -577,6 +578,13 @@ async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API
     log.info(f"Marked {len(body.ids)} transactions as processed")
     return {"marked": len(body.ids)}
 
+
+@app.post('/monthly-report')
+async def monthly_report(body: MonthlyReportRequest, api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    bot = TelegramBot()
+    bot.send_message(int(os.getenv("TELEGRAM_CHAT_ID")), body.message)
+    return {"ok": True}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -233,6 +233,28 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     return next_id
 
 
+def get_subscriptions() -> list[dict]:
+    return _rows("SELECT * FROM subscriptions ORDER BY active DESC, name ASC")
+
+
+def upsert_subscription(name: str, amount: float, frequency: str, merchant_name: str | None = None) -> int:
+    con = get_con()
+    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions").fetchone()[0]
+    con.execute(
+        "INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at) VALUES (?, ?, ?, ?, ?, TRUE, ?)",
+        [next_id, name, merchant_name, amount, frequency, time.strftime("%Y-%m-%d %H:%M:%S")]
+    )
+    return next_id
+
+
+def toggle_subscription(sub_id: int) -> None:
+    get_con().execute("UPDATE subscriptions SET active = NOT active WHERE id = ?", [sub_id])
+
+
+def delete_subscription(sub_id: int) -> None:
+    get_con().execute("DELETE FROM subscriptions WHERE id = ?", [sub_id])
+
+
 def clear_db() -> None:
     con = get_con()
     count = con.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]

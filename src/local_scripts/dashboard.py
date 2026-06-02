@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-from database_functions import init_db, get_con, update_classification, upsert_parent, upsert_subcategory
+from database_functions import (
+    init_db, get_con, update_classification, upsert_parent, upsert_subcategory,
+    get_subscriptions, upsert_subscription, toggle_subscription, delete_subscription,
+)
 
 st.set_page_config(
     page_title="Bank Enrichment",
@@ -162,8 +165,8 @@ if search:
 
 st.title("💳 Bank Enrichment")
 
-tab_overview, tab_time, tab_txns, tab_drill, tab_taxonomy = st.tabs([
-    "Overview", "Spending Over Time", "Transactions", "Category Drill-Down", "Taxonomy"
+tab_overview, tab_time, tab_txns, tab_drill, tab_subs, tab_taxonomy = st.tabs([
+    "Overview", "Spending Over Time", "Transactions", "Category Drill-Down", "Subscriptions", "Taxonomy"
 ])
 
 
@@ -404,7 +407,132 @@ with tab_drill:
         st.dataframe(display_cat, width="stretch", hide_index=True)
 
 
-# ── Tab 5: Taxonomy ────────────────────────────────────────────────────────────
+# ── Tab 5: Subscriptions ──────────────────────────────────────────────────────
+
+FREQ_MONTHLY = {"weekly": 52/12, "fortnightly": 26/12, "monthly": 1, "annual": 1/12}
+
+def _detect_subscriptions(df: pd.DataFrame, confirmed_names: set) -> list[dict]:
+    candidates = []
+    spend = df[(df["amount"] < 0) & df["merchant_name"].notna() & (df["skipped"] != True)].copy()
+    for merchant, group in spend.groupby("merchant_name"):
+        if merchant in confirmed_names:
+            continue
+        dates = group["created_at"].sort_values()
+        if len(dates) < 2:
+            continue
+        gaps = dates.diff().dropna().dt.days.tolist()
+        if not gaps:
+            continue
+        mean_gap = sum(gaps) / len(gaps)
+        std_gap = pd.Series(gaps).std()
+        cv = std_gap / mean_gap if mean_gap > 0 else 999
+        for freq, target, tolerance in [
+            ("weekly", 7, 2), ("fortnightly", 14, 3),
+            ("monthly", 30, 6), ("annual", 365, 30),
+        ]:
+            if abs(mean_gap - target) <= tolerance and cv < 0.4:
+                median_amount = abs(group["amount"].median())
+                candidates.append({
+                    "name": merchant,
+                    "amount": round(median_amount, 2),
+                    "frequency": freq,
+                    "occurrences": len(group),
+                    "monthly_cost": round(median_amount * FREQ_MONTHLY[freq], 2),
+                })
+                break
+    return sorted(candidates, key=lambda x: x["monthly_cost"], reverse=True)
+
+
+with tab_subs:
+    subs = get_subscriptions()
+    confirmed_names = {s["name"] for s in subs}
+
+    # Auto-inactive subscriptions with no matching transaction in last 2 months
+    two_months_ago = (pd.Timestamp.now() - pd.DateOffset(months=2))
+    for s in subs:
+        if not s["active"]:
+            continue
+        match_name = s["merchant_name"] or s["name"]
+        last_txn = df[
+            df["merchant_name"].str.contains(match_name, case=False, na=False) &
+            (df["amount"] < 0)
+        ]["created_at"].max()
+        if pd.isna(last_txn) or last_txn < two_months_ago:
+            toggle_subscription(s["id"])
+    subs = get_subscriptions()
+    confirmed_names = {s["name"] for s in subs}
+
+    # ── KPI cards ──────────────────────────────────────────────────────────────
+    active_subs = [s for s in subs if s["active"]]
+    monthly_cost = sum(s["amount"] * FREQ_MONTHLY[s["frequency"]] for s in active_subs)
+    annual_cost = monthly_cost * 12
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Active Subscriptions", len(active_subs))
+    col2.metric("Est. Monthly Cost", f"£{monthly_cost:.2f}")
+    col3.metric("Est. Annual Cost", f"£{annual_cost:.2f}")
+
+    st.divider()
+
+    # ── Add manually ───────────────────────────────────────────────────────────
+    st.subheader("Add Subscription")
+    known_merchants = sorted(df["merchant_name"].dropna().unique().tolist())
+    with st.form("add_sub_form"):
+        c1, c2 = st.columns([2, 2])
+        sub_name = c1.text_input("Display Name", placeholder="e.g. Netflix")
+        sub_merchant = c2.selectbox("Merchant Name (from transactions)", [""] + known_merchants)
+        c3, c4, c5 = st.columns([1, 1, 1])
+        sub_amount = c3.number_input("Amount (£)", min_value=0.01, step=0.01, format="%.2f")
+        sub_freq = c4.selectbox("Frequency", ["monthly", "weekly", "fortnightly", "annual"])
+        c5.markdown("<br>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("Add", type="primary", use_container_width=True)
+        if submitted and sub_name.strip():
+            upsert_subscription(sub_name.strip(), sub_amount, sub_freq, sub_merchant or None)
+            st.cache_data.clear()
+            st.rerun()
+
+    # ── Confirmed subscriptions ────────────────────────────────────────────────
+    if subs:
+        st.subheader("Your Subscriptions")
+        for s in subs:
+            mc = s["amount"] * FREQ_MONTHLY[s["frequency"]]
+            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+            col1.markdown(f"**{s['name']}**")
+            col2.markdown(f"£{s['amount']:.2f} / {s['frequency']}")
+            col3.markdown(f"~£{mc:.2f}/mo")
+            label = "Disable" if s["active"] else "Enable"
+            if col4.button(label, key=f"toggle_{s['id']}"):
+                toggle_subscription(s["id"])
+                st.cache_data.clear()
+                st.rerun()
+            if col5.button("✕", key=f"del_{s['id']}"):
+                delete_subscription(s["id"])
+                st.cache_data.clear()
+                st.rerun()
+            if not s["active"]:
+                st.caption("⏸ Inactive")
+
+    st.divider()
+
+    # ── Detected candidates ────────────────────────────────────────────────────
+    st.subheader("Suggested Subscriptions")
+    st.caption("Detected from recurring transactions — click Add to confirm.")
+    candidates = _detect_subscriptions(df, confirmed_names)
+    if candidates:
+        for c in candidates:
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            col1.markdown(f"**{c['name']}**  <span style='color:#a1a1aa;font-size:0.8em'>{c['occurrences']} transactions</span>", unsafe_allow_html=True)
+            col2.markdown(f"£{c['amount']:.2f} / {c['frequency']}")
+            col3.markdown(f"~£{c['monthly_cost']:.2f}/mo")
+            if col4.button("+ Add", key=f"add_{c['name']}"):
+                upsert_subscription(c["name"], c["amount"], c["frequency"], c["name"])
+                st.cache_data.clear()
+                st.rerun()
+    else:
+        st.info("No recurring patterns detected yet — more transaction history will improve detection.")
+
+
+# ── Tab 6: Taxonomy ────────────────────────────────────────────────────────────
 
 with tab_taxonomy:
     st.caption("Rename labels by editing the Name cell. Add rows to create new ones. Renames cascade to all transactions automatically.")

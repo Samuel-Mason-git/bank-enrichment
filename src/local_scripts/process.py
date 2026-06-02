@@ -8,6 +8,7 @@ import requests
 
 from database_functions import init_db, write_to_db
 from llm_labelling import run as run_classifier
+from monthly_summary import run as run_monthly_summary
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -79,3 +80,4 @@ if __name__ == "__main__":
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
 
     run_classifier()
+    run_monthly_summary()
