@@ -193,30 +193,26 @@ Then fill in at minimum `LOCAL_API_KEY`, `SERVER_URL`, and `DB_PATH` (see the ta
 
 ### 4. Run the Scripts
 
-**Step 1 — Pull from server:**
+**Run the pipeline:**
 ```bash
 poetry run python src/local_scripts/process.py
 ```
 
-On first run this will:
-1. Create the local database file at `DB_PATH`
+This single command does everything in sequence:
+1. Create the local database file at `DB_PATH` (first run only)
 2. Create all tables (transactions, parent_categories, subcategories)
 3. Fetch all enriched transactions from the server
 4. Write them to the local database
-5. Mark them as processed on the server (removing them from the queue)
+5. Mark them as processed on the server
+6. Run the LLM classifier — assigns parent categories and subcategories to any unclassified transactions using Claude
 
-A log file is created automatically alongside the database file (same name, `.log` extension).
+Two log files are created automatically alongside the database:
+- `bank_enrichment.log` — pull and processing log
+- `llm_classifier.log` — LLM classification log
 
-**Step 2 — Classify with LLM:**
-```bash
-poetry run python src/local_scripts/llm_labelling.py
-```
+`llm_labelling.py` can also be run standalone at any time if you want to re-classify without pulling new transactions.
 
-This classifies any unclassified transactions using Claude (Sonnet). On first run it builds the taxonomy from scratch — parent categories and subcategories are created automatically and grow over time. Subsequent runs only process new unclassified rows and exit immediately if everything is already classified.
-
-A separate log file (`llm_classifier.log`) is written alongside the database.
-
-### 5. Schedule Both Tasks
+### 5. Schedule the Task
 
 First, get the path to the Poetry Python executable:
 ```powershell
@@ -225,11 +221,8 @@ poetry env info --executable
 
 **Windows — Task Scheduler:**
 
-Create two tasks — one for each script. The classifier should run a few minutes after the processor so there is always something to classify.
-
-**Task 1 — Processor:**
 1. Open **Task Scheduler** → **Create Basic Task**
-2. Name it `Bank Enrichment Process` → Next
+2. Name it `Bank Enrichment` → Next
 3. Trigger: **Daily** → set your preferred time (e.g. 08:00) → Next
 4. Action: **Start a program** → Next
 5. **Program/script**: paste the full path from `poetry env info --executable`
@@ -237,26 +230,15 @@ Create two tasks — one for each script. The classifier should run a few minute
 7. **Start in**: your project root (e.g. `C:\Users\you\Projects\bank-enrichment`)
 8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not**
 
-**Task 2 — LLM Classifier:**
-1. **Create Basic Task**
-2. Name it `Bank Enrichment Classify` → Next
-3. Trigger: **Daily** → set 5–10 minutes after the processor (e.g. 08:10) → Next
-4. Action: **Start a program** → Next
-5. **Program/script**: same Poetry Python path as above
-6. **Arguments**: `src\local_scripts\llm_labelling.py`
-7. **Start in**: same project root
-8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not**
-
-Both scripts are safe to re-run manually at any time.
+The script is safe to re-run manually at any time.
 
 **Mac/Linux — cron:**
 ```bash
 crontab -e
 ```
-Add two lines (adjust paths and times as needed):
+Add one line (adjust path and time as needed):
 ```
-0 8  * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
-10 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/llm_labelling.py
+0 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
 ```
 
 ### 6. View the Dashboard

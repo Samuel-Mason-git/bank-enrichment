@@ -46,7 +46,7 @@ context sentences tell it exactly what each transaction was.
 5. You reply with one sentence of context — or tap Skip to dismiss
 6. Enrichment stored alongside the raw transaction in the queue
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-8. Daily local script pulls enriched transactions from the server into a local DuckDB database — processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
+8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
 10. Local Streamlit dashboard lets you explore your spending, view charts, and correct labels
 

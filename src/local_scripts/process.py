@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import requests
 
 from database_functions import init_db, write_to_db
+from llm_labelling import run as run_classifier
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -76,3 +77,5 @@ if __name__ == "__main__":
             log.error(f"Processing failed: {e}", exc_info=True)
 
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
+
+    run_classifier()

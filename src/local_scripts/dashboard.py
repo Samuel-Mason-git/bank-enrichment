@@ -91,14 +91,29 @@ else:
     min_date = date.today() - timedelta(days=365)
     max_date = date.today()
 
+today = date.today()
+presets = {
+    "All time":   (min_date, max_date),
+    "YTD":        (date(today.year, 1, 1), today),
+    "12 months":  (today - timedelta(days=365), today),
+    "6 months":   (today - timedelta(days=183), today),
+    "3 months":   (today - timedelta(days=91), today),
+    "This month": (today.replace(day=1), today),
+}
+
+preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=True, index=0)
+preset_from, preset_to = presets[preset]
+preset_from = max(preset_from, min_date)
+preset_to = min(preset_to, max_date)
+
 date_range = st.sidebar.date_input(
-    "Date range",
-    value=(min_date, max_date),
+    "Custom Date Range",
+    value=(preset_from, preset_to),
     min_value=min_date,
     max_value=max_date,
 )
-date_from = date_range[0] if len(date_range) > 0 else min_date
-date_to = date_range[1] if len(date_range) > 1 else max_date
+date_from = date_range[0] if len(date_range) > 0 else preset_from
+date_to = date_range[1] if len(date_range) > 1 else preset_to
 
 selected_parents = st.sidebar.multiselect("Parent category", all_parents)
 

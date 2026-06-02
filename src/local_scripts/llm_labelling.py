@@ -225,7 +225,7 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def run():
     run_start = time.time()
     log.info("--- LLM Classifier run started ---")
 
@@ -337,3 +337,6 @@ if __name__ == "__main__":
                 log.warning(f"  No classification for {txn_id} — skipping")
 
     log.info(f"--- Run complete: {total_classified}/{len(unclassified)} classified in {time.time() - run_start:.2f}s ---")
+
+if __name__ == "__main__":
+    run()
