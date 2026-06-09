@@ -40,6 +40,83 @@ def init_db(read_only: bool = False) -> None:
             statement = statement.strip()
             if statement:
                 _con.execute(statement)
+        _seed_taxonomy()
+
+
+_DEFAULT_TAXONOMY = {
+    "Bills & Utilities": [
+        "Council Tax", "Electricity", "Gas", "Insurance", "Internet",
+        "Mobile Phone", "Rent", "Water",
+    ],
+    "Career & Learning": [
+        "Books", "Certifications", "Online Learning",
+        "Professional Memberships", "Software Tools",
+    ],
+    "Entertainment": [
+        "Cinema", "Events", "Hobbies", "Streaming", "Video Games",
+    ],
+    "Food & Drink": [
+        "Bars & Pubs", "Coffee Shops", "Groceries", "Lunches Out",
+        "Restaurants", "Snacks", "Soft Drinks", "Takeaway",
+    ],
+    "Health": [
+        "Dental", "GP / Medical", "Optical & Vision Care", "Pharmacy & Medication",
+    ],
+    "Holidays": [
+        "Accommodation", "Car Rental", "Holiday Drinks",
+        "Holiday Food", "Holiday Shopping", "Local Transport",
+    ],
+    "Income": [
+        "Dividends", "Gifts Received", "Interest", "Other Income",
+        "Property Income", "Refunds", "Salary",
+    ],
+    "Investments": [
+        "Cash ISA Contributions", "Crypto Purchases",
+        "General Investment Account Contributions", "Pension Contributions",
+        "Savings Deposits", "Stocks & Shares ISA Contributions",
+    ],
+    "Personal Care & Consumables": [
+        "Haircuts", "Personal Care & Hygiene", "Tobacco & Nicotine", "Toiletries",
+    ],
+    "Shopping": [
+        "Clothing", "Electronics", "General Retail", "Gifts",
+        "Home Goods", "Stationery & Office", "Technology",
+    ],
+    "Subscriptions & Software": [
+        "AI Tools", "Cloud Storage", "News & Publications", "Streaming",
+    ],
+    "Transfers": [
+        "Inbound Transfer", "Outbound Transfer",
+    ],
+    "Transport": [
+        "Car Insurance", "Car Maintenance", "Fuel", "Parking",
+        "Public Transport", "Taxi & Rideshare", "Vehicle Tax",
+    ],
+}
+
+
+def _seed_taxonomy() -> None:
+    """Insert default taxonomy on first run — skips any entries that already exist."""
+    con = _con
+    existing_parents = {r[0] for r in con.execute("SELECT name FROM parent_categories").fetchall()}
+    for parent_name, subs in _DEFAULT_TAXONOMY.items():
+        if parent_name not in existing_parents:
+            next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories").fetchone()[0]
+            con.execute(
+                "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, NOW())",
+                [next_id, parent_name],
+            )
+        parent_id = con.execute("SELECT id FROM parent_categories WHERE name = ?", [parent_name]).fetchone()[0]
+        existing_subs = {r[0] for r in con.execute(
+            "SELECT name FROM subcategories WHERE parent_id = ?", [parent_id]
+        ).fetchall()}
+        for sub_name in subs:
+            if sub_name not in existing_subs:
+                next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories").fetchone()[0]
+                con.execute(
+                    "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, NOW())",
+                    [next_id, sub_name, parent_id],
+                )
 
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────

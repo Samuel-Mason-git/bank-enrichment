@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -26,8 +27,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2),
-        logging.StreamHandler(),
+        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2, encoding="utf-8"),
+        logging.StreamHandler(stream=open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)),
     ]
 )
 log = logging.getLogger(__name__)
@@ -59,17 +60,19 @@ def _pass0_prompt(transactions: list[dict], subcategories: list[dict]) -> str:
     txn_lines = "\n".join(
         f"{i+1}. {_format_transaction(t)}" for i, t in enumerate(transactions)
     )
-    return f"""You are classifying personal bank transactions. Your job is to check whether each transaction clearly matches an existing subcategory.
+    return f"""You are classifying personal bank transactions. Your job is to check whether each transaction is an unambiguous, high-confidence match for an existing subcategory.
 
 Existing subcategories (with their parent category):
 {sub_lines}
 
 Instructions:
-- For each transaction, return the best matching subcategory and its parent — BUT ONLY if you are confident it is the right match.
-- If the transaction does not clearly fit any existing subcategory, return null for both fields.
-- Do not force a match. It is better to return null than to assign the wrong category.
+- Return a match ONLY if you are highly confident — the transaction clearly and obviously belongs to that subcategory with no reasonable alternative.
+- If there is any doubt, any ambiguity, or any other subcategory that could plausibly fit, return null. It is far better to leave a transaction unmatched than to assign it incorrectly.
+- Think carefully about overlapping subcategories — pick the most specific and accurate fit, not just the first plausible one.
+- A transaction with a context like "weekly shop" clearly matches "Supermarkets". A transaction with a vague description and no context should return null.
 - Respond ONLY with valid JSON: an array of objects with "id", "category", and "subcategory" keys.
-- Use null (not a string) when there is no confident match.
+- Use null (not a string) when there is no high-confidence match.
+- Output ONLY the raw JSON array. No analysis, no reasoning, no markdown. Just the JSON.
 - Example: [{{"id": "tx_abc", "category": "Consumables", "subcategory": "Tobacco & Nicotine"}}, {{"id": "tx_xyz", "category": null, "subcategory": null}}]
 
 Transactions:
@@ -93,12 +96,14 @@ def _pass1_prompt(transactions: list[dict], parents: list[dict]) -> str:
 
 {existing}
 Instructions:
-- Assign each transaction to the most appropriate parent category.
-- Reuse existing categories wherever they fit — only create a new one if truly needed.
-- Categories should be broad (e.g. "Food & Groceries", "Transport", "Eating Out", "Health", "Shopping", "Bills & Utilities", "Holidays & Travel", "Entertainment", "Income", "Transfers").
-- Use the human context field heavily — it tells you exactly what the transaction was.
-- IMPORTANT: If the user context mentions "holiday" or the transaction clearly occurred during a holiday trip, ALWAYS classify it as "Holidays & Travel" — even if the spend was food, groceries, transport, or shopping. All holiday spending belongs together under one parent.
-- Respond ONLY with valid JSON: an array of objects with "id" and "category" keys.
+- Assign each transaction to the single most appropriate parent category.
+- Reuse existing categories wherever they genuinely fit — only create a new one if no existing category is a good match.
+- Think carefully about overlap between categories. For example, a train journey could be Transport or Holidays & Travel — use the context to decide which is most accurate, not just the most obvious surface label.
+- "Holidays & Travel" should ONLY be used when the context explicitly states the transaction is part of a holiday or trip away. A flight, hotel, or Airbnb with no context does not automatically qualify — but context saying "holiday in Spain" or "weekend trip to Amsterdam" does. Regular commuting, local travel, and day-to-day transport belong in Transport.
+- Use the human context field as the primary signal — it tells you what the transaction actually was.
+- Prefer precision over speed: if a transaction could reasonably fit two categories, pick the one that best reflects its true purpose based on all available information.
+- You may create a new parent category if none of the existing ones are a good fit, but exhaust existing options first.
+- Output ONLY the raw JSON array. No analysis, no reasoning, no markdown. Just the JSON.
 - Example: [{{"id": "tx_abc", "category": "Eating Out"}}, ...]
 
 Transactions:
@@ -126,11 +131,13 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
 
 {existing}
 Instructions:
-- Assign each transaction to the most appropriate subcategory within "{parent_name}".
-- Reuse existing subcategories wherever they fit.
-- Keep subcategories specific but not overly granular (e.g. under "Holidays & Travel": "Accommodation", "Car Rental", "Holiday Food", "Holiday Drinks", "Holiday Shopping", "Local Transport").
-- Subcategory names must NOT be the same as any parent category name. Forbidden names: {forbidden}.
-- Respond ONLY with valid JSON: an array of objects with "id" and "subcategory" keys.
+- Assign each transaction to the single most appropriate subcategory within "{parent_name}".
+- Reuse existing subcategories wherever they genuinely fit — only create a new one when no existing subcategory accurately describes this transaction.
+- Think carefully about overlap between existing subcategories. If two subcategories could plausibly apply, pick the one that is the best and most specific fit given all available information.
+- Keep subcategories specific but not overly granular — they should be meaningful groupings, not one-off labels.
+- New subcategory names should be clear, concise, and consistent in style with existing ones.
+- Subcategory names must NOT be identical to any parent category name. Forbidden names: {forbidden}.
+- Output ONLY the raw JSON array. No analysis, no reasoning, no markdown. Just the JSON.
 - Example: [{{"id": "tx_abc", "subcategory": "Accommodation"}}, ...]
 
 Transactions:

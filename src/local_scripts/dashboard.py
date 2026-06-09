@@ -104,19 +104,26 @@ presets = {
     "This month": (today.replace(day=1), today),
 }
 
-preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=True, index=0)
+preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=True, key="date_preset")
+
+# When the preset changes, push the new dates into the date_input's session state key
+# so it actually updates (date_input ignores value= after first render)
 preset_from, preset_to = presets[preset]
 preset_from = max(preset_from, min_date)
 preset_to = min(preset_to, max_date)
 
+if st.session_state.get("_last_preset") != preset:
+    st.session_state["_last_preset"] = preset
+    st.session_state["date_range"] = (preset_from, preset_to)
+
 date_range = st.sidebar.date_input(
     "Custom Date Range",
-    value=(preset_from, preset_to),
+    key="date_range",
     min_value=min_date,
     max_value=max_date,
 )
-date_from = date_range[0] if len(date_range) > 0 else preset_from
-date_to = date_range[1] if len(date_range) > 1 else preset_to
+date_from = date_range[0] if isinstance(date_range, (list, tuple)) and len(date_range) > 0 else preset_from
+date_to = date_range[1] if isinstance(date_range, (list, tuple)) and len(date_range) > 1 else preset_to
 
 selected_parents = st.sidebar.multiselect("Parent category", all_parents)
 
@@ -276,10 +283,12 @@ with tab_txns:
                          "user_context", "llm_category", "llm_subcategory"]].copy()
     edit_df["created_at"] = edit_df["created_at"].dt.strftime("%Y-%m-%d")
     edit_df["amount"] = edit_df["amount"].map("£{:.2f}".format)
+    edit_df["clear"] = False
     edit_df = edit_df.rename(columns={
         "created_at": "Date", "amount": "Amount", "merchant_name": "Merchant",
         "description": "Description", "user_context": "Context",
         "llm_category": "Category", "llm_subcategory": "Subcategory",
+        "clear": "Clear",
     }).reset_index(drop=True)
 
     edited = st.data_editor(
@@ -293,39 +302,59 @@ with tab_txns:
             "Context": st.column_config.Column(disabled=True),
             "Category": st.column_config.TextColumn("Category", width="medium"),
             "Subcategory": st.column_config.TextColumn("Subcategory", width="medium"),
+            "Clear": st.column_config.CheckboxColumn("Clear", width="small"),
         },
         width="stretch",
         hide_index=True,
         num_rows="fixed",
     )
 
-    if st.button("Save changes", type="primary"):
-        changes = 0
-        for i in range(len(edit_df)):
-            orig_cat = edit_df.at[i, "Category"]
-            orig_sub = edit_df.at[i, "Subcategory"]
-            new_cat = edited.at[i, "Category"]
-            new_sub = edited.at[i, "Subcategory"]
-            txn_id = edit_df.at[i, "id"]
-            if orig_cat != new_cat or orig_sub != new_sub:
-                if new_cat:
-                    parent_id = upsert_parent(new_cat)
-                    if new_sub:
-                        upsert_subcategory(new_sub, parent_id)
-                update_classification(
-                    transaction_id=txn_id,
-                    category=new_cat or None,
-                    subcategory=new_sub or None,
-                    confidence=None,
-                    model="manual",
+    btn_col1, btn_col2 = st.columns([1, 1])
+    with btn_col1:
+        if st.button("Save changes", type="primary"):
+            changes = 0
+            for i in range(len(edit_df)):
+                orig_cat = edit_df.at[i, "Category"]
+                orig_sub = edit_df.at[i, "Subcategory"]
+                new_cat = edited.at[i, "Category"]
+                new_sub = edited.at[i, "Subcategory"]
+                txn_id = edit_df.at[i, "id"]
+                if orig_cat != new_cat or orig_sub != new_sub:
+                    if new_cat:
+                        parent_id = upsert_parent(new_cat)
+                        if new_sub:
+                            upsert_subcategory(new_sub, parent_id)
+                    update_classification(
+                        transaction_id=txn_id,
+                        category=new_cat or None,
+                        subcategory=new_sub or None,
+                        confidence=None,
+                        model="manual",
+                    )
+                    changes += 1
+            if changes:
+                st.success(f"Saved {changes} change(s).")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("No changes detected.")
+    with btn_col2:
+        if st.button("Clear selected labels"):
+            to_clear = [edit_df.at[i, "id"] for i in range(len(edit_df)) if edited.at[i, "Clear"]]
+            if to_clear:
+                placeholders = ", ".join("?" * len(to_clear))
+                con.execute(
+                    f"""UPDATE transactions
+                        SET llm_category = NULL, llm_subcategory = NULL,
+                            classified_at = NULL, llm_model = NULL, llm_confidence = NULL
+                        WHERE id IN ({placeholders})""",
+                    to_clear,
                 )
-                changes += 1
-        if changes:
-            st.success(f"Saved {changes} change(s).")
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.info("No changes detected.")
+                st.success(f"Cleared labels for {len(to_clear)} transaction(s).")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("No rows checked.")
 
 
 # ── Tab 4: Category Drill-Down ─────────────────────────────────────────────────
@@ -535,145 +564,326 @@ with tab_subs:
 # ── Tab 6: Taxonomy ────────────────────────────────────────────────────────────
 
 with tab_taxonomy:
-    st.caption("Rename labels by editing the Name cell. Add rows to create new ones. Renames cascade to all transactions automatically.")
+    # Session state for right-panel mode
+    for _k in ("tax_edit_sub", "tax_view_sub", "tax_edit_parent", "tax_del_parent", "tax_wipe_parent"):
+        if _k not in st.session_state:
+            st.session_state[_k] = None
 
-    # ── Parent categories ──────────────────────────────────────────────────────
-    st.subheader("Parent Categories")
-
-    parents_raw = _query("""
-        SELECT p.id, p.name, COUNT(t.id) AS transaction_count
+    # Load all parents (used by both columns)
+    tax_parents = _query("""
+        SELECT p.id, p.name,
+               COUNT(DISTINCT s.id) AS sub_count,
+               COUNT(DISTINCT t.id) AS txn_count
         FROM parent_categories p
+        LEFT JOIN subcategories s ON s.parent_id = p.id
         LEFT JOIN transactions t ON t.llm_category = p.name
         GROUP BY p.id, p.name
-        ORDER BY transaction_count DESC
+        ORDER BY txn_count DESC
     """)
-    parents_df = pd.DataFrame(parents_raw) if parents_raw else pd.DataFrame(columns=["id", "name", "transaction_count"])
-    parents_df = parents_df.rename(columns={"name": "Name", "transaction_count": "Transactions"})
-    parents_display = parents_df[["Name", "Transactions"]].reset_index(drop=True)
+    tax_parent_names = [p["name"] for p in tax_parents]
 
-    edited_parents = st.data_editor(
-        parents_display,
-        column_config={
-            "Name": st.column_config.TextColumn("Name", width="large"),
-            "Transactions": st.column_config.Column("Transactions", disabled=True, width="small"),
-        },
-        width="stretch",
-        hide_index=True,
-        num_rows="dynamic",
-    )
+    tax_left, tax_right = st.columns([2, 3])
 
-    if st.button("Save parent categories", type="primary"):
-        changes = 0
-        # Deletions handled separately below
-        # Renames
-        for i in range(min(len(parents_df), len(edited_parents))):
-            old_name = parents_df.at[i, "Name"]
-            new_name = str(edited_parents.at[i, "Name"] or "").strip()
-            row_id = parents_df.at[i, "id"]
-            if old_name and new_name and old_name != new_name:
-                con.execute("UPDATE parent_categories SET name = ? WHERE id = ?", [new_name, row_id])
-                con.execute("UPDATE transactions SET llm_category = ? WHERE llm_category = ?", [new_name, old_name])
-                changes += 1
-        # New rows
-        for i in range(len(parents_df), len(edited_parents)):
-            new_name = str(edited_parents.at[i, "Name"] or "").strip()
-            if new_name:
-                upsert_parent(new_name)
-                changes += 1
-        if changes:
-            st.success(f"Saved {changes} change(s).")
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.info("No changes detected.")
+    # ── Left: tree of parents + subcategories ──────────────────────────────────
+    with tax_left:
+        st.subheader("Categories")
 
-    if parents_df is not None and not parents_df.empty:
-        with st.expander("Delete a parent category"):
-            del_parent = st.selectbox("Select category to delete", parents_df["Name"].tolist(), key="del_parent")
-            st.caption("⚠️ This will also delete all its subcategories and clear the label from all transactions.")
-            if st.button("Delete", type="primary", key="del_parent_btn"):
-                row = parents_df[parents_df["Name"] == del_parent].iloc[0]
-                con.execute("DELETE FROM subcategories WHERE parent_id = ?", [int(row["id"])])
-                con.execute("DELETE FROM parent_categories WHERE id = ?", [int(row["id"])])
-                con.execute("UPDATE transactions SET llm_category = NULL, llm_subcategory = NULL WHERE llm_category = ?", [del_parent])
+        with st.form("tax_add_parent"):
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                new_pname_input = st.text_input("new_parent", placeholder="New parent category", label_visibility="collapsed")
+            with c2:
+                add_p_btn = st.form_submit_button("+ Add", use_container_width=True)
+            if add_p_btn and new_pname_input.strip():
+                upsert_parent(new_pname_input.strip())
                 st.cache_data.clear()
                 st.rerun()
 
-    st.divider()
+        st.divider()
 
-    # ── Subcategories ──────────────────────────────────────────────────────────
-    st.subheader("Subcategories")
+        for parent in tax_parents:
+            pid = parent["id"]
+            pname = parent["name"]
 
-    subs_raw = _query("""
-        SELECT s.id, s.name, s.parent_id, p.name AS parent_name,
-               COUNT(t.id) AS transaction_count
-        FROM subcategories s
-        JOIN parent_categories p ON p.id = s.parent_id
-        LEFT JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = p.name
-        GROUP BY s.id, s.name, s.parent_id, p.name
-        ORDER BY p.name, transaction_count DESC
-    """)
-    subs_df = pd.DataFrame(subs_raw) if subs_raw else pd.DataFrame(columns=["id", "name", "parent_id", "parent_name", "transaction_count"])
-    subs_df = subs_df.rename(columns={"name": "Name", "parent_name": "Parent", "transaction_count": "Transactions"})
-    subs_display = subs_df[["Name", "Parent", "Transactions"]].reset_index(drop=True)
+            subs_for_parent = _query("""
+                SELECT s.id, s.name, COUNT(t.id) AS txn_count
+                FROM subcategories s
+                LEFT JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = ?
+                WHERE s.parent_id = ?
+                GROUP BY s.id, s.name
+                ORDER BY txn_count DESC
+            """, [pname, pid])
 
-    current_parent_names = sorted(edited_parents["Name"].dropna().tolist())
+            active_sub_ids = [
+                s["id"] for s in subs_for_parent
+                if s["id"] in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub)
+            ]
+            is_active_parent = pid in (st.session_state.tax_edit_parent, st.session_state.tax_del_parent, st.session_state.tax_wipe_parent)
 
-    edited_subs = st.data_editor(
-        subs_display,
-        column_config={
-            "Name": st.column_config.TextColumn("Name", width="large"),
-            "Parent": st.column_config.SelectboxColumn("Parent", options=current_parent_names, width="medium"),
-            "Transactions": st.column_config.Column("Transactions", disabled=True, width="small"),
-        },
-        width="stretch",
-        hide_index=True,
-        num_rows="dynamic",
-    )
+            label = f"**{pname}** — {parent['txn_count']} txns · {parent['sub_count']} subcats"
+            with st.expander(label, expanded=bool(active_sub_ids or is_active_parent)):
 
-    if st.button("Save subcategories", type="primary"):
-        changes = 0
-        # Deletions handled separately below
-        # Renames
-        for i in range(min(len(subs_df), len(edited_subs))):
-            old_name = subs_df.at[i, "Name"]
-            new_name = str(edited_subs.at[i, "Name"] or "").strip()
-            old_parent = subs_df.at[i, "Parent"]
-            row_id = subs_df.at[i, "id"]
-            if old_name and new_name and old_name != new_name:
-                con.execute("UPDATE subcategories SET name = ? WHERE id = ?", [new_name, row_id])
-                con.execute(
-                    "UPDATE transactions SET llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                    [new_name, old_name, old_parent],
+                # Parent action buttons
+                pb1, pb2, pb3 = st.columns(3)
+                with pb1:
+                    if st.button("✏️ Rename", key=f"ep_{pid}", use_container_width=True):
+                        st.session_state.tax_edit_parent = pid
+                        st.session_state.tax_del_parent = None
+                        st.session_state.tax_wipe_parent = None
+                        st.session_state.tax_edit_sub = None
+                        st.session_state.tax_view_sub = None
+                with pb2:
+                    if st.button("🧹 Wipe labels", key=f"wp_{pid}", use_container_width=True):
+                        st.session_state.tax_wipe_parent = pid
+                        st.session_state.tax_edit_parent = None
+                        st.session_state.tax_del_parent = None
+                        st.session_state.tax_edit_sub = None
+                        st.session_state.tax_view_sub = None
+                with pb3:
+                    if st.button("🗑️ Delete", key=f"dp_{pid}", use_container_width=True):
+                        st.session_state.tax_del_parent = pid
+                        st.session_state.tax_edit_parent = None
+                        st.session_state.tax_wipe_parent = None
+                        st.session_state.tax_edit_sub = None
+                        st.session_state.tax_view_sub = None
+
+                if subs_for_parent:
+                    st.caption("Subcategories")
+                    for sub in subs_for_parent:
+                        sid = sub["id"]
+                        is_sel = sid in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub)
+                        sc1, sc2, sc3, sc4 = st.columns([4, 1, 1, 1])
+                        with sc1:
+                            label_text = f"**{sub['name']}**" if is_sel else sub["name"]
+                            st.markdown(f"{label_text} *({sub['txn_count']})*")
+                        with sc2:
+                            if st.button("✏️", key=f"es_{sid}", help="Edit name/parent"):
+                                st.session_state.tax_edit_sub = sid
+                                st.session_state.tax_view_sub = None
+                                st.session_state.tax_edit_parent = None
+                                st.session_state.tax_del_parent = None
+                        with sc3:
+                            if st.button("🔗", key=f"vs_{sid}", help="View transactions"):
+                                st.session_state.tax_view_sub = sid
+                                st.session_state.tax_edit_sub = None
+                                st.session_state.tax_edit_parent = None
+                                st.session_state.tax_del_parent = None
+                        with sc4:
+                            if st.button("🗑️", key=f"ds_{sid}", help="Delete subcategory"):
+                                con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
+                                con.execute(
+                                    "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
+                                    [sub["name"], pname],
+                                )
+                                if st.session_state.tax_edit_sub == sid:
+                                    st.session_state.tax_edit_sub = None
+                                if st.session_state.tax_view_sub == sid:
+                                    st.session_state.tax_view_sub = None
+                                st.cache_data.clear()
+                                st.rerun()
+
+                # Add subcategory form inside this parent
+                with st.form(f"add_sub_{pid}"):
+                    new_sub_input = st.text_input(
+                        "new_sub", placeholder="New subcategory name",
+                        label_visibility="collapsed", key=f"nsi_{pid}"
+                    )
+                    if st.form_submit_button("+ Add subcategory", use_container_width=True):
+                        if new_sub_input.strip():
+                            upsert_subcategory(new_sub_input.strip(), pid)
+                            st.cache_data.clear()
+                            st.rerun()
+
+    # ── Right: action panel ────────────────────────────────────────────────────
+    with tax_right:
+
+        # Rename parent
+        if st.session_state.tax_edit_parent:
+            pid = st.session_state.tax_edit_parent
+            parent_row = next((p for p in tax_parents if p["id"] == pid), None)
+            if parent_row:
+                st.subheader(f"Rename: {parent_row['name']}")
+                with st.form("edit_parent_form"):
+                    new_pname = st.text_input("New name", value=parent_row["name"])
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        save = st.form_submit_button("Save", type="primary")
+                    with c2:
+                        cancel = st.form_submit_button("Cancel")
+                    if save and new_pname.strip():
+                        if new_pname.strip() != parent_row["name"]:
+                            # DuckDB FK constraint fires on any UPDATE to a referenced parent row,
+                            # even non-key columns. Workaround: insert new name, re-point subs, delete old.
+                            new_pid = upsert_parent(new_pname.strip())
+                            con.execute("UPDATE subcategories SET parent_id = ? WHERE parent_id = ?", [new_pid, pid])
+                            con.execute("UPDATE transactions SET llm_category = ? WHERE llm_category = ?", [new_pname.strip(), parent_row["name"]])
+                            con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
+                        st.session_state.tax_edit_parent = None
+                        st.cache_data.clear()
+                        st.rerun()
+                    if cancel:
+                        st.session_state.tax_edit_parent = None
+                        st.rerun()
+
+        # Delete parent confirmation
+        elif st.session_state.tax_del_parent:
+            pid = st.session_state.tax_del_parent
+            parent_row = next((p for p in tax_parents if p["id"] == pid), None)
+            if parent_row:
+                st.subheader(f"Delete: {parent_row['name']}")
+                st.warning(
+                    f"This will permanently delete **{parent_row['name']}**, all its subcategories, "
+                    f"and clear labels from **{parent_row['txn_count']} transaction(s)**."
                 )
-                changes += 1
-        # New rows
-        for i in range(len(subs_df), len(edited_subs)):
-            new_name = str(edited_subs.at[i, "Name"] or "").strip()
-            new_parent = str(edited_subs.at[i, "Parent"] or "").strip()
-            if new_name and new_parent:
-                parent_id = upsert_parent(new_parent)
-                upsert_subcategory(new_name, parent_id)
-                changes += 1
-        if changes:
-            st.success(f"Saved {changes} change(s).")
-            st.cache_data.clear()
-            st.rerun()
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm delete", type="primary"):
+                        con.execute("DELETE FROM subcategories WHERE parent_id = ?", [pid])
+                        con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
+                        con.execute("UPDATE transactions SET llm_category = NULL, llm_subcategory = NULL WHERE llm_category = ?", [parent_row["name"]])
+                        st.session_state.tax_del_parent = None
+                        st.cache_data.clear()
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel"):
+                        st.session_state.tax_del_parent = None
+                        st.rerun()
+
+        # Wipe labels confirmation
+        elif st.session_state.tax_wipe_parent:
+            pid = st.session_state.tax_wipe_parent
+            parent_row = next((p for p in tax_parents if p["id"] == pid), None)
+            if parent_row:
+                st.subheader(f"Wipe labels: {parent_row['name']}")
+                st.warning(
+                    f"This will clear the LLM labels from **{parent_row['txn_count']} transaction(s)** "
+                    f"under **{parent_row['name']}**. The transactions and taxonomy structure are kept — "
+                    f"only the category assignments are removed so they can be re-classified."
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm wipe", type="primary"):
+                        con.execute(
+                            """UPDATE transactions
+                               SET llm_category = NULL, llm_subcategory = NULL,
+                                   classified_at = NULL, llm_model = NULL, llm_confidence = NULL
+                               WHERE llm_category = ?""",
+                            [parent_row["name"]],
+                        )
+                        st.session_state.tax_wipe_parent = None
+                        st.cache_data.clear()
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel"):
+                        st.session_state.tax_wipe_parent = None
+                        st.rerun()
+
+        # Edit subcategory
+        elif st.session_state.tax_edit_sub:
+            sid = st.session_state.tax_edit_sub
+            sub_rows = _query("""
+                SELECT s.id, s.name, s.parent_id, p.name AS parent_name
+                FROM subcategories s
+                JOIN parent_categories p ON p.id = s.parent_id
+                WHERE s.id = ?
+            """, [sid])
+            if sub_rows:
+                sub = sub_rows[0]
+                st.subheader(f"Edit: {sub['name']}")
+                with st.form("edit_sub_form"):
+                    new_sname = st.text_input("Name", value=sub["name"])
+                    cur_idx = tax_parent_names.index(sub["parent_name"]) if sub["parent_name"] in tax_parent_names else 0
+                    new_sparent = st.selectbox("Parent category", tax_parent_names, index=cur_idx)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        save = st.form_submit_button("Save", type="primary")
+                    with c2:
+                        cancel = st.form_submit_button("Cancel")
+                    if save:
+                        name_changed = new_sname.strip() and new_sname.strip() != sub["name"]
+                        parent_changed = new_sparent != sub["parent_name"]
+                        if name_changed:
+                            con.execute("UPDATE subcategories SET name = ? WHERE id = ?", [new_sname.strip(), sid])
+                            con.execute(
+                                "UPDATE transactions SET llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
+                                [new_sname.strip(), sub["name"], sub["parent_name"]],
+                            )
+                        if parent_changed:
+                            new_pid = upsert_parent(new_sparent)
+                            con.execute("UPDATE subcategories SET parent_id = ? WHERE id = ?", [new_pid, sid])
+                            effective = new_sname.strip() if name_changed else sub["name"]
+                            con.execute(
+                                "UPDATE transactions SET llm_category = ? WHERE llm_subcategory = ? AND llm_category = ?",
+                                [new_sparent, effective, sub["parent_name"]],
+                            )
+                        st.session_state.tax_edit_sub = None
+                        st.cache_data.clear()
+                        st.rerun()
+                    if cancel:
+                        st.session_state.tax_edit_sub = None
+                        st.rerun()
+
+        # View + reassign transactions
+        elif st.session_state.tax_view_sub:
+            sid = st.session_state.tax_view_sub
+            sub_rows = _query("""
+                SELECT s.id, s.name, s.parent_id, p.name AS parent_name
+                FROM subcategories s
+                JOIN parent_categories p ON p.id = s.parent_id
+                WHERE s.id = ?
+            """, [sid])
+            if sub_rows:
+                sub = sub_rows[0]
+                st.subheader(f"Transactions: {sub['name']}")
+                st.caption(f"Under {sub['parent_name']}")
+
+                reassign_raw = _query("""
+                    SELECT s.id, s.name, p.name AS parent_name
+                    FROM subcategories s
+                    JOIN parent_categories p ON p.id = s.parent_id
+                    WHERE s.id != ?
+                    ORDER BY p.name, s.name
+                """, [sid])
+                reassign_map = {f"{s['name']} ({s['parent_name']})": s for s in reassign_raw}
+
+                if reassign_map:
+                    with st.form("reassign_all_form"):
+                        target_key = st.selectbox("Move all transactions to:", list(reassign_map.keys()))
+                        if st.form_submit_button("Move all", type="secondary"):
+                            tgt = reassign_map[target_key]
+                            con.execute(
+                                "UPDATE transactions SET llm_category = ?, llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
+                                [tgt["parent_name"], tgt["name"], sub["name"], sub["parent_name"]],
+                            )
+                            st.session_state.tax_view_sub = None
+                            st.cache_data.clear()
+                            st.rerun()
+
+                st.divider()
+
+                txns = _query("""
+                    SELECT id, description, merchant_name, amount, created_at, user_context
+                    FROM transactions
+                    WHERE llm_subcategory = ? AND llm_category = ?
+                    ORDER BY created_at DESC
+                """, [sub["name"], sub["parent_name"]])
+
+                if txns:
+                    txns_df = pd.DataFrame(txns)
+                    txns_df["amount"] = txns_df["amount"].apply(lambda x: f"£{abs(float(x)):.2f}")
+                    txns_df["created_at"] = pd.to_datetime(txns_df["created_at"]).dt.strftime("%Y-%m-%d")
+                    txns_df = txns_df.rename(columns={
+                        "created_at": "Date", "merchant_name": "Merchant",
+                        "description": "Description", "amount": "Amount", "user_context": "Context",
+                    })
+                    st.dataframe(
+                        txns_df[["Date", "Merchant", "Description", "Amount", "Context"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(f"{len(txns)} transaction(s)")
+                else:
+                    st.info("No transactions assigned to this subcategory.")
+
         else:
-            st.info("No changes detected.")
-
-    if subs_df is not None and not subs_df.empty:
-        with st.expander("Delete a subcategory"):
-            sub_options = [f"{r['Name']} ({r['Parent']})" for _, r in subs_df.iterrows()]
-            del_sub = st.selectbox("Select subcategory to delete", sub_options, key="del_sub")
-            st.caption("⚠️ This will clear the subcategory label from all affected transactions.")
-            if st.button("Delete", type="primary", key="del_sub_btn"):
-                del_idx = sub_options.index(del_sub)
-                row = subs_df.iloc[del_idx]
-                con.execute("DELETE FROM subcategories WHERE id = ?", [int(row["id"])])
-                con.execute(
-                    "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
-                    [row["Name"], row["Parent"]],
-                )
-                st.cache_data.clear()
-                st.rerun()
+            st.info("Click ✏️ to edit, 🔗 to view transactions, or 🗑️ to delete a subcategory.")

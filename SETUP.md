@@ -201,10 +201,14 @@ poetry run python src/local_scripts/process.py
 This single command does everything in sequence:
 1. Create the local database file at `DB_PATH` (first run only)
 2. Create all tables (transactions, parent_categories, subcategories)
-3. Fetch all enriched transactions from the server
-4. Write them to the local database
-5. Mark them as processed on the server
-6. Run the LLM classifier — assigns parent categories and subcategories to any unclassified transactions using Claude
+3. Seed the default taxonomy — 13 parent categories and ~70 subcategories are inserted on first run (skipped if they already exist)
+4. Fetch all enriched transactions from the server
+5. Write them to the local database
+6. Mark them as processed on the server
+7. Run the LLM classifier — assigns parent categories and subcategories to any unclassified transactions using Claude
+8. Send any missing monthly summaries to Telegram
+
+The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Taxonomy tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
 Two log files are created automatically alongside the database:
 - `bank_enrichment.log` — pull and processing log
@@ -253,12 +257,26 @@ It opens in your browser automatically. Tabs:
 | Tab | Description |
 |-----|-------------|
 | Overview | KPI cards (spend, income, net, unclassified) + spend/income charts by category |
-| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net table |
-| Transactions | Full filterable/searchable table — edit labels inline, type new ones |
+| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net/transaction count table |
+| Transactions | Full filterable/searchable table — edit labels inline, check rows to clear their labels |
 | Category Drill-Down | Pick a parent category to see subcategory charts + transactions |
-| Taxonomy | View, rename, and add parent categories and subcategories |
+| Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, cost totals |
+| Taxonomy | Tree view of all categories. Add, rename, move, and delete subcategories. Click 🔗 on any subcategory to view its transactions and bulk-reassign them. Click 🧹 on a parent to wipe its labels so they re-classify on the next run. |
 
-Use the sidebar to filter by date range, category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
+Use the sidebar to filter by date range (quick presets or custom), category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
+
+### Customising Your Taxonomy
+
+The default taxonomy is seeded automatically but you own it entirely. From the **Taxonomy tab**:
+
+- **Rename** a parent or subcategory — all transaction labels update immediately
+- **Move** a subcategory to a different parent
+- **Add** new subcategories inside any parent, or add entirely new parent categories
+- **Delete** subcategories or whole parent categories (clears labels from affected transactions)
+- **Wipe labels** for a parent category — transactions keep their context but lose their LLM label, so they'll be re-classified on the next `process.py` run against your updated structure
+- **View transactions** per subcategory — see exactly what's in each bucket and bulk-reassign if needed
+
+If you want to start fresh with a completely different taxonomy, wipe all labels from every parent category, then delete the categories you don't want and add your own before re-running the classifier. Your context sentences are never touched — only the labels change.
 
 ### 7. Utility Scripts
 

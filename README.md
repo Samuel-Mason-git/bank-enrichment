@@ -126,17 +126,37 @@ consistent over time — a transaction classified as "Tobacco & Nicotine" once w
 always land there on future runs.
 
 **Pass 1 — Parent category:** For transactions that didn't match in Pass 0, Claude 
-assigns a broad parent category (e.g. Holidays & Travel, Eating Out, Food & Groceries). 
-If a transaction's context mentions a holiday, it is always grouped under 
-Holidays & Travel regardless of what was purchased — so all holiday spending stays together.
+assigns a broad parent category. It thinks carefully about overlapping categories 
+and picks the most accurate fit — for example, "Holidays" is only used when the 
+context explicitly mentions a holiday trip, not just any travel spend.
 
-**Pass 2 — Subcategory:** Within each parent, Claude assigns a specific subcategory 
-(e.g. Accommodation, Car Rental, Holiday Food), creating new ones only when genuinely needed.
+**Pass 2 — Subcategory:** Within each parent, Claude assigns a specific subcategory, 
+creating new ones only when none of the existing ones are an accurate fit.
 
-The taxonomy starts empty and grows over time. As it matures, most transactions will 
-match in Pass 0, making classification faster and more consistent. Because context is 
-stored separately from labels, you can wipe the taxonomy and re-run classification 
-at any point — with the same categories or entirely new ones.
+A default taxonomy is seeded on first run — 13 parent categories and ~70 subcategories 
+covering most common personal spending:
+
+| Parent | Example subcategories |
+|--------|----------------------|
+| Bills & Utilities | Rent, Electricity, Internet, Mobile Phone |
+| Food & Drink | Groceries, Restaurants, Takeaway, Coffee Shops |
+| Transport | Public Transport, Fuel, Taxi & Rideshare, Parking |
+| Shopping | Clothing, Electronics, Gifts, Home Goods |
+| Holidays | Accommodation, Holiday Food, Local Transport |
+| Entertainment | Streaming, Cinema, Events, Video Games |
+| Health | Pharmacy & Medication, Dental, GP / Medical |
+| Income | Salary, Refunds, Interest, Dividends |
+| Investments | Savings Deposits, Stocks & Shares ISA, Pension |
+| Subscriptions & Software | AI Tools, Cloud Storage, Streaming |
+| Personal Care & Consumables | Haircuts, Toiletries, Tobacco & Nicotine |
+| Career & Learning | Online Learning, Books, Certifications |
+| Transfers | Inbound Transfer, Outbound Transfer |
+
+This is a starting point, not a constraint. Everything can be changed from the **Taxonomy tab** 
+in the local dashboard — rename parents, add or delete subcategories, move subcategories 
+between parents, view which transactions sit under each label, and wipe labels per category 
+so the LLM re-classifies against your updated structure. Because context is stored separately 
+from labels, restructuring the taxonomy and re-running classification never loses any data.
 
 ## Local Dashboard
 
@@ -149,7 +169,7 @@ A Streamlit dashboard runs on your machine and reads directly from the local Duc
 | Transactions | Full filterable and searchable table — edit labels inline, type new ones |
 | Category Drill-Down | Pick any parent category to see subcategory breakdowns and transactions |
 | Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, monthly and annual cost totals |
-| Taxonomy | View, rename, delete, and add parent categories and subcategories |
+| Taxonomy | Tree view of all categories — add, rename, move, and delete. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification. |
 
 ## What You End Up With
 
