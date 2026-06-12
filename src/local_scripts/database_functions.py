@@ -40,6 +40,7 @@ def init_db(read_only: bool = False) -> None:
             statement = statement.strip()
             if statement:
                 _con.execute(statement)
+        _migrate()
         _seed_taxonomy()
 
 
@@ -93,6 +94,15 @@ _DEFAULT_TAXONOMY = {
         "Public Transport", "Taxi & Rideshare", "Vehicle Tax",
     ],
 }
+
+
+def _migrate() -> None:
+    """Additive schema migrations — safe to run on every startup."""
+    cols = {r[0] for r in _con.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'subscriptions'"
+    ).fetchall()}
+    if "merchant_name" not in cols:
+        _con.execute("ALTER TABLE subscriptions ADD COLUMN merchant_name VARCHAR(255)")
 
 
 def _seed_taxonomy() -> None:

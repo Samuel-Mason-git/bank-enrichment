@@ -24,7 +24,7 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
         return bool(re.search(match_value, str(field_value), re.IGNORECASE))
     if match_type == "amount_range":
         low, high = match_value.split("-")
-        return int(low) * 100 <= abs(int(field_value)) <= int(high) * 100
+        return round(float(low) * 100) <= abs(int(field_value)) <= round(float(high) * 100)
     if match_type == "amount_exact":
         return abs(int(field_value)) == round(float(match_value) * 100)
     return False

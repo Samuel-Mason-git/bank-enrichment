@@ -168,12 +168,45 @@ if search:
     )
     filtered = filtered[mask]
 
+# ── Previous period (same duration, immediately before) ────────────────────────
+
+_period_days = (date_to - date_from).days
+_prev_to = date_from - timedelta(days=1)
+_prev_from = _prev_to - timedelta(days=_period_days)
+
+prev_filtered = df[
+    (df["created_at"].dt.date >= _prev_from) &
+    (df["created_at"].dt.date <= _prev_to)
+].copy()
+if not show_skipped:
+    prev_filtered = prev_filtered[prev_filtered["skipped"] != True]
+if not show_unclassified:
+    prev_filtered = prev_filtered[prev_filtered["llm_category"].notna()]
+if selected_parents:
+    prev_filtered = prev_filtered[prev_filtered["llm_category"].isin(selected_parents)]
+if selected_subs:
+    prev_filtered = prev_filtered[prev_filtered["llm_subcategory"].isin(selected_subs)]
+if search:
+    _mask = (
+        prev_filtered["description"].str.contains(search, case=False, na=False)
+        | prev_filtered["merchant_name"].str.contains(search, case=False, na=False)
+        | prev_filtered["user_context"].str.contains(search, case=False, na=False)
+    )
+    prev_filtered = prev_filtered[_mask]
+
+
+def _pct_delta(current: float, previous: float) -> float | None:
+    if previous == 0:
+        return None
+    return round((current - previous) / abs(previous) * 100, 1)
+
+
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
 st.title("💳 Bank Enrichment")
 
-tab_overview, tab_time, tab_txns, tab_drill, tab_subs, tab_taxonomy = st.tabs([
-    "Overview", "Spending Over Time", "Transactions", "Category Drill-Down", "Subscriptions", "Taxonomy"
+tab_overview, tab_time, tab_txns, tab_drill, tab_merchants, tab_subs, tab_taxonomy = st.tabs([
+    "Overview", "Spending Over Time", "Transactions", "Category Drill-Down", "Top Merchants", "Subscriptions", "Taxonomy"
 ])
 
 
@@ -185,13 +218,35 @@ with tab_overview:
     total_spend = abs(spend_df["amount"].sum())
     total_income = income_df["amount"].sum()
     net = total_income - total_spend
+    savings_rate = (net / total_income * 100) if total_income > 0 else 0
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    prev_spend_df = prev_filtered[prev_filtered["amount"] < 0]
+    prev_income_df = prev_filtered[prev_filtered["amount"] > 0]
+    prev_spend = abs(prev_spend_df["amount"].sum())
+    prev_income = prev_income_df["amount"].sum()
+    prev_net = prev_income - prev_spend
+    prev_savings_rate = (prev_net / prev_income * 100) if prev_income > 0 else 0
+
+    spend_d = _pct_delta(total_spend, prev_spend)
+    income_d = _pct_delta(total_income, prev_income)
+    net_d = _pct_delta(net, prev_net)
+    sr_d = round(savings_rate - prev_savings_rate, 1) if prev_income > 0 else None
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Transactions", len(filtered))
-    col2.metric("Total Spend", f"£{total_spend:.2f}")
-    col3.metric("Total Income", f"£{total_income:.2f}")
-    col4.metric("Net", f"£{net:.2f}", delta=round(net, 2), delta_color="normal")
-    col5.metric("Unclassified", int(filtered["llm_category"].isna().sum()))
+    col2.metric("Total Spend", f"£{total_spend:.2f}",
+                delta=f"{spend_d:+.1f}% vs prev" if spend_d is not None else None,
+                delta_color="inverse")
+    col3.metric("Total Income", f"£{total_income:.2f}",
+                delta=f"{income_d:+.1f}% vs prev" if income_d is not None else None,
+                delta_color="normal")
+    col4.metric("Net", f"£{net:.2f}",
+                delta=f"{net_d:+.1f}% vs prev" if net_d is not None else None,
+                delta_color="normal")
+    col5.metric("Savings Rate", f"{savings_rate:.1f}%",
+                delta=f"{sr_d:+.1f}pp vs prev" if sr_d is not None else None,
+                delta_color="normal")
+    col6.metric("Unclassified", int(filtered["llm_category"].isna().sum()))
 
     st.divider()
 
@@ -258,17 +313,47 @@ with tab_time:
         income_time = filtered[filtered["amount"] > 0]
         monthly_spend = spend_time.groupby("month")["amount"].sum().abs().rename("Spend")
         monthly_income = income_time.groupby("month")["amount"].sum().rename("Income")
-        monthly_totals = (
+        monthly_totals_raw = (
             pd.concat([monthly_spend, monthly_income], axis=1)
             .fillna(0).reset_index()
             .rename(columns={"month": "Month"})
-            .sort_values("Month", ascending=False)
+            .sort_values("Month")
         )
-        monthly_totals["Net"] = monthly_totals["Income"] - monthly_totals["Spend"]
+        monthly_totals_raw["Net"] = monthly_totals_raw["Income"] - monthly_totals_raw["Spend"]
+        monthly_totals_raw["Savings Rate"] = (
+            monthly_totals_raw["Net"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
+        ).round(1)
+        monthly_totals_raw["Spend MoM"] = monthly_totals_raw["Spend"].pct_change().mul(100).round(1)
+        monthly_totals_raw["Income MoM"] = monthly_totals_raw["Income"].pct_change().mul(100).round(1)
+
+        monthly_totals = monthly_totals_raw.sort_values("Month", ascending=False).copy()
         monthly_totals["Spend"] = monthly_totals["Spend"].map("£{:.2f}".format)
         monthly_totals["Income"] = monthly_totals["Income"].map("£{:.2f}".format)
         monthly_totals["Net"] = monthly_totals["Net"].map("£{:.2f}".format)
+        monthly_totals["Savings Rate"] = monthly_totals["Savings Rate"].map(
+            lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
+        )
+        monthly_totals["Spend MoM"] = monthly_totals["Spend MoM"].map(
+            lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
+        )
+        monthly_totals["Income MoM"] = monthly_totals["Income MoM"].map(
+            lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
+        )
         st.dataframe(monthly_totals, width="stretch", hide_index=True)
+
+        # Savings rate over time
+        sr_chart = monthly_totals_raw[monthly_totals_raw["Income"] > 0]
+        if len(sr_chart) > 1:
+            st.subheader("Savings Rate Over Time")
+            fig_sr = px.line(sr_chart, x="Month", y="Savings Rate",
+                             labels={"Savings Rate": "Savings Rate (%)"},
+                             markers=True)
+            fig_sr.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.4,
+                             annotation_text="break even", annotation_position="bottom right")
+            fig_sr.update_traces(line_color="#2ecc71", marker_color="#2ecc71")
+            fig_sr.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
+                                 yaxis_ticksuffix="%")
+            st.plotly_chart(fig_sr, width="stretch")
     else:
         st.info("No spend transactions in the selected range.")
 
@@ -436,7 +521,61 @@ with tab_drill:
         st.dataframe(display_cat, width="stretch", hide_index=True)
 
 
-# ── Tab 5: Subscriptions ──────────────────────────────────────────────────────
+# ── Tab 5: Top Merchants ──────────────────────────────────────────────────────
+
+with tab_merchants:
+    merch_spend = filtered[filtered["amount"] < 0].copy()
+    merch_spend["merchant_display"] = (
+        merch_spend["merchant_name"].fillna(merch_spend["description"]).fillna("Unknown")
+    )
+
+    if merch_spend.empty:
+        st.info("No spend transactions in the selected range.")
+    else:
+        by_merchant = (
+            merch_spend.groupby("merchant_display")
+            .agg(
+                total_spend=("amount", lambda x: abs(x.sum())),
+                transactions=("id", "count"),
+                avg_transaction=("amount", lambda x: abs(x.mean())),
+                last_seen=("created_at", "max"),
+            )
+            .reset_index()
+            .rename(columns={"merchant_display": "Merchant"})
+            .sort_values("total_spend", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        top_n = min(20, len(by_merchant))
+        top_chart = by_merchant.head(top_n).sort_values("total_spend")
+        fig_m = px.bar(
+            top_chart, x="total_spend", y="Merchant", orientation="h",
+            title=f"Top {top_n} Merchants by Spend",
+            labels={"total_spend": "Total Spend (£)"},
+            color="total_spend", color_continuous_scale="Reds",
+        )
+        fig_m.update_layout(
+            showlegend=False, coloraxis_showscale=False,
+            height=max(400, top_n * 36),
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig_m, width="stretch")
+
+        st.subheader(f"All Merchants ({len(by_merchant)})")
+        merch_display = by_merchant.copy()
+        merch_display["total_spend"] = merch_display["total_spend"].map("£{:.2f}".format)
+        merch_display["avg_transaction"] = merch_display["avg_transaction"].map("£{:.2f}".format)
+        merch_display["last_seen"] = pd.to_datetime(merch_display["last_seen"]).dt.strftime("%Y-%m-%d")
+        merch_display = merch_display.rename(columns={
+            "total_spend": "Total Spend",
+            "transactions": "Transactions",
+            "avg_transaction": "Avg Transaction",
+            "last_seen": "Last Seen",
+        })
+        st.dataframe(merch_display, width="stretch", hide_index=True)
+
+
+# ── Tab 6: Subscriptions ──────────────────────────────────────────────────────
 
 FREQ_MONTHLY = {"weekly": 52/12, "fortnightly": 26/12, "monthly": 1, "annual": 1/12}
 
@@ -561,7 +700,7 @@ with tab_subs:
         st.info("No recurring patterns detected yet — more transaction history will improve detection.")
 
 
-# ── Tab 6: Taxonomy ────────────────────────────────────────────────────────────
+# ── Tab 7: Taxonomy ────────────────────────────────────────────────────────────
 
 with tab_taxonomy:
     # Session state for right-panel mode
@@ -878,7 +1017,7 @@ with tab_taxonomy:
                     })
                     st.dataframe(
                         txns_df[["Date", "Merchant", "Description", "Amount", "Context"]],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                     st.caption(f"{len(txns)} transaction(s)")
