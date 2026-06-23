@@ -215,21 +215,21 @@ async def recieve_monzo(request: Request):
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
-    # Check rules for auto-enrichment
-    rule_context = check_rules(monzo_data.data) if is_new else None
-    if rule_context:
+    # Check rules for auto-enrichment / auto-skip
+    rule_context, rule_skip = check_rules(monzo_data.data) if is_new else (None, False)
+    if rule_context or rule_skip:
         try:
             con.execute(
-                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
-                [rule_context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ?, skipped = ? WHERE id = ?",
+                [rule_context, time.strftime("%Y-%m-%d %H:%M:%S"), rule_skip, transaction_id]
             )
             con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
-            log.info(f"Transaction auto-enriched by rule: {transaction_id} → '{rule_context}'")
+            log.info(f"Transaction auto-enriched by rule: {transaction_id} → context='{rule_context}' skip={rule_skip}")
         except Exception as e:
             log.error(f"Failed to auto-enrich transaction {transaction_id}: {e}", exc_info=True)
 
     # Send Telegram Message
-    if is_new and not rule_context and bot:
+    if is_new and not rule_context and not rule_skip and bot:
         try:
             bot.send_card(json.loads(body))
             con.execute(
@@ -434,12 +434,13 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
     match_field_2 = (form.get("match_field_2") or "").strip() or None
     match_type_2 = (form.get("match_type_2") or "").strip() or None
     match_value_2 = (form.get("match_value_2") or "").strip() or None
-    if name and match_field and match_type and match_value and auto_context:
+    auto_skip = form.get("auto_skip") == "on"
+    if name and match_field and match_type and match_value and (auto_context or auto_skip):
         con = get_con()
         next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
         con.execute(
-            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [next_id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2]
+            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2, auto_skip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [next_id, name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip]
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
@@ -447,9 +448,9 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
 @app.get("/dashboard/rules", response_class=HTMLResponse)
 async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
-    rows = con.execute("SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2 FROM rules ORDER BY id").fetchall()
+    rows = con.execute("SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id").fetchall()
     rules = [
-        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6], "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9]}
+        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6], "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
         for r in rows
     ]
     return templates.TemplateResponse(

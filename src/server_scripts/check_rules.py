@@ -29,14 +29,14 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
         return abs(int(field_value)) == round(float(match_value) * 100)
     return False
 
-def check_rules(data) -> str | None:
+def check_rules(data) -> tuple[str | None, bool]:
     con = get_con()
     rules = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2 FROM rules WHERE enabled = TRUE"
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules WHERE enabled = TRUE"
     ).fetchall()
 
     for rule in rules:
-        _, _, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2 = rule
+        _, _, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip = rule
 
         field_value = _extract_field(data, match_field)
         if field_value is None or not _matches(field_value, match_type, match_value):
@@ -47,7 +47,7 @@ def check_rules(data) -> str | None:
             if field_value_2 is None or not _matches(field_value_2, match_type_2, match_value_2):
                 continue
 
-        return auto_context
+        return (auto_context or None, bool(auto_skip))
 
-    return None
+    return (None, False)
 

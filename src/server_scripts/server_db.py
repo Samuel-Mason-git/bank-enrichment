@@ -44,3 +44,4 @@ def init_db() -> None:
     _con.execute("ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_field_2 VARCHAR(255)")
     _con.execute("ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_type_2 VARCHAR(50)")
     _con.execute("ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_value_2 VARCHAR(255)")
+    _con.execute("ALTER TABLE rules ADD COLUMN IF NOT EXISTS auto_skip BOOLEAN DEFAULT FALSE")

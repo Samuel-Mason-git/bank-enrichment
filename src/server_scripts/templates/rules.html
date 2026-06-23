@@ -16,7 +16,7 @@
         }
         .form-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 2fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr 2fr auto;
             gap: 10px;
             align-items: end;
             margin-bottom: 14px;
@@ -122,7 +122,13 @@
                 </div>
                 <div class="form-group">
                     <label>Auto Context</label>
-                    <input name="auto_context" placeholder="e.g. Monthly gym membership" required>
+                    <input name="auto_context" id="auto_context" placeholder="e.g. Monthly gym membership">
+                </div>
+                <div class="form-group" style="justify-content:flex-end;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                        <input type="checkbox" name="auto_skip" id="auto_skip" onchange="toggleAutoSkip()" style="width:15px;height:15px;cursor:pointer;">
+                        Auto Skip
+                    </label>
                 </div>
             </div>
             <div style="margin:10px 0 4px;">
@@ -169,6 +175,7 @@
                     <th>Condition 1</th>
                     <th>Condition 2</th>
                     <th>Auto Context</th>
+                    <th>Auto Skip</th>
                     <th>Status</th>
                     <th></th>
                 </tr>
@@ -179,7 +186,8 @@
                     <td class="rule-name">{{ rule.name }}</td>
                     <td><span class="mono">{{ rule.match_field }}</span> <span class="match-type-badge">{{ rule.match_type }}</span> <span class="mono">{{ rule.match_value }}</span></td>
                     <td>{% if rule.match_field_2 %}<span class="mono">{{ rule.match_field_2 }}</span> <span class="match-type-badge">{{ rule.match_type_2 }}</span> <span class="mono">{{ rule.match_value_2 }}</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
-                    <td class="rule-context">{{ rule.auto_context }}</td>
+                    <td class="rule-context">{{ rule.auto_context if rule.auto_context else '—' }}</td>
+                    <td>{% if rule.auto_skip %}<span class="badge badge-disabled" style="background:#fef3c7;color:#92400e;">skip</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
                     <td><span class="badge {% if rule.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if rule.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                     <td>
                         <div class="row-actions">
@@ -290,6 +298,13 @@ function updateAmountHint() {
         valueInput.placeholder = "e.g. 490-510";
         hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
     }
+}
+
+function toggleAutoSkip() {
+    const skip = document.getElementById("auto_skip").checked;
+    const ctx = document.getElementById("auto_context");
+    ctx.required = !skip;
+    ctx.placeholder = skip ? "Optional — shown as context if provided" : "e.g. Monthly gym membership";
 }
 
 updateMatchType();
