@@ -9,6 +9,7 @@ import requests
 from database_functions import init_db, write_to_db
 from llm_labelling import run as run_classifier
 from monthly_summary import run as run_monthly_summary
+from weekly_summary import run as run_weekly_summary
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -81,3 +82,4 @@ if __name__ == "__main__":
 
     run_classifier()
     run_monthly_summary()
+    run_weekly_summary()

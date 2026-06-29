@@ -41,14 +41,14 @@ context sentences tell it exactly what each transaction was.
 
 1. Monzo transaction fires a webhook
 2. Always-on server receives and stores the raw payload
-3. Server checks your rules — if a rule matches, the transaction is auto-enriched and Telegram is skipped entirely
+3. Server checks your rules — if a rule matches, the transaction is auto-enriched and/or marked as skipped, and Telegram is skipped entirely
 4. Otherwise, a Telegram notification is sent to your phone with transaction details
 5. You reply with one sentence of context — or tap Skip to dismiss
 6. Enrichment stored alongside the raw transaction in the queue
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
 8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
-10. At the end of each month, a summary is automatically sent to your Telegram — spend, income, net, and a full breakdown by category
+10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month.
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
 
 ## Server Dashboard
@@ -97,23 +97,39 @@ Each rule specifies:
 | Match field | What to check — merchant name, description, counterparty name, category, or amount |
 | Match type | How to compare — `contains`, `exact`, `regex`, `amount_range`, or `amount_exact` |
 | Match value | The value to match against (e.g. `EE`, `490-510` for a £ range, or `9.99` for exact) |
-| Auto context | The context sentence to store (e.g. "Monthly wifi bill") |
+| Auto context | The context sentence to store (e.g. "Monthly wifi bill") — optional if Auto Skip is on |
+| Auto Skip | If checked, the transaction is marked as skipped automatically — no Telegram notification, no manual enrichment needed |
 | Second condition | Optional — a second match field/type/value that must also pass (AND logic) |
 
-Rules can be enabled or disabled at any time from the dashboard without deleting them. 
-Amount ranges and exact amounts are specified in pounds and matched against the absolute 
-transaction value. A rule with two conditions only fires if both match — useful for 
+Rules can be enabled or disabled at any time from the dashboard without deleting them.
+Amount ranges and exact amounts are specified in pounds and matched against the absolute
+transaction value. A rule with two conditions only fires if both match — useful for
 cases like a specific merchant at a specific amount.
 
-## Monthly Summary
+**Auto Skip** is useful for transactions you never want to see — internal transfers, 
+refunds from known merchants, or any recurring charge you're confident needs no context. 
+The transaction is still stored and will appear in your local database; it just won't 
+interrupt you via Telegram. You can combine Auto Skip with an Auto Context if you want 
+the transaction labelled but not notified.
 
-At the end of each month, the daily processing script automatically sends a Telegram message summarising your finances for that month:
+## Weekly & Monthly Summaries
+
+The daily processing script automatically sends two types of Telegram summary.
+
+**Weekly summary** — sent every Monday for the week just ended (Mon–Sun):
+
+- Total spend and income (skipped transactions excluded)
+- Net for the week
+- Spend and income broken down by parent category
+- Any unclassified amount shown as a separate line so the totals always add up
+
+**Monthly summary** — sent once the month ends, the next time the script runs:
 
 - Total spend and income
 - Net (saved or overspent)
 - Full breakdown by parent category for both spend and income
 
-The summary is sent the next time the script runs after the month ends. If the script was inactive for several months, it will catch up and send a summary for each missed month in order. Each summary is recorded locally so it is never sent twice.
+Both summaries catch up automatically if the script was inactive — a summary is sent for each missed period in order, and each is recorded locally so it is never sent twice.
 
 ## LLM Classification
 
@@ -195,9 +211,10 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── follow_up_tg.py    # Follow-up notification scheduler
 │   │   └── server_db.py       # Server-side database functions
 │   └── local_scripts/         # Runs on your local machine
-│       ├── process.py         # Pull, classify, and send monthly summary — one task does all
+│       ├── process.py         # Pull, classify, and send summaries — one task does all
 │       ├── llm_labelling.py   # LLM classification (Claude)
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
+│       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
 │       ├── database_functions.py  # Shared DuckDB library
 │       ├── dashboard.py       # Streamlit dashboard
 │       ├── view_db.py         # Print all transactions to terminal

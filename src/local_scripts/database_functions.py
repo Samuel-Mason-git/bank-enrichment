@@ -25,11 +25,7 @@ def get_con() -> duckdb.DuckDBPyConnection:
 def init_db(read_only: bool = False) -> None:
     global _con
     if _con is not None:
-        try:
-            _con.close()
-        except Exception:
-            pass
-        _con = None
+        return
     if not read_only:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     _con = duckdb.connect(DB_PATH, read_only=read_only)

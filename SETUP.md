@@ -249,10 +249,27 @@ Add one line (adjust path and time as needed):
 
 Launch:
 ```bash
-poetry run streamlit run src/local_scripts/dashboard.py
+poetry run python -m streamlit run src/local_scripts/dashboard.py
 ```
 
+> **Note (Windows):** Use `python -m streamlit` rather than `streamlit` directly — some Windows security policies block the `streamlit.exe` binary but allow running it as a Python module.
+
 It opens in your browser automatically. Tabs:
+
+**Optional — Desktop shortcut (Windows):**
+
+A `launch_dashboard.bat` file is included in the project root. To add a shortcut to your desktop, run this once in PowerShell:
+
+```powershell
+$ws = New-Object -ComObject WScript.Shell
+$s = $ws.CreateShortcut("$Home\Desktop\Bank Enrichment.lnk")
+$s.TargetPath = "$PWD\launch_dashboard.bat"
+$s.WorkingDirectory = "$PWD"
+$s.WindowStyle = 1
+$s.Save()
+```
+
+Run it from the project root so `$PWD` resolves to the right path. You can then right-click the shortcut → Properties → Change Icon to set a custom icon.
 
 | Tab | Description |
 |-----|-------------|

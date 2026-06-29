@@ -60,3 +60,12 @@ CREATE TABLE IF NOT EXISTS monthly_summaries (
     net          DECIMAL(19,4) NOT NULL,
     sent_at      TIMESTAMP NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS weekly_summaries (
+    id           INTEGER PRIMARY KEY,
+    send_date    VARCHAR(10) NOT NULL UNIQUE,  -- e.g. '2026-W26'
+    total_spend  DECIMAL(19,4) NOT NULL,
+    total_income DECIMAL(19,4) NOT NULL,
+    net          DECIMAL(19,4) NOT NULL,
+    sent_at      TIMESTAMP NOT NULL
+);

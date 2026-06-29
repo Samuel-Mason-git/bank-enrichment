@@ -24,7 +24,6 @@ st.set_page_config(
 
 # ── Connection ─────────────────────────────────────────────────────────────────
 
-@st.cache_resource
 def connect():
     init_db()
     return get_con()
@@ -303,9 +302,16 @@ with tab_time:
             .sum().abs().reset_index()
             .rename(columns={"amount": "Spend", "month": "Month"})
         )
+        category_order = (
+            monthly.groupby("Category")["Spend"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
         fig = px.bar(monthly, x="Month", y="Spend", color="Category",
                      title="Monthly Spend by Category",
-                     labels={"Spend": "Total Spend (£)"}, barmode="stack")
+                     labels={"Spend": "Total Spend (£)"}, barmode="stack",
+                     category_orders={"Category": category_order})
         fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40))
         st.plotly_chart(fig, width="stretch")
 
@@ -354,6 +360,36 @@ with tab_time:
             fig_sr.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
                                  yaxis_ticksuffix="%")
             st.plotly_chart(fig_sr, width="stretch")
+
+        st.divider()
+        st.subheader("Monthly Spend by Subcategory")
+        available_cats = sorted(spend_time[spend_time["llm_category"].notna()]["llm_category"].unique())
+        if available_cats:
+            selected_time_cat = st.selectbox("Select category", available_cats, key="time_sub_cat")
+            sub_time_data = spend_time[
+                (spend_time["llm_category"] == selected_time_cat) &
+                spend_time["llm_subcategory"].notna()
+            ].copy()
+            if not sub_time_data.empty:
+                monthly_sub = (
+                    sub_time_data.groupby(["month", "llm_subcategory"])["amount"]
+                    .sum().abs().reset_index()
+                    .rename(columns={"amount": "Spend", "month": "Month", "llm_subcategory": "Subcategory"})
+                )
+                sub_order = (
+                    monthly_sub.groupby("Subcategory")["Spend"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .index.tolist()
+                )
+                fig_sub = px.bar(monthly_sub, x="Month", y="Spend", color="Subcategory",
+                                 title=f"{selected_time_cat} — Monthly Spend by Subcategory",
+                                 labels={"Spend": "Total Spend (£)"}, barmode="stack",
+                                 category_orders={"Subcategory": sub_order})
+                fig_sub.update_layout(xaxis_tickangle=-45, margin=dict(t=40))
+                st.plotly_chart(fig_sub, width="stretch")
+            else:
+                st.info("No subcategory data for this category in the selected range.")
     else:
         st.info("No spend transactions in the selected range.")
 
@@ -511,6 +547,28 @@ with tab_drill:
                 st.plotly_chart(fig2, width="stretch")
             else:
                 st.info("No income in this category.")
+
+        sub_summary = (
+            cat_df[cat_df["llm_subcategory"].notna()]
+            .groupby("llm_subcategory")
+            .agg(
+                Transactions=("id", "count"),
+                Spend=("amount", lambda x: abs(x[x < 0].sum())),
+                Income=("amount", lambda x: x[x > 0].sum()),
+            )
+            .reset_index()
+            .rename(columns={"llm_subcategory": "Subcategory"})
+            .sort_values("Spend", ascending=False)
+            .reset_index(drop=True)
+        )
+        if not sub_summary.empty:
+            sub_summary["Avg Spend"] = sub_summary.apply(
+                lambda r: f"£{r['Spend'] / r['Transactions']:.2f}" if r['Spend'] > 0 else "—", axis=1
+            )
+            sub_summary["Spend"] = sub_summary["Spend"].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
+            sub_summary["Income"] = sub_summary["Income"].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
+            st.subheader("Subcategory Summary")
+            st.dataframe(sub_summary, width="stretch", hide_index=True)
 
         st.subheader("Transactions")
         display_cat = cat_df[["created_at", "amount", "merchant_name", "description",
