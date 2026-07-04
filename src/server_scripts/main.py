@@ -45,6 +45,7 @@ _pending_skips: dict = {}
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+templates.env.globals["static_version"] = str(int(time.time()))
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
