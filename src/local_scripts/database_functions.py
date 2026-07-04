@@ -187,6 +187,44 @@ def get_subcategories() -> list[dict]:
     )
 
 
+def get_top_subcategories(limit: int = 10) -> list[dict]:
+    return _rows(
+        """SELECT p.name AS category, s.name AS subcategory, COUNT(t.id) AS transaction_count
+           FROM subcategories s
+           JOIN parent_categories p ON p.id = s.parent_id
+           JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = p.name
+           GROUP BY p.name, s.name
+           ORDER BY transaction_count DESC
+           LIMIT ?""",
+        [limit]
+    )
+
+
+def get_top_merchant_subcategories(merchant_limit: int = 50, per_merchant_limit: int = 3) -> list[dict]:
+    """Top subcategories per merchant, for the `merchant_limit` most-transacted merchants."""
+    return _rows(
+        """WITH merchant_totals AS (
+               SELECT merchant_name, COUNT(*) AS total
+               FROM transactions
+               WHERE merchant_name IS NOT NULL
+                 AND llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
+               GROUP BY merchant_name
+               ORDER BY total DESC
+               LIMIT ?
+           )
+           SELECT t.merchant_name, t.llm_category AS category, t.llm_subcategory AS subcategory,
+                  COUNT(*) AS transaction_count,
+                  ROW_NUMBER() OVER (PARTITION BY t.merchant_name ORDER BY COUNT(*) DESC) AS rank
+           FROM transactions t
+           JOIN merchant_totals mt ON mt.merchant_name = t.merchant_name
+           WHERE t.llm_category IS NOT NULL AND t.llm_subcategory IS NOT NULL
+           GROUP BY t.merchant_name, t.llm_category, t.llm_subcategory
+           QUALIFY rank <= ?
+           ORDER BY t.merchant_name, rank""",
+        [merchant_limit, per_merchant_limit]
+    )
+
+
 def search(term: str) -> list[dict]:
     like = f"%{term}%"
     return _rows(
@@ -278,6 +316,32 @@ def write_to_db(transactions: list[dict]) -> None:
         desc = data.get("description", "—")
         amount = data.get("amount", 0) / 100
         log.info(f"  Stored {t['id']} | £{amount:.2f} | {desc} | {t['user_context']}")
+
+
+def apply_quick_tap_classifications() -> int:
+    """Classify transactions whose user_context exactly matches an existing
+    'Category - Subcategory' pair (written by a Telegram quick-tap button),
+    skipping the LLM entirely for those. Returns the number classified."""
+    con = get_con()
+    taxonomy = {
+        f"{parent} - {sub}": (parent, sub)
+        for parent, sub in con.execute(
+            """SELECT p.name, s.name FROM subcategories s
+               JOIN parent_categories p ON p.id = s.parent_id"""
+        ).fetchall()
+    }
+    unclassified = con.execute(
+        """SELECT id, user_context FROM transactions
+           WHERE llm_category IS NULL AND skipped = FALSE AND user_context IS NOT NULL"""
+    ).fetchall()
+    count = 0
+    for txn_id, context in unclassified:
+        match = taxonomy.get(context)
+        if match:
+            category, subcategory = match
+            update_classification(txn_id, category, subcategory, confidence=1.0, model="quick-tap")
+            count += 1
+    return count
 
 
 def upsert_parent(name: str) -> int:

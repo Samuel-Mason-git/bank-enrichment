@@ -19,9 +19,12 @@ class TelegramBot:
 
 
 
-    def send_message(self, chat_id: int, text: str):
+    def send_message(self, chat_id: int, text: str, reply_markup: dict | None = None):
         url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
-        response = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        response = requests.post(url, json=payload)
         if response.status_code != 200:
             log.error(f"Message failed to send: {response.text}")
 
@@ -58,7 +61,7 @@ class TelegramBot:
 
 
 
-    def send_card(self, payload, follow_up: int = 0):
+    def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
         data = payload['data']
@@ -137,15 +140,26 @@ class TelegramBot:
 
         text = "\n".join(lines)
 
+        keyboard_rows = []
+        row = []
+        for qc in (quick_categories or []):
+            row.append({"text": qc["subcategory"], "callback_data": f"quickcat:{data['id']}:{qc['id']}"})
+            if len(row) == 3:
+                keyboard_rows.append(row)
+                row = []
+        if row:
+            keyboard_rows.append(row)
+        keyboard_rows.append([
+            {"text": "✏️ Enrich", "callback_data": f"enrich:{data['id']}"},
+            {"text": "⏭ Skip", "callback_data": f"skip_confirm:{data['id']}"},
+        ])
+
         payload_send = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": {
-                "inline_keyboard": [[
-                    {"text": "✏️ Enrich", "callback_data": f"enrich:{data['id']}"},
-                    {"text": "⏭ Skip", "callback_data": f"skip_confirm:{data['id']}"},
-                ]]
+                "inline_keyboard": keyboard_rows
             }
         }
         response = requests.post(url, json=payload_send)

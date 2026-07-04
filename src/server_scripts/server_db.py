@@ -24,3 +24,20 @@ def init_db() -> None:
         statement = statement.strip()
         if statement:
             _con.execute(statement)
+
+
+def get_quick_categories(merchant_name: str | None) -> list[dict]:
+    """Up to 3 subcategory suggestions for this merchant, else the top 5 overall."""
+    con = get_con()
+    if merchant_name:
+        rows = con.execute(
+            "SELECT id, category, subcategory FROM quick_categories WHERE merchant_name = ? ORDER BY rank LIMIT 3",
+            [merchant_name]
+        ).fetchall()
+        if rows:
+            return [{"id": r[0], "category": r[1], "subcategory": r[2]} for r in rows]
+
+    rows = con.execute(
+        "SELECT id, category, subcategory FROM quick_categories WHERE merchant_name IS NULL ORDER BY rank LIMIT 5"
+    ).fetchall()
+    return [{"id": r[0], "category": r[1], "subcategory": r[2]} for r in rows]

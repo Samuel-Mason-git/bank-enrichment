@@ -6,6 +6,8 @@ from database_functions import (
     upsert_parent, upsert_subcategory, get_parents, get_subcategories,
     get_subscriptions, upsert_subscription, toggle_subscription,
     delete_subscription, search, _ts, _rows,
+    get_top_subcategories, get_top_merchant_subcategories,
+    apply_quick_tap_classifications,
 )
 
 
@@ -250,6 +252,136 @@ class TestSearch:
         results = search("Tesco")
         ids = [r["id"] for r in results]
         assert len(ids) == len(set(ids))
+
+
+def _seed(pairs):
+    """upsert_parent/upsert_subcategory for each (category, subcategory) pair."""
+    for category, subcategory in pairs:
+        pid = upsert_parent(category)
+        upsert_subcategory(subcategory, pid)
+
+
+class TestGetTopSubcategories:
+    def test_orders_by_frequency(self, db):
+        write_to_db([_txn("tx_001"), _txn("tx_002"), _txn("tx_003")])
+        _seed([("Food & Drink", "Coffee Shops"), ("Transport", "Fuel")])
+        update_classification("tx_001", "Food & Drink", "Coffee Shops", None, "m")
+        update_classification("tx_002", "Food & Drink", "Coffee Shops", None, "m")
+        update_classification("tx_003", "Transport", "Fuel", None, "m")
+        rows = get_top_subcategories()
+        assert rows[0]["subcategory"] == "Coffee Shops"
+        assert rows[0]["transaction_count"] == 2
+
+    def test_limit_respected(self, db):
+        write_to_db([_txn(f"tx_{i:03d}") for i in range(4)])
+        pairs = [("Food & Drink", "Coffee Shops"), ("Food & Drink", "Groceries"),
+                  ("Transport", "Fuel"), ("Transport", "Parking")]
+        _seed(pairs)
+        for i, (cat, sub) in enumerate(pairs):
+            update_classification(f"tx_{i:03d}", cat, sub, None, "m")
+        assert len(get_top_subcategories(limit=2)) == 2
+
+    def test_unclassified_transactions_excluded(self, db):
+        write_to_db([_txn()])
+        assert get_top_subcategories() == []
+
+    def test_empty_when_no_transactions(self, db):
+        assert get_top_subcategories() == []
+
+
+class TestGetTopMerchantSubcategories:
+    def test_top_subcategories_per_merchant(self, db):
+        write_to_db([_txn(f"tx_{i:03d}", merchant="Tesco") for i in range(4)])
+        update_classification("tx_000", "Food & Drink", "Groceries", None, "m")
+        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
+        update_classification("tx_002", "Food & Drink", "Snacks", None, "m")
+        update_classification("tx_003", "Food & Drink", "Takeaway", None, "m")
+        rows = get_top_merchant_subcategories(per_merchant_limit=2)
+        assert len(rows) == 2
+        assert rows[0]["subcategory"] == "Groceries"
+        assert rows[0]["merchant_name"] == "Tesco"
+
+    def test_merchant_limit_caps_number_of_merchants(self, db):
+        write_to_db([
+            _txn("tx_001", merchant="Tesco"), _txn("tx_002", merchant="Tesco"),
+            _txn("tx_003", merchant="Amazon"),
+        ])
+        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
+        update_classification("tx_002", "Food & Drink", "Groceries", None, "m")
+        update_classification("tx_003", "Shopping", "Electronics", None, "m")
+        rows = get_top_merchant_subcategories(merchant_limit=1, per_merchant_limit=3)
+        merchants = {r["merchant_name"] for r in rows}
+        assert merchants == {"Tesco"}
+
+    def test_ignores_null_merchant(self, db):
+        write_to_db([_txn("tx_001", merchant=None)])
+        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
+        assert get_top_merchant_subcategories() == []
+
+    def test_empty_when_no_classified_transactions(self, db):
+        write_to_db([_txn(merchant="Tesco")])
+        assert get_top_merchant_subcategories() == []
+
+
+class TestApplyQuickTapClassifications:
+    def test_classifies_exact_match(self, db):
+        pid = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", pid)
+        write_to_db([_txn(user_context="Food & Drink - Coffee Shops")])
+        count = apply_quick_tap_classifications()
+        assert count == 1
+        t = get_transaction("tx_001")
+        assert t["llm_category"] == "Food & Drink"
+        assert t["llm_subcategory"] == "Coffee Shops"
+        assert float(t["llm_confidence"]) == pytest.approx(1.0)
+        assert t["llm_model"] == "quick-tap"
+
+    def test_no_match_leaves_unclassified(self, db):
+        pid = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", pid)
+        write_to_db([_txn(user_context="just a coffee, nothing formal")])
+        count = apply_quick_tap_classifications()
+        assert count == 0
+        assert get_transaction("tx_001")["llm_category"] is None
+
+    def test_skipped_transactions_ignored(self, db):
+        pid = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", pid)
+        write_to_db([_txn(user_context="Food & Drink - Coffee Shops", skipped=True)])
+        count = apply_quick_tap_classifications()
+        assert count == 0
+
+    def test_ambiguous_subcategory_name_resolved_by_parent(self, db):
+        entertainment = upsert_parent("Entertainment")
+        subscriptions = upsert_parent("Subscriptions & Software")
+        upsert_subcategory("Streaming", entertainment)
+        upsert_subcategory("Streaming", subscriptions)
+        write_to_db([_txn(user_context="Subscriptions & Software - Streaming")])
+        apply_quick_tap_classifications()
+        t = get_transaction("tx_001")
+        assert t["llm_category"] == "Subscriptions & Software"
+        assert t["llm_subcategory"] == "Streaming"
+
+    def test_does_not_reclassify_already_classified(self, db):
+        pid = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", pid)
+        write_to_db([_txn(user_context="Food & Drink - Coffee Shops")])
+        update_classification("tx_001", "Transport", "Fuel", 0.8, "existing-model")
+        count = apply_quick_tap_classifications()
+        assert count == 0
+        t = get_transaction("tx_001")
+        assert t["llm_category"] == "Transport"
+        assert t["llm_model"] == "existing-model"
+
+    def test_returns_count_of_classified(self, db):
+        pid = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", pid)
+        write_to_db([
+            _txn("tx_001", user_context="Food & Drink - Coffee Shops"),
+            _txn("tx_002", user_context="Food & Drink - Coffee Shops"),
+            _txn("tx_003", user_context="not a match"),
+        ])
+        assert apply_quick_tap_classifications() == 2
 
 
 class TestHelpers:

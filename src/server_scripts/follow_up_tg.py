@@ -3,7 +3,7 @@ import json
 import logging
 import time
 
-from server_db import get_con
+from server_db import get_con, get_quick_categories
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,9 @@ def run_requester(bot) -> None:
     for row in missed:
         transaction_id, payload_str = row[0], row[1]
         try:
-            bot.send_card(json.loads(payload_str))
+            data = json.loads(payload_str)
+            merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
+            bot.send_card(data, quick_categories=get_quick_categories(merchant_name))
             con.execute(
                 "UPDATE webhook_queue SET request_count = 1, last_requested_at = ? WHERE id = ?",
                 [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
@@ -72,7 +74,9 @@ def run_requester(bot) -> None:
                 log.info(f"Transaction auto-skipped after no response: {transaction_id}")
             else:
                 try:
-                    bot.send_card(json.loads(payload_str), follow_up=request_count)
+                    data = json.loads(payload_str)
+                    merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
+                    bot.send_card(data, follow_up=request_count, quick_categories=get_quick_categories(merchant_name))
                     con.execute(
                         "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
                         [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
