@@ -1,27 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Database — Bank Enrichment</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
+{% extends "base.html" %}
 
-<header>
-    <div class="header-brand">
-        <div class="dot"></div>
-        <h1>Bank Enrichment</h1>
-    </div>
-    <nav class="header-nav">
-        <a href="/dashboard" class="nav-link">Dashboard</a>
-        <a href="/dashboard/rules" class="nav-link">Rules</a>
-        <a href="/dashboard/db" class="nav-link active">Database</a>
-    </nav>
-</header>
+{% block title %}Database — Bank Enrichment{% endblock %}
 
-<main>
+{% block content %}
 
     {% for table in tables %}
     <div class="section-label">{{ table.name }}</div>
@@ -50,7 +31,4 @@
     </div>
     {% endfor %}
 
-</main>
-
-</body>
-</html>
+{% endblock %}

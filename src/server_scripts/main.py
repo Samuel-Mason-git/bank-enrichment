@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Depends, Request, status, Query, Security
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -112,6 +112,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+
+@app.get("/dashboard/logout")
+async def logout():
+    """HTTP Basic auth has no real server-side session to end — this forces
+    the browser to re-prompt for credentials by always returning 401 here."""
+    return Response(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        headers={"WWW-Authenticate": "Basic"},
+        content="Logged out. Close this tab, or enter new credentials to continue.",
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -225,7 +236,12 @@ async def recieve_monzo(request: Request):
         raise HTTPException(status_code=500, detail="Failed to store transaction")
 
     # Check rules for auto-enrichment / auto-skip
-    rule_context, rule_skip = check_rules(monzo_data.data) if is_new else (None, False)
+    rule_context, rule_skip = (None, False)
+    if is_new:
+        try:
+            rule_context, rule_skip = check_rules(monzo_data.data)
+        except Exception as e:
+            log.error(f"Rule check failed for {transaction_id}, falling back to no match: {e}", exc_info=True)
     if rule_context or rule_skip:
         try:
             con.execute(
@@ -239,9 +255,14 @@ async def recieve_monzo(request: Request):
 
     # Send Telegram Message
     if is_new and not rule_context and not rule_skip and bot:
+        merchant_name = monzo_data.data.merchant.get('name') if monzo_data.data.merchant else None
         try:
-            merchant_name = monzo_data.data.merchant.get('name') if monzo_data.data.merchant else None
-            bot.send_card(json.loads(body), quick_categories=get_quick_categories(merchant_name))
+            quick_categories = get_quick_categories(merchant_name)
+        except Exception as e:
+            log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
+            quick_categories = []
+        try:
+            bot.send_card(json.loads(body), quick_categories=quick_categories)
             con.execute(
                 "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
                 [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
@@ -503,7 +524,7 @@ async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depen
     return templates.TemplateResponse(
         request=request,
         name="rules.html",
-        context={"rules": rules}
+        context={"rules": rules, "active_nav": "rules"}
     )
 
 
@@ -523,6 +544,14 @@ async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(
         "SELECT id, payload, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC"
     ).fetchall()
     queue_cols = ["id", "payload", "received_at", "status", "user_context", "enriched_at", "request_count"]
+    rules_rows = con.execute(
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
+    ).fetchall()
+    rules_cols = ["id", "name", "match_field", "match_type", "match_value", "auto_context", "enabled", "match_field_2", "match_type_2", "match_value_2", "auto_skip"]
+    quick_categories_rows = con.execute(
+        "SELECT id, category, subcategory, merchant_name, rank FROM quick_categories ORDER BY merchant_name, rank"
+    ).fetchall()
+    quick_categories_cols = ["id", "category", "subcategory", "merchant_name", "rank"]
     return templates.TemplateResponse(
         request=request,
         name="db.html",
@@ -530,7 +559,10 @@ async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(
             "tables": [
                 {"name": "stats", "columns": stats_cols, "rows": stats_rows},
                 {"name": "webhook_queue", "columns": queue_cols, "rows": queue_rows},
-            ]
+                {"name": "rules", "columns": rules_cols, "rows": rules_rows},
+                {"name": "quick_categories", "columns": quick_categories_cols, "rows": quick_categories_rows},
+            ],
+            "active_nav": "db",
         }
     )
 
@@ -584,6 +616,7 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "page": page,
             "total_pages": total_pages,
             "total_queue": total_queue,
+            "active_nav": "dashboard",
         }
     )
 

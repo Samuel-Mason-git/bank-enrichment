@@ -22,16 +22,6 @@ CREATE TABLE IF NOT EXISTS webhook_queue (
     last_requested_at   TIMESTAMP
 );
 
-ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS request_count INTEGER DEFAULT 0;
-ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS skipped BOOLEAN DEFAULT FALSE;
-ALTER TABLE webhook_queue ADD COLUMN IF NOT EXISTS last_requested_at TIMESTAMP;
-ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_category;
-ALTER TABLE webhook_queue DROP COLUMN IF EXISTS user_tags;
-
-UPDATE webhook_queue
-SET last_requested_at = received_at
-WHERE request_count > 0 AND last_requested_at IS NULL;
-
 CREATE TABLE IF NOT EXISTS rules (
     id            INTEGER      PRIMARY KEY,
     name          VARCHAR(255) NOT NULL,
@@ -45,11 +35,6 @@ CREATE TABLE IF NOT EXISTS rules (
     match_value_2 VARCHAR(255),
     auto_skip     BOOLEAN      DEFAULT FALSE
 );
-
-ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_field_2 VARCHAR(255);
-ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_type_2 VARCHAR(50);
-ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_value_2 VARCHAR(255);
-ALTER TABLE rules ADD COLUMN IF NOT EXISTS auto_skip BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS quick_categories (
     id            INTEGER      PRIMARY KEY,

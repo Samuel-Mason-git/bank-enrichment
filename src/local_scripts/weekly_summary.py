@@ -161,6 +161,7 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
         f"{SERVER_URL}/monthly-report",
         headers=HEADERS,
         json={"message": message},
+        timeout=30,
     )
     response.raise_for_status()
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM weekly_summaries").fetchone()[0]
@@ -180,9 +181,12 @@ def run() -> None:
         log.info("No missing weekly reports — all up to date")
         return
     for week in missing:
-        stats = get_week_stats(week)
-        message = format_weekly_message(stats)
-        send_weekly_report(week, stats, message)
+        try:
+            stats = get_week_stats(week)
+            message = format_weekly_message(stats)
+            send_weekly_report(week, stats, message)
+        except Exception as e:
+            log.error(f"Failed to send weekly report for {week}: {e}", exc_info=True)
     log.info(f"--- Weekly summary complete in {time.time() - run_start:.2f}s ---")
 
 

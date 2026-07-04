@@ -122,6 +122,7 @@ def send_monthly_report(month_str: str, message: str) -> None:
         f"{SERVER_URL}/monthly-report",
         headers=HEADERS,
         json={"message": message},
+        timeout=30,
     )
     response.raise_for_status()
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM monthly_summaries").fetchone()[0]
@@ -142,9 +143,12 @@ def run() -> None:
         log.info("No missing monthly reports — all up to date")
         return
     for month in missing:
-        stats = get_month_stats(month)
-        message = format_monthly_message(stats)
-        send_monthly_report(month, message)
+        try:
+            stats = get_month_stats(month)
+            message = format_monthly_message(stats)
+            send_monthly_report(month, message)
+        except Exception as e:
+            log.error(f"Failed to send monthly report for {month}: {e}", exc_info=True)
     log.info(f"--- Monthly summary complete in {time.time() - run_start:.2f}s ---")
 
 

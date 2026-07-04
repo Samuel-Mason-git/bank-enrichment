@@ -17,20 +17,31 @@ class TelegramBot:
         if not self.chat_id:
             raise ValueError("Missing TELEGRAM_CHAT_ID env variable")
 
-
+    def _post(self, endpoint: str, payload: dict) -> dict | None:
+        """POST to the Telegram Bot API. Never raises — logs and returns None on
+        any transport failure, non-200 response, or unparseable body."""
+        url = f"https://api.telegram.org/bot{self.api_key}/{endpoint}"
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+        except requests.RequestException as e:
+            log.error(f"Telegram API request to {endpoint} failed: {e}")
+            return None
+        if response.status_code != 200:
+            log.error(f"Telegram API {endpoint} returned {response.status_code}: {response.text}")
+        try:
+            return response.json()
+        except ValueError as e:
+            log.error(f"Telegram API {endpoint} returned unparseable response: {e}")
+            return None
 
     def send_message(self, chat_id: int, text: str, reply_markup: dict | None = None):
-        url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        response = requests.post(url, json=payload)
-        if response.status_code != 200:
-            log.error(f"Message failed to send: {response.text}")
+        self._post("sendMessage", payload)
 
     def send_skip_confirm(self, chat_id: int, transaction_id: str):
-        url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
-        resp = requests.post(url, json={
+        data = self._post("sendMessage", {
             "chat_id": chat_id,
             "text": f"Skip this transaction?\n\n<code>{transaction_id}</code>",
             "parse_mode": "HTML",
@@ -41,29 +52,21 @@ class TelegramBot:
                 ]]
             }
         })
-        data = resp.json()
-        if data.get("ok"):
+        if data and data.get("ok"):
             return data["result"]["message_id"]
         return None
 
     def delete_message(self, chat_id: int, message_id: int):
-        requests.post(
-            f"https://api.telegram.org/bot{self.api_key}/deleteMessage",
-            json={"chat_id": chat_id, "message_id": message_id}
-        )
+        self._post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
     def ack_callback(self, callback_query_id: str):
-        requests.post(
-            f"https://api.telegram.org/bot{self.api_key}/answerCallbackQuery",
-            json={"callback_query_id": callback_query_id}
-        )
+        self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
 
 
 
 
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
-        url = f"https://api.telegram.org/bot{self.api_key}/sendMessage"
         data = payload['data']
 
         currency_symbols = {
@@ -78,67 +81,79 @@ class TelegramBot:
         prefix = "-" if amount_pence < 0 else "+"
         amount_str = f"{prefix}{symbol}{abs(amount_pence) / 100:.2f}"
 
-        created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
-        dt = datetime.fromisoformat(created)
-        date_str = dt.strftime("%d %b %Y · %H:%M")
-
         merchant = data.get('merchant')
-        counterparty = data.get('counterparty')
         is_merchant = isinstance(merchant, dict)
-        is_counterparty = isinstance(counterparty, dict)
-
         emoji = merchant.get('emoji', '💸') if is_merchant else '💸'
         merchant_name = merchant.get('name') if is_merchant else None
-        counterparty_name = counterparty.get('name') if is_counterparty else None
-        merchant_category = merchant.get('category', '').replace('_', ' ').capitalize() if is_merchant else None
-        transaction_category = data.get('category', '').replace('_', ' ').capitalize()
-        settled = "Settled" if data.get('settled') else "Pending"
 
-        addr = merchant.get('address', {}) if is_merchant else {}
-        location_parts = [p for p in [
-            addr.get('address'), addr.get('city'),
-            addr.get('postcode'), addr.get('region'), addr.get('country')
-        ] if p]
-        location = ", ".join(location_parts)
+        if follow_up > 0:
+            follow_up_labels = {1: "1 hour", 2: "1 day", 3: "2 days"}
+            lines = [
+                f"⏰ <b>Reminder — {follow_up_labels.get(follow_up, f'#{follow_up}')} ago, still unenriched</b>",
+                "",
+                f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>"
+                + (f" · {merchant_name}" if merchant_name else ""),
+                f"📝 {data.get('description', '—')}",
+                "",
+                f"🔖 <code>{data['id']}</code>",
+            ]
+            text = "\n".join(lines)
+        else:
+            created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(created)
+            date_str = dt.strftime("%d %b %Y · %H:%M")
 
-        follow_up_labels = {1: "1 hour", 2: "1 day", 3: "2 days"}
-        lines = [
-            *([ f"⏰ <b>Follow-up reminder — {follow_up_labels.get(follow_up, f'#{follow_up}')} ago</b>" ] if follow_up > 0 else []),
-            f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
-            "",
-        ]
+            counterparty = data.get('counterparty')
+            is_counterparty = isinstance(counterparty, dict)
 
-        if merchant_name:
-            lines.append(f"🏪 <b>Merchant</b>: {merchant_name}")
-        if counterparty_name:
-            lines.append(f"👤 <b>Counterparty</b>: {counterparty_name}")
-            if counterparty.get('sort_code') and counterparty.get('account_number'):
-                lines.append(f"🏦 <b>Bank</b>: {counterparty['sort_code']} · {counterparty['account_number']}")
+            counterparty_name = counterparty.get('name') if is_counterparty else None
+            merchant_category = merchant.get('category', '').replace('_', ' ').capitalize() if is_merchant else None
+            transaction_category = data.get('category', '').replace('_', ' ').capitalize()
+            settled = "Settled" if data.get('settled') else "Pending"
 
-        lines.append(f"📝 <b>Description</b>: {data.get('description', '—')}")
-        if merchant_category:
-            lines.append(f"🏷 <b>Merchant Category</b>: {merchant_category}")
-        lines.append(f"📂 <b>Transaction Category</b>: {transaction_category or '—'}")
-        lines += [
-            f"💱 <b>Currency</b>: {currency}",
-            f"📋 <b>Status</b>: {settled}",
-            f"🕐 <b>Created</b>: {date_str}",
-        ]
+            addr = merchant.get('address', {}) if is_merchant else {}
+            location_parts = [p for p in [
+                addr.get('address'), addr.get('city'),
+                addr.get('postcode'), addr.get('region'), addr.get('country')
+            ] if p]
+            location = ", ".join(location_parts)
 
-        if data.get('settled'):
-            settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
-            settled_dt = datetime.fromisoformat(settled_str)
-            lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
+            lines = [
+                f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
+                "",
+            ]
 
-        if location:
-            lines.append(f"📍 <b>Location</b>: {location}")
+            if merchant_name:
+                lines.append(f"🏪 <b>Merchant</b>: {merchant_name}")
+            if counterparty_name:
+                lines.append(f"👤 <b>Counterparty</b>: {counterparty_name}")
+                if counterparty.get('sort_code') and counterparty.get('account_number'):
+                    lines.append(f"🏦 <b>Bank</b>: {counterparty['sort_code']} · {counterparty['account_number']}")
 
-        lines += [
-            "",
-            f"🔖 <b>ID</b>: <code>{data['id']}</code>",
-        ]
+            lines.append(f"📝 <b>Description</b>: {data.get('description', '—')}")
+            if merchant_category:
+                lines.append(f"🏷 <b>Merchant Category</b>: {merchant_category}")
+            lines.append(f"📂 <b>Transaction Category</b>: {transaction_category or '—'}")
+            lines += [
+                f"💱 <b>Currency</b>: {currency}",
+                f"📋 <b>Status</b>: {settled}",
+                f"🕐 <b>Created</b>: {date_str}",
+            ]
 
-        text = "\n".join(lines)
+            if data.get('settled'):
+                settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
+                settled_dt = datetime.fromisoformat(settled_str)
+                lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
+
+            if location:
+                lines.append(f"📍 <b>Location</b>: {location}")
+
+            lines += [
+                "",
+                f"🔖 <b>ID</b>: <code>{data['id']}</code>",
+            ]
+
+            text = "\n".join(lines)
 
         keyboard_rows = []
         row = []
@@ -162,8 +177,7 @@ class TelegramBot:
                 "inline_keyboard": keyboard_rows
             }
         }
-        response = requests.post(url, json=payload_send)
-        return response.json()
+        return self._post("sendMessage", payload_send)
 
 
 
