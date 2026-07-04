@@ -40,7 +40,12 @@ def run_requester(bot) -> None:
         try:
             data = json.loads(payload_str)
             merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
-            bot.send_card(data, quick_categories=get_quick_categories(merchant_name))
+            try:
+                quick_categories = get_quick_categories(merchant_name)
+            except Exception as e:
+                log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
+                quick_categories = []
+            bot.send_card(data, quick_categories=quick_categories)
             con.execute(
                 "UPDATE webhook_queue SET request_count = 1, last_requested_at = ? WHERE id = ?",
                 [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
@@ -67,16 +72,24 @@ def run_requester(bot) -> None:
             transaction_id, payload_str = row[0], row[1]
 
             if request_count == 4:
-                con.execute(
-                    "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Auto-skipped', enriched_at = ? WHERE id = ?",
-                    [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-                )
-                log.info(f"Transaction auto-skipped after no response: {transaction_id}")
+                try:
+                    con.execute(
+                        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Auto-skipped', enriched_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+                    )
+                    log.info(f"Transaction auto-skipped after no response: {transaction_id}")
+                except Exception as e:
+                    log.error(f"Auto-skip failed for {transaction_id}: {e}", exc_info=True)
             else:
                 try:
                     data = json.loads(payload_str)
                     merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
-                    bot.send_card(data, follow_up=request_count, quick_categories=get_quick_categories(merchant_name))
+                    try:
+                        quick_categories = get_quick_categories(merchant_name)
+                    except Exception as e:
+                        log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
+                        quick_categories = []
+                    bot.send_card(data, follow_up=request_count, quick_categories=quick_categories)
                     con.execute(
                         "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
                         [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
@@ -104,6 +117,9 @@ async def requester_loop(bot) -> None:
         await asyncio.sleep(300)  # check every 5 minutes
         try:
             run_requester(bot)
-            run_cleanup()
         except Exception as e:
             log.error(f"Requester loop error: {e}", exc_info=True)
+        try:
+            run_cleanup()
+        except Exception as e:
+            log.error(f"Cleanup loop error: {e}", exc_info=True)

@@ -1,5 +1,9 @@
 from server_db import get_con
+import logging
 import re
+
+log = logging.getLogger(__name__)
+
 
 def _extract_field(data, match_field: str):
     if match_field == "merchant_name":
@@ -36,16 +40,20 @@ def check_rules(data) -> tuple[str | None, bool]:
     ).fetchall()
 
     for rule in rules:
-        _, _, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip = rule
+        rule_id, name, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip = rule
 
-        field_value = _extract_field(data, match_field)
-        if field_value is None or not _matches(field_value, match_type, match_value):
-            continue
-
-        if match_field_2 and match_type_2 and match_value_2:
-            field_value_2 = _extract_field(data, match_field_2)
-            if field_value_2 is None or not _matches(field_value_2, match_type_2, match_value_2):
+        try:
+            field_value = _extract_field(data, match_field)
+            if field_value is None or not _matches(field_value, match_type, match_value):
                 continue
+
+            if match_field_2 and match_type_2 and match_value_2:
+                field_value_2 = _extract_field(data, match_field_2)
+                if field_value_2 is None or not _matches(field_value_2, match_type_2, match_value_2):
+                    continue
+        except Exception as e:
+            log.warning(f"Rule {rule_id} ('{name}') failed to evaluate and was skipped: {e}")
+            continue
 
         return (auto_context or None, bool(auto_skip))
 

@@ -36,7 +36,7 @@ HEADERS = {"X-API-Key": LOCAL_API_KEY}
 
 
 def fetch_enriched():
-    response = requests.get(f"{SERVER_URL}/export", headers=HEADERS)
+    response = requests.get(f"{SERVER_URL}/export", headers=HEADERS, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -46,6 +46,7 @@ def mark_processed(ids: list[str]):
         f"{SERVER_URL}/mark-processed",
         headers=HEADERS,
         json={"ids": ids},
+        timeout=30,
     )
     response.raise_for_status()
     return response.json()
@@ -69,6 +70,7 @@ def sync_quick_categories():
         f"{SERVER_URL}/sync-quick-categories",
         headers=HEADERS,
         json={"entries": entries},
+        timeout=30,
     )
     response.raise_for_status()
     return response.json()
@@ -80,15 +82,29 @@ if __name__ == "__main__":
 
     t0 = time.time()
     log.info(f"Connecting to local DB at {DB_PATH}")
-    init_db()
-    log.info(f"Local DB ready ({time.time() - t0:.2f}s)")
+    try:
+        init_db()
+        log.info(f"Local DB ready ({time.time() - t0:.2f}s)")
+    except Exception as e:
+        log.error(
+            f"Failed to connect to local DB at {DB_PATH} "
+            f"(is the Streamlit dashboard open and holding the write lock?): {e}",
+            exc_info=True,
+        )
+        raise SystemExit(1)
 
     t0 = time.time()
     log.info(f"Fetching enriched transactions from {SERVER_URL}")
-    enriched = fetch_enriched()
-    log.info(f"Fetch complete ({time.time() - t0:.2f}s)")
+    try:
+        enriched = fetch_enriched()
+        log.info(f"Fetch complete ({time.time() - t0:.2f}s)")
+    except Exception as e:
+        log.error(f"Failed to fetch enriched transactions: {e}", exc_info=True)
+        enriched = None
 
-    if not enriched:
+    if enriched is None:
+        pass  # failure already logged above
+    elif not enriched:
         log.info("Nothing to process — queue is empty")
     else:
         log.info(f"Fetched {len(enriched)} transactions")
@@ -106,14 +122,28 @@ if __name__ == "__main__":
 
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
 
-    t0 = time.time()
-    quick_classified = apply_quick_tap_classifications()
-    if quick_classified:
-        log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
+    try:
+        t0 = time.time()
+        quick_classified = apply_quick_tap_classifications()
+        if quick_classified:
+            log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
+    except Exception as e:
+        log.error(f"Quick-tap classification failed: {e}", exc_info=True)
 
-    run_classifier()
-    run_monthly_summary()
-    run_weekly_summary()
+    try:
+        run_classifier()
+    except Exception as e:
+        log.error(f"LLM classification run failed: {e}", exc_info=True)
+
+    try:
+        run_monthly_summary()
+    except Exception as e:
+        log.error(f"Monthly summary run failed: {e}", exc_info=True)
+
+    try:
+        run_weekly_summary()
+    except Exception as e:
+        log.error(f"Weekly summary run failed: {e}", exc_info=True)
 
     try:
         t0 = time.time()

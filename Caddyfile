@@ -1,3 +1,9 @@
+{
+    log {
+        level WARN
+    }
+}
+
 bank-enrichment.duckdns.org {
     reverse_proxy bank-enrichment:8000
 }

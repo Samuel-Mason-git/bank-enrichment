@@ -1,26 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ description }}</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
+{% extends "base.html" %}
 
-<header>
-    <div class="header-brand">
-        <div class="dot"></div>
-        <h1>Bank Enrichment</h1>
-    </div>
-    <nav class="header-nav">
-        <a href="/dashboard" class="nav-link">Dashboard</a>
-        <a href="/dashboard/db" class="nav-link">Database</a>
-    </nav>
-</header>
+{% block title %}{{ description or 'Transaction' }} — Bank Enrichment{% endblock %}
 
-<main>
+{% block content %}
 
     <a href="/dashboard" class="back">← Dashboard</a>
 
@@ -28,7 +10,7 @@
         <div class="tx-hero-amount">{{ amount }}</div>
         <div class="tx-hero-desc">{{ description }}</div>
         <div class="tx-hero-meta">
-            <span>{{ category | capitalize }}</span>
+            <span>{{ category | replace('_', ' ') | capitalize }}</span>
             <span class="dot-sep">·</span>
             <span>{{ received_at }}</span>
             <span class="dot-sep">·</span>
@@ -128,7 +110,4 @@
         </form>
     </div>
 
-</main>
-
-</body>
-</html>
+{% endblock %}

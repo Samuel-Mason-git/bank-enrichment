@@ -10,6 +10,8 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 DB_PATH = os.getenv("DB_PATH")
 
+log = logging.getLogger(__name__)
+
 _con: duckdb.DuckDBPyConnection | None = None
 
 
@@ -279,7 +281,6 @@ def get_stats() -> dict:
 # ── Write ─────────────────────────────────────────────────────────────────────
 
 def write_to_db(transactions: list[dict]) -> None:
-    log = logging.getLogger(__name__)
     con = get_con()
     for t in transactions:
         data = t["payload"].get("data", {})
