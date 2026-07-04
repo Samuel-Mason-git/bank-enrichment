@@ -50,3 +50,11 @@ ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_field_2 VARCHAR(255);
 ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_type_2 VARCHAR(50);
 ALTER TABLE rules ADD COLUMN IF NOT EXISTS match_value_2 VARCHAR(255);
 ALTER TABLE rules ADD COLUMN IF NOT EXISTS auto_skip BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS quick_categories (
+    id            INTEGER      PRIMARY KEY,
+    category      VARCHAR(255) NOT NULL,
+    subcategory   VARCHAR(255) NOT NULL,
+    merchant_name VARCHAR(255),
+    rank          INTEGER      NOT NULL DEFAULT 0
+);
