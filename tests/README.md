@@ -1,4 +1,4 @@
-# Tests
+# Tests - To be run in CI workflow
 
 Run all tests:
 
