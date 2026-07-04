@@ -308,11 +308,69 @@ Run any of them with:
 poetry run python src/local_scripts/<script>.py
 ```
 
+### 8. Running Tests Locally
+
+The test suite mocks all network/DB dependencies, so it runs without a live server or real credentials:
+
+```bash
+poetry install --with dev
+poetry run pytest
+```
+
+This is the same command the `test` job in CI runs on every pull request.
+
 ---
 
-## Deploying Updates
+## Continuous Deployment
 
-When you push changes to the repository, SSH into your server and run:
+Merging a pull request into `main` automatically tests and deploys the server — no manual SSH step needed day-to-day. A GitHub Actions workflow (`.github/workflows/ci.yml`) runs two jobs:
+
+1. **`test`** — runs on every pull request and every push to `main`: installs dependencies and runs `poetry run pytest`.
+2. **`deploy`** — runs only on a push to `main`, and only if `test` passed: SSHs into the server and runs `git pull && docker compose up -d --build && docker image prune -f`.
+
+### One-Time CI/CD Setup
+
+**1. Generate a dedicated key for GitHub Actions to log into the server** — on the server:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/gh_deploy -C "github-actions-deploy" -N ""
+cat ~/.ssh/gh_deploy.pub >> ~/.ssh/authorized_keys
+cat ~/.ssh/gh_deploy   # copy the private key output
+```
+
+**2. Add three repository secrets** at `https://github.com/your-username/bank-enrichment/settings/secrets/actions` → **New repository secret**:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | Your server's hostname or IP |
+| `DEPLOY_USER` | The SSH user (e.g. `ubuntu`) |
+| `DEPLOY_SSH_KEY` | The private key from step 1 |
+
+**3. Make sure the server can `git pull` non-interactively.** The deploy script runs unattended, so whatever SSH key the server uses to authenticate to GitHub must have no passphrase. If your existing checkout uses your own passphrase-protected personal key, generate a separate read-only deploy key instead:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/repo_deploy_key -C "bank-enrichment-deploy" -N ""
+cat ~/.ssh/repo_deploy_key.pub
+```
+Add that public key at `https://github.com/your-username/bank-enrichment/settings/keys` → **Add deploy key** (leave "Allow write access" unchecked — pulling only needs read), then point git at it for GitHub specifically:
+```bash
+cat >> ~/.ssh/config << 'EOF'
+Host github.com
+    IdentityFile ~/.ssh/repo_deploy_key
+    IdentitiesOnly yes
+EOF
+```
+Test it: `cd ~/bank-enrichment && git pull` should complete with no prompt.
+
+**4. Make sure the deploy user can run Docker without `sudo`** — a non-interactive SSH session can't answer a sudo password prompt:
+```bash
+groups ubuntu   # check the list includes "docker"
+sudo usermod -aG docker ubuntu   # if missing — then fully log out and back in
+```
+
+Once all four steps are done, every merge to `main` deploys automatically. Watch it run at `https://github.com/your-username/bank-enrichment/actions`.
+
+### Manual Deploy (fallback)
+
+If you need to deploy without going through a PR:
 
 ```bash
 cd ~/bank-enrichment
@@ -327,4 +385,9 @@ sudo docker compose down
 git pull
 rm -f data/bank_enrichment_server.db
 sudo docker compose up -d --build && sudo docker image prune -f
+```
+
+**If the `Caddyfile` changed**, note that `docker compose up -d --build` won't pick it up — Caddy only reads its config at container start, and docker compose doesn't detect content-only changes to bind-mounted files. Reload it manually:
+```bash
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```

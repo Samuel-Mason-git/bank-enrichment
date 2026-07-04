@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Depends, Request, status, Query, Security
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -115,15 +115,13 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
-@app.get("/dashboard/logout")
-async def logout():
-    """HTTP Basic auth has no real server-side session to end — this forces
-    the browser to re-prompt for credentials by always returning 401 here."""
-    return Response(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        headers={"WWW-Authenticate": "Basic"},
-        content="Logged out. Close this tab, or enter new credentials to continue.",
-    )
+@app.get("/dashboard/logout", response_class=HTMLResponse)
+async def logout(request: Request):
+    """HTTP Basic auth has no real server-side session to end, and forcing a
+    401 here would trap the browser in a prompt loop it can never satisfy
+    (this endpoint would keep rejecting every credential re-entered). Instead,
+    just explain the limitation plainly."""
+    return templates.TemplateResponse(request=request, name="logout.html")
 
 
 @app.exception_handler(RequestValidationError)

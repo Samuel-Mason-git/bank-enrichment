@@ -141,7 +141,8 @@ main {
     background: #fff;
     border-radius: 10px;
     border: 1px solid #e4e4e7;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
     margin-bottom: 10px;
 }
 
@@ -670,3 +671,29 @@ pre.raw {
 }
 .rule-name { font-weight: 600; color: #111; }
 .rule-context { font-style: italic; color: #52525b; }
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 680px) {
+    header {
+        height: auto;
+        min-height: 54px;
+        flex-wrap: wrap;
+        row-gap: 8px;
+        padding: 10px 16px;
+    }
+    .header-right { flex-wrap: wrap; row-gap: 8px; }
+
+    main { padding: 0 14px; margin: 20px auto; }
+
+    .form-grid { grid-template-columns: 1fr 1fr; }
+
+    .tx-hero { padding: 24px; }
+    .tx-hero-amount { font-size: 2.1rem; }
+
+    .detail-row { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .detail-row > span:last-child { text-align: left; }
+}
+
+@media (max-width: 420px) {
+    .form-grid { grid-template-columns: 1fr; }
+}
