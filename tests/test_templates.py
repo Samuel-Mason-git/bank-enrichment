@@ -156,6 +156,23 @@ class TestDashboardEnrichButton:
         assert "openEnrich('tx_001')" not in html
 
 
+class TestLogoutPage:
+    """Regression guard: the logout page must never invite a fake-login
+    challenge — it should just explain the HTTP Basic limitation plainly."""
+
+    def test_renders_without_error(self, env):
+        html = env.get_template("logout.html").render()
+        assert "Bank Enrichment" in html
+
+    def test_explains_close_the_tab(self, env):
+        html = env.get_template("logout.html").render()
+        assert "close this browser tab" in html.lower()
+
+    def test_has_link_back_to_dashboard(self, env):
+        html = env.get_template("logout.html").render()
+        assert 'href="/dashboard"' in html
+
+
 class TestDbView:
     def test_renders_empty_tables(self, env):
         html = env.get_template("db.html").render(tables=[

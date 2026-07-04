@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Signed out — Bank Enrichment{% endblock %}
+
+{% block content %}
+
+    <a href="/dashboard" class="back">← Dashboard</a>
+
+    <div class="card" style="padding: 32px 36px;">
+        <div class="section-label" style="margin-top: 0;">Signing out</div>
+        <p style="margin-bottom: 12px;">
+            This dashboard uses HTTP Basic Auth, which has no real server-side session to end —
+            your browser just remembers the password you typed in and resends it automatically.
+        </p>
+        <p>
+            To fully sign out, <strong>close this browser tab or window</strong>. Simply navigating
+            back to the dashboard will log you straight back in using the credentials your browser
+            already has cached.
+        </p>
+    </div>
+
+{% endblock %}

@@ -1,7 +1,16 @@
 import asyncio
 
+from starlette.requests import Request
+
 import main
 from main import logout
+
+
+def _fake_request() -> Request:
+    return Request({
+        "type": "http", "method": "GET", "path": "/dashboard/logout",
+        "headers": [], "query_string": b"", "app": main.app,
+    })
 
 
 class TestStaticVersion:
@@ -21,14 +30,18 @@ class TestStaticVersion:
 
 
 class TestLogout:
-    def test_returns_401(self):
-        response = asyncio.run(logout())
-        assert response.status_code == 401
+    """Regression guard: logout must never trigger a 401/WWW-Authenticate
+    challenge — that traps the browser in a prompt loop it can never satisfy
+    (this endpoint would keep rejecting whatever credentials are re-entered)."""
 
-    def test_sets_www_authenticate_header(self):
-        response = asyncio.run(logout())
-        assert response.headers["www-authenticate"] == "Basic"
+    def test_returns_200_not_401(self):
+        response = asyncio.run(logout(_fake_request()))
+        assert response.status_code == 200
 
-    def test_body_explains_logout(self):
-        response = asyncio.run(logout())
-        assert b"Logged out" in response.body
+    def test_does_not_set_www_authenticate_header(self):
+        response = asyncio.run(logout(_fake_request()))
+        assert "www-authenticate" not in {k.lower() for k in response.headers.keys()}
+
+    def test_body_explains_the_limitation(self):
+        response = asyncio.run(logout(_fake_request()))
+        assert b"close this browser tab" in response.body.lower()

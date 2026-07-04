@@ -43,7 +43,7 @@ context sentences tell it exactly what each transaction was.
 2. Always-on server receives and stores the raw payload
 3. Server checks your rules — if a rule matches, the transaction is auto-enriched and/or marked as skipped, and Telegram is skipped entirely
 4. Otherwise, a Telegram notification is sent to your phone with transaction details
-5. You reply with one sentence of context — or tap Skip to dismiss
+5. You reply with one sentence of context, tap a quick-category button if one's shown, or tap Skip to dismiss
 6. Enrichment stored alongside the raw transaction in the queue
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
 8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
@@ -76,6 +76,11 @@ or regular transfers where you already know the context.
 
 A **Database view** at `/dashboard/db` lets you inspect the raw tables directly 
 without needing to exec into the container.
+
+A **Logout** button sits in the header. HTTP Basic Auth has no real server-side 
+session for it to end, so it links to a page explaining this plainly rather than 
+attempting a fake login challenge — closing the browser tab is the only way to 
+actually clear cached credentials.
 
 Processed transactions are retained on the server for 5 days before being automatically 
 cleaned up. This acts as a deduplication buffer — some merchants (e.g. Aldi, Lidl) do 
@@ -111,6 +116,17 @@ refunds from known merchants, or any recurring charge you're confident needs no 
 The transaction is still stored and will appear in your local database; it just won't 
 interrupt you via Telegram. You can combine Auto Skip with an Auto Context if you want 
 the transaction labelled but not notified.
+
+## Quick Categories
+
+Typing a sentence for every transaction adds up. Each time the local pipeline runs, 
+it computes your most-used subcategories overall and per-merchant, and syncs a small 
+summary (category names only — no amounts, dates, or raw transaction data) to the server. 
+The next Telegram notification for a matching merchant shows up to 3 one-tap buttons for 
+that merchant's usual categories, or 5 general ones if the merchant hasn't built up enough 
+history yet, alongside the usual Enrich and Skip buttons. Tapping one instantly saves that 
+category as your context — no typing required, and the LLM classifier still runs afterwards 
+as normal so it stays part of the same taxonomy.
 
 ## Weekly & Monthly Summaries
 
@@ -241,6 +257,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose |
+| CI/CD | GitHub Actions — tests run on every PR; merging to `main` auto-deploys to the server over SSH |
 
 ## Setup
 
