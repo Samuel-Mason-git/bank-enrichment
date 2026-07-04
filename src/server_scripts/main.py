@@ -18,7 +18,7 @@ import os
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from server_db import init_db, get_con
+from server_db import init_db, get_con, get_quick_categories
 from telegram import TelegramBot
 from check_rules import check_rules
 from follow_up_tg import requester_loop
@@ -178,9 +178,18 @@ class TelegramUpdate(BaseModel):
 
 class MarkProcessedRequest(BaseModel):
     ids: list[str]
-    
+
 class MonthlyReportRequest(BaseModel):
     message: str
+
+class QuickCategoryEntry(BaseModel):
+    category: str
+    subcategory: str
+    merchant_name: Optional[str] = None
+    rank: int = 0
+
+class SyncQuickCategoriesRequest(BaseModel):
+    entries: list[QuickCategoryEntry]
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
@@ -231,7 +240,8 @@ async def recieve_monzo(request: Request):
     # Send Telegram Message
     if is_new and not rule_context and not rule_skip and bot:
         try:
-            bot.send_card(json.loads(body))
+            merchant_name = monzo_data.data.merchant.get('name') if monzo_data.data.merchant else None
+            bot.send_card(json.loads(body), quick_categories=get_quick_categories(merchant_name))
             con.execute(
                 "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
                 [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
@@ -291,6 +301,36 @@ async def recieve_telegram(request: Request):
                 return {"ok": True}
             bot.send_message(chat_id, "⏭ Skipped.")
 
+        elif cq.data and cq.data.startswith("quickcat:"):
+            _, transaction_id, quick_id = cq.data.split(":", 2)
+            if chat_id in _sessions:
+                _sessions[chat_id].get("timeout_task") and _sessions[chat_id]["timeout_task"].cancel()
+                del _sessions[chat_id]
+            try:
+                con = get_con()
+                row = con.execute(
+                    "SELECT category, subcategory FROM quick_categories WHERE id = ?", [int(quick_id)]
+                ).fetchone()
+                if not row:
+                    bot.send_message(chat_id, "That quick category has expired. Tap ✏️ Enrich instead.")
+                    return {"ok": True}
+                category, subcategory = row
+                context = f"{category} - {subcategory}"
+                status_row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
+                was_pending = bool(status_row) and status_row[0] == "pending"
+                con.execute(
+                    "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+                    [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+                )
+                if was_pending:
+                    con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+                log.info(f"Transaction quick-categorized via Telegram: {transaction_id} -> {context}")
+            except Exception as e:
+                log.error(f"Failed to quick-categorize transaction {transaction_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            bot.send_message(chat_id, f"✅ Saved as {category} → {subcategory}")
+
         elif cq.data == "skip_cancel":
             if chat_id in _pending_skips:
                 _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
@@ -311,11 +351,14 @@ async def recieve_telegram(request: Request):
 
         try:
             con = get_con()
+            row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
+            was_pending = bool(row) and row[0] == "pending"
             con.execute(
                 "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
                 [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
             )
-            con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+            if was_pending:
+                con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
             log.info(f"Transaction enriched: {transaction_id}")
         except Exception as e:
             log.error(f"Failed to enrich transaction {transaction_id}: {e}", exc_info=True)
@@ -323,7 +366,11 @@ async def recieve_telegram(request: Request):
             return {"ok": True}
 
         del _sessions[chat_id]
-        bot.send_message(chat_id, "✅ Saved.")
+        bot.send_message(
+            chat_id,
+            f"✅ <code>{transaction_id}</code> saved.\n\n📝 {context}",
+            reply_markup={"inline_keyboard": [[{"text": "✏️ Edit", "callback_data": f"enrich:{transaction_id}"}]]}
+        )
 
     return {"ok": True}
 
@@ -578,6 +625,20 @@ async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API
     )
     log.info(f"Marked {len(body.ids)} transactions as processed")
     return {"marked": len(body.ids)}
+
+
+@app.post('/sync-quick-categories')
+async def sync_quick_categories(body: SyncQuickCategoriesRequest, api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    con = get_con()
+    con.execute("DELETE FROM quick_categories")
+    for i, entry in enumerate(body.entries):
+        con.execute(
+            "INSERT INTO quick_categories (id, category, subcategory, merchant_name, rank) VALUES (?, ?, ?, ?, ?)",
+            [i, entry.category, entry.subcategory, entry.merchant_name, entry.rank]
+        )
+    log.info(f"Synced {len(body.entries)} quick categories")
+    return {"synced": len(body.entries)}
 
 
 @app.post('/monthly-report')

@@ -6,7 +6,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 import requests
 
-from database_functions import init_db, write_to_db
+from database_functions import (
+    init_db, write_to_db, get_top_subcategories, get_top_merchant_subcategories,
+    apply_quick_tap_classifications,
+)
 from llm_labelling import run as run_classifier
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
@@ -48,6 +51,29 @@ def mark_processed(ids: list[str]):
     return response.json()
 
 
+def sync_quick_categories():
+    entries = [
+        {"category": row["category"], "subcategory": row["subcategory"], "merchant_name": None, "rank": i}
+        for i, row in enumerate(get_top_subcategories(limit=10))
+    ]
+    entries += [
+        {
+            "category": row["category"],
+            "subcategory": row["subcategory"],
+            "merchant_name": row["merchant_name"],
+            "rank": row["rank"] - 1,
+        }
+        for row in get_top_merchant_subcategories(merchant_limit=50, per_merchant_limit=3)
+    ]
+    response = requests.post(
+        f"{SERVER_URL}/sync-quick-categories",
+        headers=HEADERS,
+        json={"entries": entries},
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 if __name__ == "__main__":
     run_start = time.time()
     log.info("--- Process run started ---")
@@ -80,6 +106,18 @@ if __name__ == "__main__":
 
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
 
+    t0 = time.time()
+    quick_classified = apply_quick_tap_classifications()
+    if quick_classified:
+        log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
+
     run_classifier()
     run_monthly_summary()
     run_weekly_summary()
+
+    try:
+        t0 = time.time()
+        result = sync_quick_categories()
+        log.info(f"Synced {result.get('synced', 0)} quick categories to server ({time.time() - t0:.2f}s)")
+    except Exception as e:
+        log.error(f"Failed to sync quick categories: {e}", exc_info=True)

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from process import fetch_enriched, mark_processed
+from process import fetch_enriched, mark_processed, sync_quick_categories
 
 
 class TestFetchEnriched:
@@ -84,3 +84,69 @@ class TestMarkProcessed:
             mark_processed([])
         _, kwargs = mock_post.call_args
         assert kwargs["json"] == {"ids": []}
+
+
+class TestSyncQuickCategories:
+    _global_rows = [{"category": "Food & Drink", "subcategory": "Groceries", "transaction_count": 10}]
+    _merchant_rows = [
+        {"merchant_name": "Tesco", "category": "Food & Drink", "subcategory": "Groceries",
+         "transaction_count": 5, "rank": 1},
+        {"merchant_name": "Tesco", "category": "Food & Drink", "subcategory": "Snacks",
+         "transaction_count": 2, "rank": 2},
+    ]
+
+    def test_combines_global_and_merchant_entries(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"synced": 3}
+        with patch("process.get_top_subcategories", return_value=self._global_rows), \
+             patch("process.get_top_merchant_subcategories", return_value=self._merchant_rows), \
+             patch("process.requests.post", return_value=mock_resp) as mock_post:
+            result = sync_quick_categories()
+
+        assert result == {"synced": 3}
+        _, kwargs = mock_post.call_args
+        entries = kwargs["json"]["entries"]
+        assert entries == [
+            {"category": "Food & Drink", "subcategory": "Groceries", "merchant_name": None, "rank": 0},
+            {"category": "Food & Drink", "subcategory": "Groceries", "merchant_name": "Tesco", "rank": 0},
+            {"category": "Food & Drink", "subcategory": "Snacks", "merchant_name": "Tesco", "rank": 1},
+        ]
+
+    def test_hits_sync_endpoint(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        with patch("process.get_top_subcategories", return_value=[]), \
+             patch("process.get_top_merchant_subcategories", return_value=[]), \
+             patch("process.requests.post", return_value=mock_resp) as mock_post:
+            sync_quick_categories()
+        url = mock_post.call_args[0][0]
+        assert url.endswith("/sync-quick-categories")
+
+    def test_includes_api_key_header(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        with patch("process.get_top_subcategories", return_value=[]), \
+             patch("process.get_top_merchant_subcategories", return_value=[]), \
+             patch("process.requests.post", return_value=mock_resp) as mock_post:
+            sync_quick_categories()
+        _, kwargs = mock_post.call_args
+        assert "X-API-Key" in kwargs.get("headers", {})
+
+    def test_raises_on_http_error(self):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = Exception("HTTP 500")
+        with patch("process.get_top_subcategories", return_value=[]), \
+             patch("process.get_top_merchant_subcategories", return_value=[]), \
+             patch("process.requests.post", return_value=mock_resp):
+            with pytest.raises(Exception, match="500"):
+                sync_quick_categories()
+
+    def test_empty_when_no_data(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"synced": 0}
+        with patch("process.get_top_subcategories", return_value=[]), \
+             patch("process.get_top_merchant_subcategories", return_value=[]), \
+             patch("process.requests.post", return_value=mock_resp) as mock_post:
+            sync_quick_categories()
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["entries"] == []
