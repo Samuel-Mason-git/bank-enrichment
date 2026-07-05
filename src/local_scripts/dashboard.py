@@ -12,7 +12,11 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 from database_functions import (
     init_db, get_con, update_classification, upsert_parent, upsert_subcategory,
-    get_subscriptions, upsert_subscription, toggle_subscription, delete_subscription,
+    get_subscriptions, upsert_subscription, update_subscription, toggle_subscription, delete_subscription,
+)
+from dashboard_helpers import (
+    FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
+    sanitize_classification_edit,
 )
 
 st.set_page_config(
@@ -43,7 +47,7 @@ def _query(sql: str, params: list = []) -> list[dict]:
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner="Loading transactions...")
 def load_transactions():
     result = con.execute("""
         SELECT
@@ -61,7 +65,7 @@ def load_transactions():
     return df
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner="Loading taxonomy...")
 def load_taxonomy():
     parents = con.execute("SELECT name FROM parent_categories ORDER BY name").fetchall()
     subs = con.execute("""
@@ -161,9 +165,9 @@ if selected_subs:
     filtered = filtered[filtered["llm_subcategory"].isin(selected_subs)]
 if search:
     mask = (
-        filtered["description"].str.contains(search, case=False, na=False)
-        | filtered["merchant_name"].str.contains(search, case=False, na=False)
-        | filtered["user_context"].str.contains(search, case=False, na=False)
+        filtered["description"].str.contains(search, case=False, na=False, regex=False)
+        | filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
+        | filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     filtered = filtered[mask]
 
@@ -187,17 +191,11 @@ if selected_subs:
     prev_filtered = prev_filtered[prev_filtered["llm_subcategory"].isin(selected_subs)]
 if search:
     _mask = (
-        prev_filtered["description"].str.contains(search, case=False, na=False)
-        | prev_filtered["merchant_name"].str.contains(search, case=False, na=False)
-        | prev_filtered["user_context"].str.contains(search, case=False, na=False)
+        prev_filtered["description"].str.contains(search, case=False, na=False, regex=False)
+        | prev_filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
+        | prev_filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     prev_filtered = prev_filtered[_mask]
-
-
-def _pct_delta(current: float, previous: float) -> float | None:
-    if previous == 0:
-        return None
-    return round((current - previous) / abs(previous) * 100, 1)
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
@@ -217,19 +215,22 @@ with tab_overview:
     total_spend = abs(spend_df["amount"].sum())
     total_income = income_df["amount"].sum()
     net = total_income - total_spend
-    savings_rate = (net / total_income * 100) if total_income > 0 else 0
+    savings_rate = (net / total_income * 100) if total_income > 0 else None
 
     prev_spend_df = prev_filtered[prev_filtered["amount"] < 0]
     prev_income_df = prev_filtered[prev_filtered["amount"] > 0]
     prev_spend = abs(prev_spend_df["amount"].sum())
     prev_income = prev_income_df["amount"].sum()
     prev_net = prev_income - prev_spend
-    prev_savings_rate = (prev_net / prev_income * 100) if prev_income > 0 else 0
+    prev_savings_rate = (prev_net / prev_income * 100) if prev_income > 0 else None
 
-    spend_d = _pct_delta(total_spend, prev_spend)
-    income_d = _pct_delta(total_income, prev_income)
-    net_d = _pct_delta(net, prev_net)
-    sr_d = round(savings_rate - prev_savings_rate, 1) if prev_income > 0 else None
+    spend_d = pct_delta(total_spend, prev_spend)
+    income_d = pct_delta(total_income, prev_income)
+    net_d = pct_delta(net, prev_net)
+    sr_d = (
+        round(savings_rate - prev_savings_rate, 1)
+        if savings_rate is not None and prev_savings_rate is not None else None
+    )
 
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Transactions", len(filtered))
@@ -242,7 +243,7 @@ with tab_overview:
     col4.metric("Net", f"£{net:.2f}",
                 delta=f"{net_d:+.1f}% vs prev" if net_d is not None else None,
                 delta_color="normal")
-    col5.metric("Savings Rate", f"{savings_rate:.1f}%",
+    col5.metric("Savings Rate", f"{savings_rate:.1f}%" if savings_rate is not None else "—",
                 delta=f"{sr_d:+.1f}pp vs prev" if sr_d is not None else None,
                 delta_color="normal")
     col6.metric("Unclassified", int(filtered["llm_category"].isna().sum()))
@@ -440,6 +441,7 @@ with tab_txns:
                 new_cat = edited.at[i, "Category"]
                 new_sub = edited.at[i, "Subcategory"]
                 txn_id = edit_df.at[i, "id"]
+                new_cat, new_sub = sanitize_classification_edit(new_cat, new_sub)
                 if orig_cat != new_cat or orig_sub != new_sub:
                     if new_cat:
                         parent_id = upsert_parent(new_cat)
@@ -635,40 +637,6 @@ with tab_merchants:
 
 # ── Tab 6: Subscriptions ──────────────────────────────────────────────────────
 
-FREQ_MONTHLY = {"weekly": 52/12, "fortnightly": 26/12, "monthly": 1, "annual": 1/12}
-
-def _detect_subscriptions(df: pd.DataFrame, confirmed_names: set) -> list[dict]:
-    candidates = []
-    spend = df[(df["amount"] < 0) & df["merchant_name"].notna() & (df["skipped"] != True)].copy()
-    for merchant, group in spend.groupby("merchant_name"):
-        if merchant in confirmed_names:
-            continue
-        dates = group["created_at"].sort_values()
-        if len(dates) < 2:
-            continue
-        gaps = dates.diff().dropna().dt.days.tolist()
-        if not gaps:
-            continue
-        mean_gap = sum(gaps) / len(gaps)
-        std_gap = pd.Series(gaps).std()
-        cv = std_gap / mean_gap if mean_gap > 0 else 999
-        for freq, target, tolerance in [
-            ("weekly", 7, 2), ("fortnightly", 14, 3),
-            ("monthly", 30, 6), ("annual", 365, 30),
-        ]:
-            if abs(mean_gap - target) <= tolerance and cv < 0.4:
-                median_amount = abs(group["amount"].median())
-                candidates.append({
-                    "name": merchant,
-                    "amount": round(median_amount, 2),
-                    "frequency": freq,
-                    "occurrences": len(group),
-                    "monthly_cost": round(median_amount * FREQ_MONTHLY[freq], 2),
-                })
-                break
-    return sorted(candidates, key=lambda x: x["monthly_cost"], reverse=True)
-
-
 with tab_subs:
     subs = get_subscriptions()
     confirmed_names = {s["name"] for s in subs}
@@ -678,12 +646,7 @@ with tab_subs:
     for s in subs:
         if not s["active"]:
             continue
-        match_name = s["merchant_name"] or s["name"]
-        last_txn = df[
-            df["merchant_name"].str.contains(match_name, case=False, na=False) &
-            (df["amount"] < 0)
-        ]["created_at"].max()
-        if pd.isna(last_txn) or last_txn < two_months_ago:
+        if should_deactivate_subscription(s, df, two_months_ago):
             toggle_subscription(s["id"])
     subs = get_subscriptions()
     confirmed_names = {s["name"] for s in subs}
@@ -713,41 +676,87 @@ with tab_subs:
         c5.markdown("<br>", unsafe_allow_html=True)
         submitted = st.form_submit_button("Add", type="primary", use_container_width=True)
         if submitted and sub_name.strip():
-            upsert_subscription(sub_name.strip(), sub_amount, sub_freq, sub_merchant or None)
-            st.cache_data.clear()
-            st.rerun()
+            if sub_name.strip().lower() in {n.lower() for n in confirmed_names}:
+                st.error(f'"{sub_name.strip()}" already exists — edit it below with ✏️ instead of adding a duplicate.')
+            else:
+                upsert_subscription(sub_name.strip(), sub_amount, sub_freq, sub_merchant or None)
+                st.cache_data.clear()
+                st.rerun()
 
     # ── Confirmed subscriptions ────────────────────────────────────────────────
+    if "edit_sub_id" not in st.session_state:
+        st.session_state.edit_sub_id = None
+
     if subs:
         st.subheader("Your Subscriptions")
         for s in subs:
             mc = s["amount"] * FREQ_MONTHLY[s["frequency"]]
-            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+            confirm_key = f"confirm_del_sub_{s['id']}"
+            if confirm_key not in st.session_state:
+                st.session_state[confirm_key] = False
+
+            col1, col2, col3, col4, col5, col6 = st.columns([3, 1, 1, 1, 1, 1])
             col1.markdown(f"**{s['name']}**")
             col2.markdown(f"£{s['amount']:.2f} / {s['frequency']}")
             col3.markdown(f"~£{mc:.2f}/mo")
+            if col4.button("✏️", key=f"edit_{s['id']}", help="Edit"):
+                st.session_state.edit_sub_id = None if st.session_state.edit_sub_id == s["id"] else s["id"]
             label = "Disable" if s["active"] else "Enable"
-            if col4.button(label, key=f"toggle_{s['id']}"):
+            if col5.button(label, key=f"toggle_{s['id']}"):
                 toggle_subscription(s["id"])
                 st.cache_data.clear()
                 st.rerun()
-            if col5.button("✕", key=f"del_{s['id']}"):
-                delete_subscription(s["id"])
-                st.cache_data.clear()
-                st.rerun()
+            if col6.button("✕", key=f"del_{s['id']}"):
+                st.session_state[confirm_key] = True
             if not s["active"]:
                 st.caption("⏸ Inactive")
+
+            if st.session_state.edit_sub_id == s["id"]:
+                with st.form(f"edit_sub_form_{s['id']}"):
+                    ec1, ec2 = st.columns([2, 2])
+                    edit_name = ec1.text_input("Display Name", value=s["name"])
+                    merchant_options = [""] + known_merchants
+                    cur_merchant = s["merchant_name"] if s["merchant_name"] in merchant_options else ""
+                    edit_merchant = ec2.selectbox("Merchant Name", merchant_options, index=merchant_options.index(cur_merchant))
+                    ec3, ec4 = st.columns([1, 1])
+                    edit_amount = ec3.number_input("Amount (£)", min_value=0.01, step=0.01, format="%.2f", value=float(s["amount"]))
+                    freq_options = ["monthly", "weekly", "fortnightly", "annual"]
+                    edit_freq = ec4.selectbox("Frequency", freq_options, index=freq_options.index(s["frequency"]))
+                    ec5, ec6 = st.columns(2)
+                    save = ec5.form_submit_button("Save", type="primary")
+                    cancel = ec6.form_submit_button("Cancel")
+                    if save and edit_name.strip():
+                        update_subscription(s["id"], edit_name.strip(), edit_amount, edit_freq, edit_merchant or None)
+                        st.session_state.edit_sub_id = None
+                        st.cache_data.clear()
+                        st.rerun()
+                    if cancel:
+                        st.session_state.edit_sub_id = None
+                        st.rerun()
+
+            if st.session_state[confirm_key]:
+                wc1, wc2, wc3 = st.columns([3, 1, 1])
+                wc1.warning(f"Delete **{s['name']}**? This cannot be undone.")
+                if wc2.button("Confirm", key=f"confirm_yes_{s['id']}", type="primary"):
+                    delete_subscription(s["id"])
+                    st.session_state[confirm_key] = False
+                    st.cache_data.clear()
+                    st.rerun()
+                if wc3.button("Cancel", key=f"confirm_no_{s['id']}"):
+                    st.session_state[confirm_key] = False
+                    st.rerun()
 
     st.divider()
 
     # ── Detected candidates ────────────────────────────────────────────────────
     st.subheader("Suggested Subscriptions")
     st.caption("Detected from recurring transactions — click Add to confirm.")
-    candidates = _detect_subscriptions(df, confirmed_names)
+    candidates = detect_subscriptions(df, confirmed_names)
     if candidates:
         for c in candidates:
             col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-            col1.markdown(f"**{c['name']}**  <span style='color:#a1a1aa;font-size:0.8em'>{c['occurrences']} transactions</span>", unsafe_allow_html=True)
+            col1.markdown(f"**{c['name']}**")
+            col1.caption(f"{c['occurrences']} transactions")
             col2.markdown(f"£{c['amount']:.2f} / {c['frequency']}")
             col3.markdown(f"~£{c['monthly_cost']:.2f}/mo")
             if col4.button("+ Add", key=f"add_{c['name']}"):
@@ -762,7 +771,7 @@ with tab_subs:
 
 with tab_taxonomy:
     # Session state for right-panel mode
-    for _k in ("tax_edit_sub", "tax_view_sub", "tax_edit_parent", "tax_del_parent", "tax_wipe_parent"):
+    for _k in ("tax_edit_sub", "tax_view_sub", "tax_edit_parent", "tax_del_parent", "tax_wipe_parent", "tax_del_sub"):
         if _k not in st.session_state:
             st.session_state[_k] = None
 
@@ -813,7 +822,7 @@ with tab_taxonomy:
 
             active_sub_ids = [
                 s["id"] for s in subs_for_parent
-                if s["id"] in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub)
+                if s["id"] in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub, st.session_state.tax_del_sub)
             ]
             is_active_parent = pid in (st.session_state.tax_edit_parent, st.session_state.tax_del_parent, st.session_state.tax_wipe_parent)
 
@@ -867,17 +876,12 @@ with tab_taxonomy:
                                 st.session_state.tax_del_parent = None
                         with sc4:
                             if st.button("🗑️", key=f"ds_{sid}", help="Delete subcategory"):
-                                con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
-                                con.execute(
-                                    "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
-                                    [sub["name"], pname],
-                                )
-                                if st.session_state.tax_edit_sub == sid:
-                                    st.session_state.tax_edit_sub = None
-                                if st.session_state.tax_view_sub == sid:
-                                    st.session_state.tax_view_sub = None
-                                st.cache_data.clear()
-                                st.rerun()
+                                st.session_state.tax_del_sub = sid
+                                st.session_state.tax_edit_sub = None
+                                st.session_state.tax_view_sub = None
+                                st.session_state.tax_edit_parent = None
+                                st.session_state.tax_del_parent = None
+                                st.session_state.tax_wipe_parent = None
 
                 # Add subcategory form inside this parent
                 with st.form(f"add_sub_{pid}"):
@@ -973,6 +977,41 @@ with tab_taxonomy:
                 with c2:
                     if st.button("Cancel"):
                         st.session_state.tax_wipe_parent = None
+                        st.rerun()
+
+        # Delete subcategory confirmation
+        elif st.session_state.tax_del_sub:
+            sid = st.session_state.tax_del_sub
+            sub_rows = _query("""
+                SELECT s.id, s.name, p.name AS parent_name,
+                       COUNT(t.id) AS txn_count
+                FROM subcategories s
+                JOIN parent_categories p ON p.id = s.parent_id
+                LEFT JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = p.name
+                WHERE s.id = ?
+                GROUP BY s.id, s.name, p.name
+            """, [sid])
+            if sub_rows:
+                sub = sub_rows[0]
+                st.subheader(f"Delete: {sub['name']}")
+                st.warning(
+                    f"This will permanently delete **{sub['name']}** (under {sub['parent_name']}) "
+                    f"and clear labels from **{sub['txn_count']} transaction(s)**."
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm delete", type="primary", key="confirm_del_sub"):
+                        con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
+                        con.execute(
+                            "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
+                            [sub["name"], sub["parent_name"]],
+                        )
+                        st.session_state.tax_del_sub = None
+                        st.cache_data.clear()
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel", key="cancel_del_sub"):
+                        st.session_state.tax_del_sub = None
                         st.rerun()
 
         # Edit subcategory
@@ -1084,3 +1123,44 @@ with tab_taxonomy:
 
         else:
             st.info("Click ✏️ to edit, 🔗 to view transactions, or 🗑️ to delete a subcategory.")
+
+    # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────
+    st.divider()
+    with st.expander("⚠️ Danger Zone"):
+        st.markdown("**Wipe entire taxonomy**")
+
+        total_txns = _query("SELECT COUNT(*) AS n FROM transactions")[0]["n"]
+        total_classified = _query("SELECT COUNT(*) AS n FROM transactions WHERE llm_category IS NOT NULL")[0]["n"]
+        total_subs_all = sum(p["sub_count"] for p in tax_parents)
+
+        st.warning(
+            f"This permanently deletes all **{len(tax_parents)} parent categories** and "
+            f"**{total_subs_all} subcategories**, and clears the LLM category/subcategory "
+            f"labels from **{total_classified} of {total_txns}** transactions.\n\n"
+            f"Your raw transactions and context sentences are **never touched** — only the "
+            f"category structure and label assignments are removed. The default taxonomy "
+            f"is re-seeded automatically the next time the pipeline or dashboard starts, and "
+            f"transactions will need to be re-classified from scratch."
+        )
+
+        wipe_ack = st.checkbox("I understand this cannot be undone", key="wipe_taxonomy_ack")
+        wipe_text = st.text_input(
+            'Type "WIPE TAXONOMY" (exact, case-sensitive) to confirm',
+            key="wipe_taxonomy_text",
+            disabled=not wipe_ack,
+        )
+        wipe_ready = wipe_ack and wipe_text.strip() == "WIPE TAXONOMY"
+
+        if st.button("Permanently wipe entire taxonomy", type="primary", disabled=not wipe_ready):
+            con.execute(
+                """UPDATE transactions
+                   SET llm_category = NULL, llm_subcategory = NULL,
+                       classified_at = NULL, llm_model = NULL, llm_confidence = NULL"""
+            )
+            con.execute("DELETE FROM subcategories")
+            con.execute("DELETE FROM parent_categories")
+            st.session_state.wipe_taxonomy_ack = False
+            st.session_state.wipe_taxonomy_text = ""
+            st.cache_data.clear()
+            st.success("Taxonomy wiped. Re-run the pipeline to re-seed the default taxonomy and re-classify.")
+            st.rerun()

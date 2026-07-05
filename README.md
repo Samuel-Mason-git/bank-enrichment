@@ -200,8 +200,9 @@ A Streamlit dashboard runs on your machine and reads directly from the local Duc
 | Spending Over Time | Stacked monthly spend chart + monthly spend/income/net/transaction count table |
 | Transactions | Full filterable and searchable table — edit labels inline, type new ones |
 | Category Drill-Down | Pick any parent category to see subcategory breakdowns and transactions |
+| Top Merchants | Ranks merchants by total spend (chart + full table) with transaction count, average spend, and last-seen date |
 | Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, monthly and annual cost totals |
-| Taxonomy | Tree view of all categories — add, rename, move, and delete. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification. |
+| Taxonomy | Tree view of all categories — add, rename, move, and delete. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). |
 
 ## What You End Up With
 
@@ -231,11 +232,8 @@ at any point using a new taxonomy and it will classify correctly every time.
 │       ├── llm_labelling.py   # LLM classification (Claude)
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
-│       ├── database_functions.py  # Shared DuckDB library
-│       ├── dashboard.py       # Streamlit dashboard
-│       ├── view_db.py         # Print all transactions to terminal
-│       ├── clear_db.py        # Wipe transaction database
-│       └── clear_taxonomy.py  # Wipe category tables
+│       ├── database_functions.py  # Shared DuckDB library — includes a CLI (run the file directly) to print stats/transactions
+│       └── dashboard.py       # Streamlit dashboard
 ├── sql/
 │   ├── tables.sql             # Local database schema (transactions, categories)
 │   └── server_tables.sql      # Server database schema (queue, stats, rules)

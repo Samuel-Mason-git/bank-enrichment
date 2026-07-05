@@ -297,16 +297,15 @@ If you want to start fresh with a completely different taxonomy, wipe all labels
 
 ### 7. Utility Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `src/local_scripts/view_db.py` | Print all transactions and stats to the terminal |
-| `src/local_scripts/clear_db.py` | Wipe all transactions (requires typing YES to confirm) |
-| `src/local_scripts/clear_taxonomy.py` | Wipe parent categories and subcategories (useful when re-classifying from scratch) |
-
-Run any of them with:
+Print all transactions and stats to the terminal:
 ```bash
-poetry run python src/local_scripts/<script>.py
+poetry run python src/local_scripts/database_functions.py
 ```
+
+Wiping labels or the entire taxonomy is done from the **Taxonomy tab** in the dashboard 
+rather than a standalone script — see [Customising Your Taxonomy](#customising-your-taxonomy) 
+above. Those are destructive, hard-to-undo operations, so they live behind the dashboard's 
+confirmation guardrails rather than a bare CLI script.
 
 ### 8. Running Tests Locally
 

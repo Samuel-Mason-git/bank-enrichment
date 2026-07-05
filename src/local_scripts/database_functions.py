@@ -395,6 +395,13 @@ def upsert_subscription(name: str, amount: float, frequency: str, merchant_name:
     return next_id
 
 
+def update_subscription(sub_id: int, name: str, amount: float, frequency: str, merchant_name: str | None = None) -> None:
+    get_con().execute(
+        "UPDATE subscriptions SET name = ?, merchant_name = ?, amount = ?, frequency = ? WHERE id = ?",
+        [name, merchant_name, amount, frequency, sub_id]
+    )
+
+
 def toggle_subscription(sub_id: int) -> None:
     get_con().execute("UPDATE subscriptions SET active = NOT active WHERE id = ?", [sub_id])
 
