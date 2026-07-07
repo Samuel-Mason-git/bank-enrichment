@@ -43,4 +43,5 @@ jobs:
             cd /home/ubuntu/bank-enrichment
             git pull
             docker compose up -d --build
+            docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
             docker image prune -f
