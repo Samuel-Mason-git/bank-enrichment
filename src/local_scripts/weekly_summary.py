@@ -17,15 +17,21 @@ LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "weekly_summary.log") if DB_PA
 
 from database_functions import init_db, get_con
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[
-        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2),
-        logging.StreamHandler(),
-    ]
-)
 log = logging.getLogger(__name__)
+
+
+def _configure_standalone_logging():
+    """Only used when this script is run directly — when imported (e.g. by
+    process.py), the importing entrypoint owns root logger configuration so
+    its own log file actually receives these log lines."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5),
+            logging.StreamHandler(),
+        ]
+    )
 
 HEADERS = {"X-API-Key": LOCAL_API_KEY}
 
@@ -191,4 +197,5 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    _configure_standalone_logging()
     run()
