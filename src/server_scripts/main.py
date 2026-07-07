@@ -32,7 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2),
+        RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5),
         logging.StreamHandler()
     ]
 )
@@ -260,6 +260,7 @@ async def recieve_monzo(request: Request):
         except Exception as e:
             log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
             quick_categories = []
+        log.info(f"Initial send for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
         try:
             bot.send_card(json.loads(body), quick_categories=quick_categories)
             con.execute(

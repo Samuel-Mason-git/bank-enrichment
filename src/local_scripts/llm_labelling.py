@@ -23,15 +23,21 @@ BATCH_SIZE = 15
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "llm_classifier.log") if DB_PATH else "llm_classifier.log"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[
-        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2, encoding="utf-8"),
-        logging.StreamHandler(stream=open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)),
-    ]
-)
 log = logging.getLogger(__name__)
+
+
+def _configure_standalone_logging():
+    """Only used when this script is run directly — when imported (e.g. by
+    process.py), the importing entrypoint owns root logger configuration so
+    its own log file actually receives these log lines."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5, encoding="utf-8"),
+            logging.StreamHandler(stream=open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)),
+        ]
+    )
 
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
@@ -346,4 +352,5 @@ def run():
     log.info(f"--- Run complete: {total_classified}/{len(unclassified)} classified in {time.time() - run_start:.2f}s ---")
 
 if __name__ == "__main__":
+    _configure_standalone_logging()
     run()
