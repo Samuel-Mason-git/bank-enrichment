@@ -1851,17 +1851,6 @@ snowflake = ["snowflake-connector-python (>=3.3.0)", "snowflake-snowpark-python[
 sql = ["SQLAlchemy (>=2.0.0)"]
 
 [[package]]
-name = "telegram"
-version = "0.0.1"
-description = "Telegram APIs"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "telegram-0.0.1.tar.gz", hash = "sha256:d405a0af4c868a8dbeae6d03e297e21c7ee6269e11e2ed3810e15544aba02591"},
-]
-
-[[package]]
 name = "tenacity"
 version = "9.1.4"
 description = "Retry code until it succeeds"
@@ -2084,4 +2073,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "264f4b6113b3a02f12c1454014f487713f7a0db188f31e763bd3a10c67f2042c"
+content-hash = "32860e1d4b17acc29fbde1bd06c8e8efe42c8864b8de19f96fe4add24622361e"

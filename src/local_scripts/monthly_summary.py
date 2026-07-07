@@ -62,34 +62,35 @@ def get_month_stats(month_str: str) -> dict:
     last_day = (date(year, month, 28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     month_end = f"{last_day} 23:59:59"
 
+    base_filter = "skipped = FALSE AND created_at BETWEEN ? AND ?"
+    params = [month_start, month_end]
+
     total_spend = abs(con.execute(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND created_at BETWEEN ? AND ?",
-        [month_start, month_end]
+        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND {base_filter}",
+        params
     ).fetchone()[0])
 
     total_income = con.execute(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND created_at BETWEEN ? AND ?",
-        [month_start, month_end]
+        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND {base_filter}",
+        params
     ).fetchone()[0]
 
     spend_by_cat = con.execute(
-        """SELECT llm_category, SUM(ABS(amount)) as total
+        f"""SELECT llm_category, SUM(ABS(amount)) as total
            FROM transactions
-           WHERE amount < 0 AND llm_category IS NOT NULL
-           AND created_at BETWEEN ? AND ?
+           WHERE amount < 0 AND llm_category IS NOT NULL AND {base_filter}
            GROUP BY llm_category
            ORDER BY total DESC""",
-        [month_start, month_end]
+        params
     ).fetchall()
 
     income_by_cat = con.execute(
-        """SELECT llm_category, SUM(amount) as total
+        f"""SELECT llm_category, SUM(amount) as total
            FROM transactions
-           WHERE amount > 0 AND llm_category IS NOT NULL
-           AND created_at BETWEEN ? AND ?
+           WHERE amount > 0 AND llm_category IS NOT NULL AND {base_filter}
            GROUP BY llm_category
            ORDER BY total DESC""",
-        [month_start, month_end]
+        params
     ).fetchall()
 
     return {
