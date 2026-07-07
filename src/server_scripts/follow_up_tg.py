@@ -45,6 +45,7 @@ def run_requester(bot) -> None:
             except Exception as e:
                 log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
                 quick_categories = []
+            log.info(f"Missed-send recovery for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
             bot.send_card(data, quick_categories=quick_categories)
             con.execute(
                 "UPDATE webhook_queue SET request_count = 1, last_requested_at = ? WHERE id = ?",
@@ -89,6 +90,7 @@ def run_requester(bot) -> None:
                     except Exception as e:
                         log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
                         quick_categories = []
+                    log.info(f"Follow-up {request_count} for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
                     bot.send_card(data, follow_up=request_count, quick_categories=quick_categories)
                     con.execute(
                         "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
@@ -104,12 +106,12 @@ def run_requester(bot) -> None:
 def run_cleanup() -> None:
     con = get_con()
     cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400 * 5))
-    result = con.execute(
-        "DELETE FROM webhook_queue WHERE status = 'processed' AND enriched_at <= ?",
+    deleted = con.execute(
+        "DELETE FROM webhook_queue WHERE status = 'processed' AND enriched_at <= ? RETURNING id",
         [cutoff]
-    ).rowcount
-    if result:
-        log.info(f"Cleaned up {result} processed transactions older than 5 days")
+    ).fetchall()
+    if deleted:
+        log.info(f"Cleaned up {len(deleted)} processed transactions older than 5 days")
 
 
 async def requester_loop(bot) -> None:

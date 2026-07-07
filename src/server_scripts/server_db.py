@@ -1,5 +1,8 @@
 import duckdb
+import logging
 import os
+
+log = logging.getLogger(__name__)
 
 _con: duckdb.DuckDBPyConnection | None = None
 
@@ -35,9 +38,12 @@ def get_quick_categories(merchant_name: str | None) -> list[dict]:
             [merchant_name]
         ).fetchall()
         if rows:
+            log.info(f"get_quick_categories: {len(rows)} merchant-specific row(s) for {merchant_name!r}")
             return [{"id": r[0], "category": r[1], "subcategory": r[2]} for r in rows]
+        log.info(f"get_quick_categories: no merchant-specific rows for {merchant_name!r}, falling back to general top-5")
 
     rows = con.execute(
         "SELECT id, category, subcategory FROM quick_categories WHERE merchant_name IS NULL ORDER BY rank LIMIT 5"
     ).fetchall()
+    log.info(f"get_quick_categories: general fallback returned {len(rows)} row(s)")
     return [{"id": r[0], "category": r[1], "subcategory": r[2]} for r in rows]

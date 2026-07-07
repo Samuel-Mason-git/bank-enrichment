@@ -29,10 +29,13 @@ class TelegramBot:
         if response.status_code != 200:
             log.error(f"Telegram API {endpoint} returned {response.status_code}: {response.text}")
         try:
-            return response.json()
+            data = response.json()
         except ValueError as e:
             log.error(f"Telegram API {endpoint} returned unparseable response: {e}")
             return None
+        if isinstance(data, dict) and not data.get("ok"):
+            log.error(f"Telegram API {endpoint} rejected payload: {data}")
+        return data
 
     def send_message(self, chat_id: int, text: str, reply_markup: dict | None = None):
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -68,6 +71,7 @@ class TelegramBot:
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']
+        log.info(f"send_card for {data['id']}: received quick_categories={quick_categories!r}")
 
         currency_symbols = {
             "GBP": "£", "USD": "$", "EUR": "€", "JPY": "¥",
