@@ -326,6 +326,13 @@ with tab_time:
             .rename(columns={"month": "Month"})
             .sort_values("Month")
         )
+        # amount is DECIMAL(19,4) in DuckDB, so Spend/Income land here as Python
+        # Decimal objects (object dtype) rather than float. Decimal division by
+        # zero raises decimal.DivisionByZero instead of producing inf/nan like
+        # float division does, which crashes pct_change() below whenever a
+        # filtered view has a $0 month (e.g. a merchant with no income at all).
+        monthly_totals_raw["Spend"] = monthly_totals_raw["Spend"].astype(float)
+        monthly_totals_raw["Income"] = monthly_totals_raw["Income"].astype(float)
         monthly_totals_raw["Net"] = monthly_totals_raw["Income"] - monthly_totals_raw["Spend"]
         monthly_totals_raw["Savings Rate"] = (
             monthly_totals_raw["Net"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
