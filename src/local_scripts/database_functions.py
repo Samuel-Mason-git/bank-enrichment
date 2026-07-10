@@ -102,29 +102,52 @@ def _migrate() -> None:
     if "merchant_name" not in cols:
         _con.execute("ALTER TABLE subscriptions ADD COLUMN merchant_name VARCHAR(255)")
 
+    for table in ("monthly_summaries", "weekly_summaries"):
+        cols = {r[0] for r in _con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
+        ).fetchall()}
+        if "total_invested" not in cols:
+            _con.execute(f"ALTER TABLE {table} ADD COLUMN total_invested DECIMAL(19,4)")
+
 
 def _seed_taxonomy() -> None:
-    """Insert default taxonomy on first run — skips any entries that already exist."""
+    """Insert the default taxonomy, but only into a genuinely empty database --
+    once any parent category exists (default or custom), seeding is skipped
+    entirely. This previously ran on every startup and topped up any missing
+    default categories/subcategories by name even on an otherwise-populated,
+    user-customized taxonomy -- so wiping the taxonomy and rebuilding your own
+    under different names would silently get the full default set added back
+    in alongside it on the next start."""
     con = _con
-    existing_parents = {r[0] for r in con.execute("SELECT name FROM parent_categories").fetchall()}
+    if con.execute("SELECT COUNT(*) FROM parent_categories").fetchone()[0] > 0:
+        return
     for parent_name, subs in _DEFAULT_TAXONOMY.items():
-        if parent_name not in existing_parents:
-            next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories").fetchone()[0]
-            con.execute(
-                "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, NOW())",
-                [next_id, parent_name],
-            )
-        parent_id = con.execute("SELECT id FROM parent_categories WHERE name = ?", [parent_name]).fetchone()[0]
-        existing_subs = {r[0] for r in con.execute(
-            "SELECT name FROM subcategories WHERE parent_id = ?", [parent_id]
-        ).fetchall()}
+        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories").fetchone()[0]
+        con.execute(
+            "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, NOW())",
+            [next_id, parent_name],
+        )
+        parent_id = next_id
         for sub_name in subs:
-            if sub_name not in existing_subs:
-                next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories").fetchone()[0]
-                con.execute(
-                    "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, NOW())",
-                    [next_id, sub_name, parent_id],
-                )
+            next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories").fetchone()[0]
+            con.execute(
+                "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, NOW())",
+                [next_id, sub_name, parent_id],
+            )
+
+    # Refunds are money you already spent coming back, not new income — excluded
+    # from Income totals by default (overridable in the dashboard's Settings tab).
+    refunds = con.execute(
+        """SELECT s.id, s.parent_id FROM subcategories s
+           JOIN parent_categories p ON p.id = s.parent_id
+           WHERE s.name = 'Refunds' AND p.name = 'Income'"""
+    ).fetchone()
+    if refunds:
+        refunds_id, income_parent_id = refunds
+        con.execute(
+            "INSERT INTO category_roles (parent_id, subcategory_id, role) VALUES (?, ?, 'excluded')",
+            [income_parent_id, refunds_id]
+        )
 
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
@@ -168,24 +191,30 @@ def get_recent(n: int = 10) -> list[dict]:
 def get_parents() -> list[dict]:
     return _rows(
         """SELECT p.id, p.name, p.created_at,
-                  COUNT(t.id) AS transaction_count
+                  COUNT(t.id) AS transaction_count,
+                  COALESCE(pr.role, default_role_for_parent(p.name), 'spend') AS role
            FROM parent_categories p
            LEFT JOIN transactions t ON t.llm_category = p.name
-           GROUP BY p.id, p.name, p.created_at
-           ORDER BY transaction_count DESC"""
+           LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
+           GROUP BY p.id, p.name, p.created_at, pr.role
+           ORDER BY transaction_count DESC, p.name ASC"""
     )
 
 
 def get_subcategories() -> list[dict]:
     return _rows(
         """SELECT s.id, s.name, s.parent_id, p.name AS parent_name, s.created_at,
-                  COUNT(t.id) AS transaction_count
+                  COUNT(t.id) AS transaction_count,
+                  sr.role AS role_override,
+                  COALESCE(pr.role, default_role_for_parent(p.name), 'spend') AS parent_role
            FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
            LEFT JOIN transactions t ON t.llm_subcategory = s.name
                                     AND t.llm_category = p.name
-           GROUP BY s.id, s.name, s.parent_id, p.name, s.created_at
-           ORDER BY p.name, transaction_count DESC"""
+           LEFT JOIN category_roles sr ON sr.subcategory_id = s.id
+           LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
+           GROUP BY s.id, s.name, s.parent_id, p.name, s.created_at, sr.role, pr.role
+           ORDER BY p.name ASC, transaction_count DESC, s.name ASC"""
     )
 
 
@@ -381,6 +410,81 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     return next_id
 
 
+ROLES = ("income", "spend", "investment", "transfer", "excluded")
+
+
+def _validate_role(role: str) -> None:
+    if role not in ROLES:
+        raise ValueError(f"Invalid role {role!r} — must be one of {ROLES}")
+
+
+def get_totals_by_role(date_from: str, date_to: str) -> dict[str, float]:
+    """Directional totals per role in [date_from, date_to] -- income sums its
+    positive (incoming) side, every other role sums its negative (outgoing)
+    side as a positive magnitude. Always returns all 5 keys (0.0 default) so
+    callers never need a .get() guard.
+
+    Roles like "transfer" are bidirectional (an Inbound and an Outbound
+    Transfer subcategory can both carry that role) -- summing every sign
+    together would let them cancel out (e.g. -674 + 540 nets to -134) instead
+    of reporting the true £674 that actually went out."""
+    con = get_con()
+    rows = con.execute(
+        """SELECT role, COALESCE(SUM(
+               CASE WHEN role = 'income' THEN GREATEST(amount, 0) ELSE GREATEST(-amount, 0) END
+           ), 0) FROM transaction_roles
+           WHERE skipped = FALSE AND created_at BETWEEN ? AND ?
+           GROUP BY role""",
+        [date_from, date_to]
+    ).fetchall()
+    totals = {r[0]: float(r[1]) for r in rows}
+    for role in ROLES:
+        totals.setdefault(role, 0.0)
+    return totals
+
+
+def get_category_totals_by_role(role: str, date_from: str, date_to: str) -> list[dict]:
+    """Per-category breakdown for one role, e.g. "Spend by category". Only
+    includes classified transactions -- unclassified ones surface separately
+    as their own "Unclassified" bucket wherever this is displayed."""
+    _validate_role(role)
+    return _rows(
+        """SELECT llm_category AS category, SUM(amount) AS total
+           FROM transaction_roles
+           WHERE role = ? AND llm_category IS NOT NULL
+             AND skipped = FALSE AND created_at BETWEEN ? AND ?
+           GROUP BY llm_category
+           ORDER BY total DESC""",
+        [role, date_from, date_to]
+    )
+
+
+def set_parent_role(parent_id: int, role: str) -> None:
+    """Set the role for an entire parent category (its subcategories inherit
+    this unless they have their own override)."""
+    _validate_role(role)
+    con = get_con()
+    con.execute("DELETE FROM category_roles WHERE parent_id = ? AND subcategory_id IS NULL", [parent_id])
+    con.execute(
+        "INSERT INTO category_roles (parent_id, subcategory_id, role) VALUES (?, NULL, ?)",
+        [parent_id, role]
+    )
+
+
+def set_subcategory_role(sub_id: int, role: str | None) -> None:
+    """Set a role override for one subcategory, or clear it (role=None) to
+    fall back to inheriting its parent's role."""
+    con = get_con()
+    con.execute("DELETE FROM category_roles WHERE subcategory_id = ?", [sub_id])
+    if role is not None:
+        _validate_role(role)
+        parent_id = con.execute("SELECT parent_id FROM subcategories WHERE id = ?", [sub_id]).fetchone()[0]
+        con.execute(
+            "INSERT INTO category_roles (parent_id, subcategory_id, role) VALUES (?, ?, ?)",
+            [parent_id, sub_id, role]
+        )
+
+
 def get_subscriptions() -> list[dict]:
     return _rows("SELECT * FROM subscriptions ORDER BY active DESC, name ASC")
 
@@ -438,6 +542,15 @@ def update_classification(
            WHERE id = ?""",
         [category, subcategory, confidence, model,
          time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+    )
+
+
+def update_transaction_details(transaction_id: str, created_at: str, user_context: str | None) -> None:
+    get_con().execute(
+        """UPDATE transactions
+           SET created_at = ?, user_context = ?
+           WHERE id = ?""",
+        [created_at, user_context, transaction_id]
     )
 
 

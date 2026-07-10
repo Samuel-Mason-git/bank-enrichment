@@ -3,7 +3,7 @@ import pytest
 
 from dashboard_helpers import (
     FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
-    sanitize_classification_edit,
+    sanitize_classification_edit, role_breakdown,
 )
 
 
@@ -40,7 +40,7 @@ class TestDetectSubscriptions:
             {"created_at": d, "merchant_name": "Netflix", "amount": -9.99}
             for d in _dates("2026-01-01", 4, 30)
         ])
-        candidates = detect_subscriptions(df, confirmed_names=set())
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-04-05"))
         assert len(candidates) == 1
         assert candidates[0]["name"] == "Netflix"
         assert candidates[0]["frequency"] == "monthly"
@@ -51,9 +51,39 @@ class TestDetectSubscriptions:
             {"created_at": d, "merchant_name": "Meal Kit Co", "amount": -25.00}
             for d in _dates("2026-01-01", 5, 7)
         ])
-        candidates = detect_subscriptions(df, confirmed_names=set())
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-02-01"))
         assert len(candidates) == 1
         assert candidates[0]["frequency"] == "weekly"
+
+    def test_few_occurrences_not_enough_for_fast_cadence(self):
+        """Regression test: two occurrences spaced ~7 days apart (one gap) is
+        weak evidence of a real weekly habit -- it's just as consistent with
+        two coincidental one-off visits to a shop. Faster cadences (weekly/
+        fortnightly) now require more supporting occurrences before being
+        suggested (the exact real-world case that triggered this: a
+        physical shop visited 3 times in quick succession, never again, got
+        suggested as a "weekly subscription")."""
+        df = _txn_df([
+            {"created_at": d, "merchant_name": "B&M", "amount": -5.00}
+            for d in _dates("2026-01-01", 3, 7)
+        ])
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-01-16"))
+        assert candidates == []
+
+    def test_stale_pattern_not_suggested(self):
+        """Regression test: a cadence-matching pattern whose last occurrence
+        is long past its expected interval is a lapsed one-off, not a
+        currently-active subscription worth suggesting -- e.g. weekly-spaced
+        visits to a shop the user "hasn't been to in ages" shouldn't still
+        show up as a suggested subscription months later."""
+        df = _txn_df([
+            {"created_at": d, "merchant_name": "B&M", "amount": -5.00}
+            for d in _dates("2026-01-01", 4, 7)
+        ])
+        # Enough occurrences to pass the count bar, but reference_date is
+        # months after the last transaction -- well outside weekly's window.
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-06-01"))
+        assert candidates == []
 
     def test_irregular_spend_not_detected(self):
         # Highly variable gaps (2, 40, 5, 60 days) — not subscription-like
@@ -85,6 +115,20 @@ class TestDetectSubscriptions:
         candidates = detect_subscriptions(df, confirmed_names=set())
         assert candidates == []
 
+    def test_detects_via_counterparty_name_when_merchant_name_missing(self):
+        """Regression test: many direct debits/bank transfers never populate
+        merchant_name at all, reporting counterparty_name instead -- a
+        subscription paid that way used to be invisible to detection
+        entirely, since the old filter required merchant_name.notna()."""
+        df = _txn_df([
+            {"created_at": d, "merchant_name": None, "counterparty_name": "NETFLIX.COM", "amount": -9.99}
+            for d in _dates("2026-01-01", 4, 30)
+        ])
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-04-05"))
+        assert len(candidates) == 1
+        assert candidates[0]["name"] == "NETFLIX.COM"
+        assert candidates[0]["frequency"] == "monthly"
+
     def test_income_not_treated_as_subscription(self):
         df = _txn_df([
             {"created_at": d, "merchant_name": "Employer", "amount": 2000.0}
@@ -98,7 +142,7 @@ class TestDetectSubscriptions:
             {"created_at": d, "merchant_name": "Annual Mag", "amount": -60.0}
             for d in _dates("2024-01-01", 3, 365)
         ])
-        candidates = detect_subscriptions(df, confirmed_names=set())
+        candidates = detect_subscriptions(df, confirmed_names=set(), reference_date=pd.Timestamp("2026-01-10"))
         assert len(candidates) == 1
         assert candidates[0]["monthly_cost"] == pytest.approx(60.0 * FREQ_MONTHLY["annual"])
 
@@ -143,6 +187,106 @@ class TestShouldDeactivateSubscription:
         cutoff = pd.Timestamp("2026-06-01")
         sub = {"merchant_name": "3.99", "name": "3.99"}
         assert should_deactivate_subscription(sub, df, cutoff) is True
+
+    def test_recent_transaction_via_counterparty_name_keeps_active(self):
+        """Regression test: a subscription paid by direct debit may only ever
+        show up via counterparty_name (merchant_name null) -- matching
+        against merchant_name alone used to make this look like it had no
+        recent transaction at all, silently auto-deactivating a subscription
+        that's actually still active."""
+        df = _txn_df([{
+            "created_at": "2026-06-20", "merchant_name": None,
+            "counterparty_name": "NETFLIX.COM", "amount": -9.99,
+        }])
+        cutoff = pd.Timestamp("2026-06-01")
+        sub = {"merchant_name": "NETFLIX.COM", "name": "Netflix"}
+        assert should_deactivate_subscription(sub, df, cutoff) is False
+
+
+def _role_df(rows: list[dict]) -> pd.DataFrame:
+    defaults = {"llm_category": None, "llm_subcategory": None, "month": None}
+    return pd.DataFrame([{**defaults, **r} for r in rows])
+
+
+class TestRoleBreakdown:
+    def test_filters_by_role(self):
+        df = _role_df([
+            {"role": "spend", "amount": -10.0, "llm_category": "Food & Drink"},
+            {"role": "income", "amount": 100.0, "llm_category": "Income"},
+        ])
+        result = role_breakdown(df, ("spend",), "llm_category")
+        assert list(result["Category"]) == ["Food & Drink"]
+        assert result["Amount"].iloc[0] == 10.0
+
+    def test_multiple_roles(self):
+        df = _role_df([
+            {"role": "transfer", "amount": 20.0, "llm_category": "Transfers"},
+            {"role": "excluded", "amount": 5.0, "llm_category": "Income"},
+            {"role": "spend", "amount": -10.0, "llm_category": "Food & Drink"},
+        ])
+        result = role_breakdown(df, ("transfer", "excluded"), "llm_category")
+        assert set(result["Category"]) == {"Transfers", "Income"}
+
+    def test_sign_negative_excludes_positive_rows(self):
+        """Regression test: a bidirectional role like "transfer" can have both
+        an Inbound (positive) and Outbound (negative) subcategory. Without
+        restricting to one sign, an "Outgoings" chart would show an Inbound
+        Transfer bar alongside Outbound -- money coming in, mislabeled as
+        something going out."""
+        df = _role_df([
+            {"role": "transfer", "amount": -674.0, "llm_category": "Transfers", "llm_subcategory": "Outbound Transfer"},
+            {"role": "transfer", "amount": 540.0, "llm_category": "Transfers", "llm_subcategory": "Inbound Transfer"},
+        ])
+        result = role_breakdown(df, ("transfer",), "llm_subcategory", sign="negative")
+        assert list(result["Subcategory"]) == ["Outbound Transfer"]
+        assert result["Amount"].iloc[0] == 674.0
+
+    def test_sign_positive_excludes_negative_rows(self):
+        df = _role_df([
+            {"role": "transfer", "amount": -674.0, "llm_category": "Transfers", "llm_subcategory": "Outbound Transfer"},
+            {"role": "transfer", "amount": 540.0, "llm_category": "Transfers", "llm_subcategory": "Inbound Transfer"},
+        ])
+        result = role_breakdown(df, ("transfer",), "llm_subcategory", sign="positive")
+        assert list(result["Subcategory"]) == ["Inbound Transfer"]
+        assert result["Amount"].iloc[0] == 540.0
+
+    def test_sums_and_sorts_descending_by_amount(self):
+        df = _role_df([
+            {"role": "spend", "amount": -5.0, "llm_category": "Small"},
+            {"role": "spend", "amount": -50.0, "llm_category": "Big"},
+            {"role": "spend", "amount": -3.0, "llm_category": "Small"},
+        ])
+        result = role_breakdown(df, ("spend",), "llm_category")
+        assert list(result["Category"]) == ["Big", "Small"]
+        assert result.loc[result["Category"] == "Small", "Amount"].iloc[0] == 8.0
+
+    def test_missing_category_becomes_unclassified(self):
+        df = _role_df([{"role": "spend", "amount": -10.0, "llm_category": None}])
+        result = role_breakdown(df, ("spend",), "llm_category")
+        assert list(result["Category"]) == ["Unclassified"]
+
+    def test_empty_input_returns_empty_frame_with_expected_columns(self):
+        df = _role_df([{"role": "income", "amount": 100.0, "llm_category": "Income"}])
+        result = role_breakdown(df, ("spend",), "llm_category")
+        assert result.empty
+        assert list(result.columns) == ["Category", "Amount"]
+
+    def test_subcategory_grouping_uses_subcategory_label(self):
+        df = _role_df([
+            {"role": "spend", "amount": -10.0, "llm_category": "Food & Drink", "llm_subcategory": "Groceries"},
+        ])
+        result = role_breakdown(df, ("spend",), "llm_subcategory")
+        assert list(result.columns) == ["Subcategory", "Amount"]
+        assert list(result["Subcategory"]) == ["Groceries"]
+
+    def test_by_month_groups_by_month_and_keeps_month_order(self):
+        df = _role_df([
+            {"role": "spend", "amount": -10.0, "llm_category": "Food & Drink", "month": "2026-02"},
+            {"role": "spend", "amount": -20.0, "llm_category": "Food & Drink", "month": "2026-01"},
+        ])
+        result = role_breakdown(df, ("spend",), "llm_category", by_month=True)
+        assert list(result.columns) == ["Month", "Category", "Amount"]
+        assert list(result["Month"]) == ["2026-01", "2026-02"], "month grouping should not be amount-sorted"
 
 
 class TestSanitizeClassificationEdit:

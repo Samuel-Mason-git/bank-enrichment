@@ -8,6 +8,8 @@ from database_functions import (
     delete_subscription, search, _ts, _rows,
     get_top_subcategories, get_top_merchant_subcategories,
     apply_quick_tap_classifications,
+    get_totals_by_role, get_category_totals_by_role, set_parent_role, set_subcategory_role,
+    _seed_taxonomy,
 )
 
 
@@ -194,6 +196,165 @@ class TestUpsertSubcategory:
         s1 = upsert_subcategory("Taxi", p1)
         s2 = upsert_subcategory("Taxi", p2)
         assert s1 != s2
+
+
+class TestSeedTaxonomy:
+    def test_seeds_full_default_taxonomy_on_empty_db(self, db):
+        _seed_taxonomy()
+        names = {p["name"] for p in get_parents()}
+        assert "Income" in names
+        assert "Food & Drink" in names
+
+    def test_does_not_top_up_a_custom_taxonomy(self, db):
+        """Regression test: seeding used to run on every startup and insert
+        any default category not already present by name -- so a user who
+        wiped the taxonomy and built their own under different names would
+        find the entire default taxonomy silently added back in alongside
+        it on the next start. Seeding must now be skipped entirely once any
+        parent category exists, custom or otherwise."""
+        upsert_parent("My Custom Category")
+        _seed_taxonomy()
+        names = {p["name"] for p in get_parents()}
+        assert names == {"My Custom Category"}
+
+    def test_does_not_top_up_missing_subcategories_of_an_existing_default_parent(self, db):
+        """Even a parent that happens to share a default name shouldn't have
+        its missing default subcategories filled back in once anything
+        exists in the table -- seeding is all-or-nothing on an empty table,
+        not a per-category top-up."""
+        pid = upsert_parent("Income")
+        upsert_subcategory("Salary", pid)
+        _seed_taxonomy()
+        sub_names = {s["name"] for s in get_subcategories() if s["parent_name"] == "Income"}
+        assert sub_names == {"Salary"}
+
+
+class TestRoles:
+    def test_parent_defaults_to_spend_when_no_override(self, db):
+        upsert_parent("Bills & Utilities")
+        assert get_parents()[0]["role"] == "spend"
+
+    def test_income_investments_transfers_have_hardcoded_defaults(self, db):
+        upsert_parent("Income")
+        upsert_parent("Investments")
+        upsert_parent("Transfers")
+        roles = {p["name"]: p["role"] for p in get_parents()}
+        assert roles["Income"] == "income"
+        assert roles["Investments"] == "investment"
+        assert roles["Transfers"] == "transfer"
+
+    def test_set_parent_role_overrides_default(self, db):
+        pid = upsert_parent("Bills & Utilities")
+        set_parent_role(pid, "excluded")
+        assert get_parents()[0]["role"] == "excluded"
+
+    def test_set_parent_role_rejects_invalid_role(self, db):
+        pid = upsert_parent("Bills & Utilities")
+        with pytest.raises(ValueError):
+            set_parent_role(pid, "not_a_role")
+
+    def test_subcategory_inherits_parent_role_by_default(self, db):
+        pid = upsert_parent("Income")
+        sid = upsert_subcategory("Salary", pid)
+        sub = next(s for s in get_subcategories() if s["id"] == sid)
+        assert sub["role_override"] is None
+        assert sub["parent_role"] == "income"
+
+    def test_set_subcategory_role_overrides_parent(self, db):
+        pid = upsert_parent("Income")
+        sid = upsert_subcategory("Refunds", pid)
+        set_subcategory_role(sid, "excluded")
+        sub = next(s for s in get_subcategories() if s["id"] == sid)
+        assert sub["role_override"] == "excluded"
+
+    def test_clearing_subcategory_override_falls_back_to_inherit(self, db):
+        pid = upsert_parent("Income")
+        sid = upsert_subcategory("Refunds", pid)
+        set_subcategory_role(sid, "excluded")
+        set_subcategory_role(sid, None)
+        sub = next(s for s in get_subcategories() if s["id"] == sid)
+        assert sub["role_override"] is None
+
+    def test_set_subcategory_role_rejects_invalid_role(self, db):
+        pid = upsert_parent("Income")
+        sid = upsert_subcategory("Salary", pid)
+        with pytest.raises(ValueError):
+            set_subcategory_role(sid, "not_a_role")
+
+
+class TestGetTotalsByRole:
+    def test_refund_does_not_count_as_income_or_outgoing(self, db):
+        """Refunds are positive (incoming), so under the outgoing-only
+        definition of every non-income role, a Refund contributes to neither
+        "income" (wrong role) nor "excluded" (wrong direction) -- it's simply
+        not part of either headline figure, which is correct: it was never
+        new income, and it's not money leaving either."""
+        _seed_taxonomy()  # real startup path: seeds Income -> Refunds -> excluded
+        write_to_db([
+            _txn(id="t1", amount_pence=5000, description="Refund", created="2026-01-05T10:00:00"),
+            _txn(id="t2", amount_pence=200000, description="Salary", created="2026-01-06T10:00:00"),
+        ])
+        update_classification("t1", "Income", "Refunds", 1.0, "test")
+        update_classification("t2", "Income", "Salary", 1.0, "test")
+
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert totals["income"] == pytest.approx(2000.0)
+        assert totals["excluded"] == pytest.approx(0.0)
+
+    def test_investment_reported_as_positive_outgoing_magnitude(self, db):
+        pid = upsert_parent("Investments")
+        upsert_subcategory("Stocks & Shares ISA Contributions", pid)
+        write_to_db([_txn(id="t1", amount_pence=-30000, description="ISA", created="2026-01-05T10:00:00")])
+        update_classification("t1", "Investments", "Stocks & Shares ISA Contributions", 1.0, "test")
+
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert totals["investment"] == pytest.approx(300.0)
+        assert totals["spend"] == pytest.approx(0.0)
+
+    def test_inbound_and_outbound_transfers_do_not_cancel_out(self, db):
+        """Regression test for the actual bug reported: a "Transfers" category
+        has both an Inbound (positive) and Outbound (negative) subcategory
+        sharing the "transfer" role. Summing signed amounts before reporting
+        used to let a £540 Inbound Transfer cancel most of a £674 Outbound
+        Transfer, reporting a misleading £134 instead of the true £674 that
+        actually left the account."""
+        pid = upsert_parent("Transfers")
+        upsert_subcategory("Inbound Transfer", pid)
+        upsert_subcategory("Outbound Transfer", pid)
+        write_to_db([
+            _txn(id="t1", amount_pence=-67400, description="Outbound", created="2026-01-05T10:00:00"),
+            _txn(id="t2", amount_pence=54000, description="Inbound", created="2026-01-06T10:00:00"),
+        ])
+        update_classification("t1", "Transfers", "Outbound Transfer", 1.0, "test")
+        update_classification("t2", "Transfers", "Inbound Transfer", 1.0, "test")
+
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert totals["transfer"] == pytest.approx(674.0)
+
+    def test_all_five_roles_always_present(self, db):
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert set(totals.keys()) == {"income", "spend", "investment", "transfer", "excluded"}
+
+    def test_positive_amount_under_ordinary_category_is_not_outgoing_or_income(self, db):
+        """Regression test: a real category with no role set at all (not one
+        of Income/Investments/Transfers) used to fall all the way through to
+        the amount-sign fallback meant only for genuinely unclassified
+        transactions -- so e.g. a positive-amount refund transaction under
+        Holidays got silently counted as income. It now correctly resolves to
+        role='spend' (Holidays' default), and since spend is outgoing-only,
+        a positive amount there contributes to neither spend nor income."""
+        pid = upsert_parent("Holidays")
+        upsert_subcategory("Accommodation", pid)
+        write_to_db([_txn(id="t1", amount_pence=5000, description="Refunded hotel", created="2026-01-05T10:00:00")])
+        update_classification("t1", "Holidays", "Accommodation", 1.0, "test")
+
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert totals["spend"] == pytest.approx(0.0)
+        assert totals["income"] == pytest.approx(0.0)
+
+    def test_rejects_invalid_role(self, db):
+        with pytest.raises(ValueError):
+            get_category_totals_by_role("not_a_role", "2026-01-01", "2026-01-31")
 
 
 class TestSubscriptions:

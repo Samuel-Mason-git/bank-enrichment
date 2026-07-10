@@ -208,7 +208,7 @@ This single command does everything in sequence:
 7. Run the LLM classifier — assigns parent categories and subcategories to any unclassified transactions using Claude
 8. Send any missing monthly summaries to Telegram
 
-The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Taxonomy tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
+The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
 Two log files are created automatically alongside the database:
 - `bank_enrichment.log` — pull and processing log
@@ -273,27 +273,34 @@ Run it from the project root so `$PWD` resolves to the right path. You can then 
 
 | Tab | Description |
 |-----|-------------|
-| Overview | KPI cards (spend, income, net, unclassified) + spend/income charts by category |
-| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net/transaction count table |
-| Transactions | Full filterable/searchable table — edit labels inline, check rows to clear their labels |
-| Category Drill-Down | Pick a parent category to see subcategory charts + transactions |
+| Overview | Standard vs Actual metric cards (income, spend, net, savings rate, invested, transferred/excluded), each with a delta vs the previous period |
+| Over Time | Monthly trend charts by category and subcategory, a savings & investing chart, and a monthly totals table |
+| Transactions | Full filterable/searchable table — edit Category, Subcategory, Date, and Context inline |
+| Category Drill-Down | Pick a parent category to see subcategory breakdowns and transactions |
+| Top Merchants | Ranks merchants by spend or frequency, with search and a Top-N filter |
 | Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, cost totals |
-| Taxonomy | Tree view of all categories. Add, rename, move, and delete subcategories. Click 🔗 on any subcategory to view its transactions and bulk-reassign them. Click 🧹 on a parent to wipe its labels so they re-classify on the next run. |
+| Settings | Tree view of all categories and their Roles. Add, rename, move, and delete categories. Click 🔗 on any subcategory to view its transactions and bulk-reassign them. Click 🧹 on a parent to wipe its labels so they re-classify on the next run. |
+
+See [Local Dashboard](README.md#local-dashboard) in the README for full details on each tab.
 
 Use the sidebar to filter by date range (quick presets or custom), category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
 
 ### Customising Your Taxonomy
 
-The default taxonomy is seeded automatically but you own it entirely. From the **Taxonomy tab**:
+The default taxonomy is seeded automatically on first run, but you own it entirely from there. From the **Settings tab**:
 
-- **Rename** a parent or subcategory — all transaction labels update immediately
+- **Rename** a parent or subcategory — all transaction labels update immediately, and a custom Role you've set is kept
 - **Move** a subcategory to a different parent
 - **Add** new subcategories inside any parent, or add entirely new parent categories
 - **Delete** subcategories or whole parent categories (clears labels from affected transactions)
 - **Wipe labels** for a parent category — transactions keep their context but lose their LLM label, so they'll be re-classified on the next `process.py` run against your updated structure
 - **View transactions** per subcategory — see exactly what's in each bucket and bulk-reassign if needed
 
-If you want to start fresh with a completely different taxonomy, wipe all labels from every parent category, then delete the categories you don't want and add your own before re-running the classifier. Your context sentences are never touched — only the labels change.
+If you want to start fresh with a completely different taxonomy, use the Danger Zone at the
+bottom of the Settings tab to wipe the entire taxonomy structure, then build your own from
+scratch. The default taxonomy is only ever seeded into a genuinely empty database, so it
+won't get added back in alongside whatever you build. Your context sentences are never
+touched — only the labels change.
 
 ### 7. Utility Scripts
 
@@ -302,7 +309,7 @@ Print all transactions and stats to the terminal:
 poetry run python src/local_scripts/database_functions.py
 ```
 
-Wiping labels or the entire taxonomy is done from the **Taxonomy tab** in the dashboard 
+Wiping labels or the entire taxonomy is done from the **Settings tab** in the dashboard 
 rather than a standalone script — see [Customising Your Taxonomy](#customising-your-taxonomy) 
 above. Those are destructive, hard-to-undo operations, so they live behind the dashboard's 
 confirmation guardrails rather than a bare CLI script.

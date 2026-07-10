@@ -69,3 +69,36 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
     net          DECIMAL(19,4) NOT NULL,
     sent_at      TIMESTAMP NOT NULL
 );
+
+-- User-set Income/Spend/Investment/Transfer/Excluded role per category.
+-- subcategory_id NULL = applies to the whole parent. Empty until edited in Settings.
+CREATE TABLE IF NOT EXISTS category_roles (
+    parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
+    subcategory_id INTEGER REFERENCES subcategories(id),
+    role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'transfer', 'excluded')),
+    UNIQUE (parent_id, subcategory_id)
+);
+
+-- Built-in default role by category name, used when there's no override.
+CREATE OR REPLACE MACRO default_role_for_parent(parent_name) AS
+    CASE parent_name
+        WHEN 'Income' THEN 'income'
+        WHEN 'Investments' THEN 'investment'
+        WHEN 'Transfers' THEN 'transfer'
+    END;
+
+-- Each transaction's role: override, else built-in default, else spend, else
+-- (only if totally unclassified) amount sign.
+CREATE OR REPLACE VIEW transaction_roles AS
+SELECT t.*, COALESCE(
+    sub_role.role,
+    parent_role.role,
+    default_role_for_parent(pc.name),
+    CASE WHEN pc.name IS NOT NULL THEN 'spend' END,
+    CASE WHEN t.amount >= 0 THEN 'income' ELSE 'spend' END
+) AS role
+FROM transactions t
+LEFT JOIN parent_categories pc ON pc.name = t.llm_category
+LEFT JOIN subcategories sc ON sc.name = t.llm_subcategory AND sc.parent_id = pc.id
+LEFT JOIN category_roles sub_role ON sub_role.subcategory_id = sc.id
+LEFT JOIN category_roles parent_role ON parent_role.parent_id = pc.id AND parent_role.subcategory_id IS NULL;
