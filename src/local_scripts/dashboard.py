@@ -1,9 +1,11 @@
+import html
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -11,12 +13,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 from database_functions import (
-    init_db, get_con, update_classification, upsert_parent, upsert_subcategory,
+    init_db, get_con, update_classification, update_transaction_details, upsert_parent, upsert_subcategory,
     get_subscriptions, upsert_subscription, update_subscription, toggle_subscription, delete_subscription,
+    get_parents, get_subcategories, set_parent_role, set_subcategory_role, ROLES,
 )
 from dashboard_helpers import (
     FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
-    sanitize_classification_edit,
+    sanitize_classification_edit, ROLE_METRICS, role_breakdown, merchant_display_name,
 )
 
 st.set_page_config(
@@ -54,8 +57,8 @@ def load_transactions():
             id, amount, description, monzo_category,
             merchant_name, counterparty_name,
             created_at, user_context, skipped,
-            llm_category, llm_subcategory
-        FROM transactions
+            llm_category, llm_subcategory, role
+        FROM transaction_roles
         ORDER BY created_at DESC
     """)
     cols = [d[0] for d in result.description]
@@ -88,7 +91,7 @@ all_parents, all_subs, subs_by_parent = load_taxonomy()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 
-st.sidebar.title("Filters")
+st.sidebar.title("💳 Filters")
 
 if not df.empty:
     min_date = df["created_at"].min().date()
@@ -107,6 +110,7 @@ presets = {
     "This month": (today.replace(day=1), today),
 }
 
+st.sidebar.markdown("#### 📅 Date Range")
 preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=True, key="date_preset")
 
 # When the preset changes, push the new dates into the date_input's session state key
@@ -119,6 +123,9 @@ if st.session_state.get("_last_preset") != preset:
     st.session_state["_last_preset"] = preset
     st.session_state["date_range"] = (preset_from, preset_to)
 
+if st.sidebar.button("Reset date range", help="Clear any custom dates typed below and snap back to the Quick Date Filter selected above."):
+    st.session_state["date_range"] = (preset_from, preset_to)
+
 date_range = st.sidebar.date_input(
     "Custom Date Range",
     key="date_range",
@@ -128,6 +135,8 @@ date_range = st.sidebar.date_input(
 date_from = date_range[0] if isinstance(date_range, (list, tuple)) and len(date_range) > 0 else preset_from
 date_to = date_range[1] if isinstance(date_range, (list, tuple)) and len(date_range) > 1 else preset_to
 
+st.sidebar.divider()
+st.sidebar.markdown("#### 🏷️ Categories")
 selected_parents = st.sidebar.multiselect("Parent category", all_parents)
 
 # If parent(s) selected, only show subcategories that belong to those parents
@@ -139,6 +148,9 @@ else:
     available_subs = all_subs
 
 selected_subs = st.sidebar.multiselect("Subcategory", available_subs)
+
+st.sidebar.divider()
+st.sidebar.markdown("#### 🔎 Search & Display")
 search = st.sidebar.text_input("Search", placeholder="merchant, description, context...")
 show_skipped = st.sidebar.checkbox("Show skipped", value=False)
 show_unclassified = st.sidebar.checkbox("Show unclassified", value=True)
@@ -202,8 +214,8 @@ if search:
 
 st.title("💳 Bank Enrichment")
 
-tab_overview, tab_time, tab_txns, tab_drill, tab_merchants, tab_subs, tab_taxonomy = st.tabs([
-    "Overview", "Spending Over Time", "Transactions", "Category Drill-Down", "Top Merchants", "Subscriptions", "Taxonomy"
+tab_overview, tab_time, tab_txns, tab_drill, tab_merchants, tab_subs, tab_settings = st.tabs([
+    "Overview", "Over Time", "Transactions", "Category Drill-Down", "Top Merchants", "Subscriptions", "Settings"
 ])
 
 
@@ -232,252 +244,584 @@ with tab_overview:
         if savings_rate is not None and prev_savings_rate is not None else None
     )
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric("Transactions", len(filtered))
-    col2.metric("Total Spend", f"£{total_spend:.2f}",
-                delta=f"{spend_d:+.1f}% vs prev" if spend_d is not None else None,
-                delta_color="inverse")
-    col3.metric("Total Income", f"£{total_income:.2f}",
-                delta=f"{income_d:+.1f}% vs prev" if income_d is not None else None,
-                delta_color="normal")
-    col4.metric("Net", f"£{net:.2f}",
-                delta=f"{net_d:+.1f}% vs prev" if net_d is not None else None,
-                delta_color="normal")
-    col5.metric("Savings Rate", f"{savings_rate:.1f}%" if savings_rate is not None else "—",
-                delta=f"{sr_d:+.1f}pp vs prev" if sr_d is not None else None,
-                delta_color="normal")
-    col6.metric("Unclassified", int(filtered["llm_category"].isna().sum()))
+    def _categories_for(role_mask) -> str:
+        """Parent category names by default (keeps 'Spend', which spans most
+        of the taxonomy, to a short list) -- only drills into individual
+        Parent:Subcategory names for a parent whose subcategories are split
+        across roles (e.g. Income, where Refunds is Excluded but the rest
+        counts as Income), so the mixed part is actually identifiable."""
+        subset = filtered.loc[role_mask, ["llm_category", "llm_subcategory"]].dropna(subset=["llm_category"])
+        if subset.empty:
+            return "No categories set for this role yet"
+        labels = []
+        for parent, group in subset.groupby("llm_category"):
+            subs_in_role = set(group["llm_subcategory"].dropna())
+            all_subs_for_parent = set(
+                filtered.loc[filtered["llm_category"] == parent, "llm_subcategory"].dropna()
+            )
+            if subs_in_role and subs_in_role < all_subs_for_parent:
+                labels.extend(f"{parent}:{s}" for s in subs_in_role)
+            else:
+                labels.append(parent)
+        labels = sorted(labels)
+        if len(labels) > 10:
+            labels = labels[:10] + [f"+{len(labels) - 10} more"]
+        return ", ".join(labels)
+
+    # Roles like "transfer"/"investment" are bidirectional (e.g. Transfers has
+    # both an Inbound and an Outbound subcategory) -- restricting each mask to
+    # its expected direction (income=incoming, everything else=outgoing) means
+    # summing signed amounts can never let an inflow cancel an outflow.
+    income_mask = (filtered["role"] == "income") & (filtered["amount"] > 0)
+    spend_mask = (filtered["role"] == "spend") & (filtered["amount"] < 0)
+    invest_mask = (filtered["role"] == "investment") & (filtered["amount"] < 0)
+    excluded_mask = filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)
+
+    actual_income = filtered.loc[income_mask, "amount"].sum()
+    actual_spend = abs(filtered.loc[spend_mask, "amount"].sum())
+    invested = abs(filtered.loc[invest_mask, "amount"].sum())
+    excluded_total = abs(filtered.loc[excluded_mask, "amount"].sum())
+
+    actual_net = actual_income - actual_spend
+    actual_savings_rate = (actual_net / actual_income * 100) if actual_income > 0 else None
+
+    prev_income_mask = (prev_filtered["role"] == "income") & (prev_filtered["amount"] > 0)
+    prev_spend_mask = (prev_filtered["role"] == "spend") & (prev_filtered["amount"] < 0)
+    prev_invest_mask = (prev_filtered["role"] == "investment") & (prev_filtered["amount"] < 0)
+    prev_excluded_mask = prev_filtered["role"].isin(["transfer", "excluded"]) & (prev_filtered["amount"] < 0)
+
+    prev_actual_income = prev_filtered.loc[prev_income_mask, "amount"].sum()
+    prev_actual_spend = abs(prev_filtered.loc[prev_spend_mask, "amount"].sum())
+    prev_invested = abs(prev_filtered.loc[prev_invest_mask, "amount"].sum())
+    prev_excluded_total = abs(prev_filtered.loc[prev_excluded_mask, "amount"].sum())
+    prev_actual_net = prev_actual_income - prev_actual_spend
+    prev_actual_savings_rate = (prev_actual_net / prev_actual_income * 100) if prev_actual_income > 0 else None
+
+    actual_income_d = pct_delta(actual_income, prev_actual_income)
+    actual_spend_d = pct_delta(actual_spend, prev_actual_spend)
+    invested_d = pct_delta(invested, prev_invested)
+    excluded_d = pct_delta(excluded_total, prev_excluded_total)
+    actual_net_d = pct_delta(actual_net, prev_actual_net)
+    actual_sr_d = (
+        round(actual_savings_rate - prev_actual_savings_rate, 1)
+        if actual_savings_rate is not None and prev_actual_savings_rate is not None else None
+    )
+
+    def _fmt(v, is_pct=False):
+        if v is None:
+            return "—"
+        return f"{v:.1f}%" if is_pct else f"£{v:.2f}"
+
+    def _info_icon(tooltip: str) -> str:
+        return (
+            f'<span title="{html.escape(tooltip)}" '
+            f'style="cursor:help;opacity:0.6;margin-left:5px;font-size:0.72rem;">ⓘ</span>'
+        )
+
+    def _delta_badge(delta_value, suffix, direction: str) -> str:
+        """A small colored pill for the vs-prev change -- a card within the
+        card. direction picks which way is "good": "normal" = up is good
+        (Income, Net, Savings Rate, Invested), "inverse" = up is bad (Spend --
+        spending more is a bad thing, unlike everything else going up),
+        "neutral" = no good/bad direction at all (Transferred/Excluded is just
+        money moving, not a gain or a loss)."""
+        if delta_value is None:
+            return ""
+        text = f"{delta_value:+.1f}{suffix} vs prev"
+        if direction == "neutral":
+            bg, fg = "rgba(149, 165, 166, 0.25)", "rgba(210, 214, 215, 0.95)"
+        else:
+            favorable = (delta_value >= 0) if direction == "normal" else (delta_value <= 0)
+            bg, fg = (
+                ("rgba(46, 204, 113, 0.25)", "rgba(150, 232, 181, 0.95)") if favorable
+                else ("rgba(231, 76, 60, 0.25)", "rgba(243, 158, 148, 0.95)")
+            )
+        return (
+            f'<div style="margin-top:6px;"><span style="display:inline-block;background:{bg};'
+            f'color:{fg};border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:600;">'
+            f'{html.escape(text)}</span></div>'
+        )
+
+    def _card(label, value, color, tooltip=None, delta_html=""):
+        """A colored div standing in for a metric card -- st.metric can't take
+        a background color, and st.dataframe can't do a real per-cell hover,
+        so this is plain HTML: a visible ⓘ icon with its own native `title`
+        tooltip (hover, no JS) rather than a silent hover-anywhere-on-the-card,
+        plus a CSS background tint matching the row's color."""
+        icon = _info_icon(tooltip) if tooltip else ""
+        return (
+            f'<div style="background:{color};border-radius:10px;'
+            f'padding:12px 14px;min-height:82px;margin-bottom:12px;">'
+            f'<div style="font-size:0.78rem;color:rgba(255,255,255,0.65);font-weight:500;">{html.escape(label)}{icon}</div>'
+            f'<div style="font-size:1.45rem;font-weight:700;margin-top:4px;">{html.escape(value)}</div>'
+            f'{delta_html}</div>'
+        )
+
+    row_colors = {
+        "Income": "rgba(46, 204, 113, 0.14)",
+        "Spend": "rgba(231, 76, 60, 0.14)",
+        "Net": "rgba(52, 152, 219, 0.16)",
+        "Savings Rate": "rgba(52, 152, 219, 0.16)",
+        "Invested": "rgba(155, 89, 182, 0.14)",
+        "Transferred / Excluded": "rgba(149, 165, 166, 0.14)",
+    }
+    delta_direction = {
+        "Income": "normal", "Spend": "inverse", "Net": "normal",
+        "Savings Rate": "normal", "Invested": "normal", "Transferred / Excluded": "neutral",
+    }
+    standard_tooltips = {
+        "Income": "Every transaction with a positive amount, regardless of category.",
+        "Spend": "Every transaction with a negative amount, regardless of category.",
+        "Net": "Standard Income minus Standard Spend.",
+        "Savings Rate": "Standard Net as a percentage of Standard Income.",
+        "Invested": "Not tracked separately here — investment transactions are just counted within Standard Income/Spend by amount sign.",
+        "Transferred / Excluded": "Not tracked separately here — transfers and refunds are just counted within Standard Income/Spend by amount sign.",
+    }
+    actual_static_tooltips = {
+        "Net": "Actual Income minus Actual Spend.",
+        "Savings Rate": "Actual Net as a percentage of Actual Income.",
+    }
+    # (label, standard value, standard delta, actual value, actual delta,
+    #  categories-mask for the Actual card's tooltip, is_pct, color)
+    metrics_row = [
+        ("Income", total_income, income_d, actual_income, actual_income_d, income_mask, False),
+        ("Spend", total_spend, spend_d, actual_spend, actual_spend_d, spend_mask, False),
+        ("Net", net, net_d, actual_net, actual_net_d, None, False),
+        ("Savings Rate", savings_rate, sr_d, actual_savings_rate, actual_sr_d, None, True),
+        ("Invested", None, None, invested, invested_d, invest_mask, False),
+        ("Transferred / Excluded", None, None, excluded_total, excluded_d, excluded_mask, False),
+    ]
+
+    st.caption(f"{len(filtered)} transactions · {int(filtered['llm_category'].isna().sum())} unclassified.")
+
+    st.markdown(
+        "**Standard**" + _info_icon(
+            "Every £ is counted by amount sign alone — money in is Income, "
+            "money out is Spend, regardless of category or role."
+        ),
+        unsafe_allow_html=True,
+    )
+    std_cols = st.columns(6)
+    for col, (label, std_val, std_d, _, _, _, is_pct) in zip(std_cols, metrics_row):
+        badge = _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label])
+        with col:
+            st.markdown(
+                _card(label, _fmt(std_val, is_pct), row_colors[label], tooltip=standard_tooltips[label], delta_html=badge),
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        "**Actual**" + _info_icon(
+            "Each category has a role (set in the Settings tab) that decides what "
+            "it counts as — e.g. refunds and transfers don't count as Income here."
+        ),
+        unsafe_allow_html=True,
+    )
+    act_cols = st.columns(6)
+    for col, (label, _, _, act_val, act_d, mask, is_pct) in zip(act_cols, metrics_row):
+        badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[label])
+        tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[label]
+        with col:
+            st.markdown(
+                _card(label, _fmt(act_val, is_pct), row_colors[label], tooltip=tooltip, delta_html=badge),
+                unsafe_allow_html=True,
+            )
 
     st.divider()
 
+    def _breakdown_chart(col, key_prefix: str, title: str, metric: str, color_scale: str, sign: str):
+        with col:
+            group_by = st.radio(
+                "Group by", ["Category", "Subcategory"],
+                key=f"{key_prefix}_group_by", horizontal=True,
+            )
+            group_col = "llm_subcategory" if group_by == "Subcategory" else "llm_category"
+            breakdown = role_breakdown(filtered, ROLE_METRICS[metric], group_col, sign=sign).sort_values("Amount", ascending=True)
+            if not breakdown.empty:
+                fig = px.bar(breakdown, x="Amount", y=group_by, orientation="h",
+                             title=f"{title} by {group_by}", labels={"Amount": f"{title} (£)"},
+                             color="Amount", color_continuous_scale=color_scale)
+                fig.update_layout(showlegend=False, coloraxis_showscale=False,
+                                  height=max(300, len(breakdown) * 45),
+                                  margin=dict(l=0, r=0, t=40, b=0))
+                st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
+            else:
+                st.info(f"No {title.lower()} in range.")
+
+    # Two charts, split by direction of money flow. Spend/Invested/Transferred
+    # are bidirectional roles under the hood (e.g. Transfers has both an
+    # Inbound and an Outbound subcategory) -- Outgoings restricts to the
+    # negative (money-out) side of each, Incomings to the positive side, so
+    # neither chart can blend an inflow and an outflow into one misleading bar.
+    outgoing_metrics = [m for m in ROLE_METRICS if m != "Income"]
+    incoming_metrics = [m for m in ROLE_METRICS if m != "Spend"]
     chart_col1, chart_col2 = st.columns(2)
-
     with chart_col1:
-        classified_spend = spend_df[spend_df["llm_category"].notna()]
-        if not classified_spend.empty:
-            by_cat = (
-                classified_spend.groupby("llm_category")["amount"]
-                .sum().abs().reset_index()
-                .rename(columns={"llm_category": "Category", "amount": "Amount"})
-                .sort_values("Amount", ascending=True)
-            )
-            fig = px.bar(by_cat, x="Amount", y="Category", orientation="h",
-                         title="Spend by Category", labels={"Amount": "Total Spend (£)"},
-                         color="Amount", color_continuous_scale="Reds")
-            fig.update_layout(showlegend=False, coloraxis_showscale=False,
-                              height=max(300, len(by_cat) * 45),
-                              margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig, width="stretch")
-        else:
-            st.info("No classified spend in range.")
-
+        outgoing_metric = st.selectbox("Outgoings metric", outgoing_metrics, key="overview_outgoing_metric")
     with chart_col2:
-        classified_income = income_df[income_df["llm_category"].notna()]
-        if not classified_income.empty:
-            by_cat_in = (
-                classified_income.groupby("llm_category")["amount"]
-                .sum().reset_index()
-                .rename(columns={"llm_category": "Category", "amount": "Amount"})
-                .sort_values("Amount", ascending=True)
-            )
-            fig2 = px.bar(by_cat_in, x="Amount", y="Category", orientation="h",
-                          title="Income by Category", labels={"Amount": "Total Income (£)"},
-                          color="Amount", color_continuous_scale="Greens")
-            fig2.update_layout(showlegend=False, coloraxis_showscale=False,
-                               height=max(300, len(by_cat_in) * 45),
-                               margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig2, width="stretch")
-        else:
-            st.info("No classified income in range.")
+        incoming_metric = st.selectbox("Incomings metric", incoming_metrics, key="overview_incoming_metric")
+    _breakdown_chart(chart_col1, "overview_outgoing", outgoing_metric, outgoing_metric, "Reds", sign="negative")
+    _breakdown_chart(chart_col2, "overview_incoming", incoming_metric, incoming_metric, "Greens", sign="positive")
 
 
-# ── Tab 2: Spending Over Time ──────────────────────────────────────────────────
+# ── Tab 2: Over Time ────────────────────────────────────────────────────────────
 
 with tab_time:
-    spend_time = filtered[filtered["amount"] < 0].copy()
+    st.caption(
+        "All figures below are Actual — categorized by the roles set in the Settings "
+        "tab (e.g. refunds/transfers excluded from Income). See Overview for the "
+        "Standard vs Actual distinction."
+    )
 
-    if not spend_time.empty:
-        spend_time["Category"] = spend_time["llm_category"].fillna("Unclassified")
-        monthly = (
-            spend_time.groupby(["month", "Category"])["amount"]
-            .sum().abs().reset_index()
-            .rename(columns={"amount": "Spend", "month": "Month"})
-        )
-        category_order = (
-            monthly.groupby("Category")["Spend"]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        fig = px.bar(monthly, x="Month", y="Spend", color="Category",
-                     title="Monthly Spend by Category",
-                     labels={"Spend": "Total Spend (£)"}, barmode="stack",
-                     category_orders={"Category": category_order})
-        fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40))
-        st.plotly_chart(fig, width="stretch")
+    def _add_total_and_trend(fig, monthly_df: pd.DataFrame):
+        """Overlay a Total line and its 3-month rolling average -- individual
+        months are noisy (one big one-off purchase can skew a month), and
+        since these are separate per-category/subcategory lines rather than a
+        stack, there's no other line on the chart showing the combined total
+        to read a real trend off of."""
+        totals = monthly_df.groupby("Month")["Amount"].sum().reset_index().sort_values("Month")
+        totals["Rolling Avg"] = totals["Amount"].rolling(3, min_periods=1).mean()
+        fig.add_trace(go.Scatter(
+            x=totals["Month"], y=totals["Amount"], mode="lines", name="Total",
+            line=dict(color="#2c3e50", width=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=totals["Month"], y=totals["Rolling Avg"], mode="lines", name="3-mo Avg",
+            line=dict(color="#f39c12", width=3, dash="dash"),
+        ))
 
-        st.subheader("Monthly Totals")
-        income_time = filtered[filtered["amount"] > 0]
-        monthly_spend = spend_time.groupby("month")["amount"].sum().abs().rename("Spend")
-        monthly_income = income_time.groupby("month")["amount"].sum().rename("Income")
+    def _time_chart_pair(key_prefix: str, metric: str, sign: str):
+        """Monthly category + subcategory trend lines for one metric, restricted
+        to one direction of money flow -- roles like Invested/Transferred are
+        bidirectional under the hood (e.g. Transfers has an Inbound and an
+        Outbound subcategory), so without this restriction a month with both
+        would net together and understate the true amount, the same
+        sum-then-abs cancellation bug fixed on the Overview tab. Lines (not
+        stacked bars) since a per-category trend is what's being compared here,
+        and a stack makes any one category's own trajectory hard to isolate."""
+        metric_time = filtered[filtered["role"].isin(ROLE_METRICS[metric])]
+        metric_time = metric_time[metric_time["amount"] < 0] if sign == "negative" else metric_time[metric_time["amount"] > 0]
+        if metric_time.empty:
+            st.info(f"No {metric.lower()} in range.")
+            return
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("All categories")
+            monthly = role_breakdown(metric_time, ROLE_METRICS[metric], "llm_category", by_month=True, sign=sign)
+            category_order = monthly.groupby("Category")["Amount"].sum().sort_values(ascending=False).index.tolist()
+            fig = px.line(monthly, x="Month", y="Amount", color="Category", markers=True,
+                          title=f"Monthly {metric} by Category",
+                          labels={"Amount": f"{metric} (£)"},
+                          category_orders={"Category": category_order})
+            _add_total_and_trend(fig, monthly)
+            # "Month" is a monthly bin ("2026-07"), not a specific day -- without
+            # forcing a category axis, Plotly auto-detects it as a date and
+            # snaps every point to the 1st, implying a precision the data
+            # doesn't have (it's a whole month's total, not a day-1 reading).
+            fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
+                              xaxis_type="category", xaxis_categoryorder="category ascending")
+            st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_category_chart")
+
+        with col2:
+            available_cats = sorted(metric_time[metric_time["llm_category"].notna()]["llm_category"].unique())
+            if available_cats:
+                selected_cat = st.selectbox("View subcategories for", available_cats, key=f"{key_prefix}_sub_cat")
+                sub_data = metric_time[metric_time["llm_category"] == selected_cat]
+                monthly_sub = role_breakdown(sub_data, ROLE_METRICS[metric], "llm_subcategory", by_month=True, sign=sign)
+                if not monthly_sub.empty:
+                    sub_order = monthly_sub.groupby("Subcategory")["Amount"].sum().sort_values(ascending=False).index.tolist()
+                    fig_sub = px.line(monthly_sub, x="Month", y="Amount", color="Subcategory", markers=True,
+                                      title=f"{selected_cat} — Monthly {metric} by Subcategory",
+                                      labels={"Amount": f"{metric} (£)"},
+                                      category_orders={"Subcategory": sub_order})
+                    _add_total_and_trend(fig_sub, monthly_sub)
+                    fig_sub.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
+                                          xaxis_type="category", xaxis_categoryorder="category ascending")
+                    st.plotly_chart(fig_sub, width="stretch", key=f"{key_prefix}_subcategory_chart")
+                else:
+                    st.info("No subcategory data for this category in the selected range.")
+            else:
+                st.info(f"No classified {metric.lower()} in range.")
+
+    # Split by direction, mirroring Overview's Outgoings/Incomings cards --
+    # Spend/Invested/Transferred-Excluded are "money out", Income/Invested/
+    # Transferred-Excluded are "money in".
+    time_outgoing_metrics = [m for m in ROLE_METRICS if m != "Income"]
+    time_incoming_metrics = [m for m in ROLE_METRICS if m != "Spend"]
+
+    if not filtered.empty:
+        monthly_spend = filtered[(filtered["role"] == "spend") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Spend")
+        monthly_income = filtered[(filtered["role"] == "income") & (filtered["amount"] > 0)].groupby("month")["amount"].sum().rename("Income")
+        monthly_invested = filtered[(filtered["role"] == "investment") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Invested")
+        monthly_transferred = filtered[filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Transferred")
         monthly_totals_raw = (
-            pd.concat([monthly_spend, monthly_income], axis=1)
+            pd.concat([monthly_spend, monthly_income, monthly_invested, monthly_transferred], axis=1)
             .fillna(0).reset_index()
             .rename(columns={"month": "Month"})
             .sort_values("Month")
         )
+        # amount columns come back as Decimal via DuckDB -- pct_change() divides
+        # raw values with no zero-guard, and Decimal division by zero raises
+        # (unlike float, which would just produce inf/nan), so cast to float
+        # before any of the derived-ratio columns below.
+        for _col in ["Spend", "Income", "Invested", "Transferred"]:
+            monthly_totals_raw[_col] = monthly_totals_raw[_col].astype(float)
         monthly_totals_raw["Net"] = monthly_totals_raw["Income"] - monthly_totals_raw["Spend"]
         monthly_totals_raw["Savings Rate"] = (
             monthly_totals_raw["Net"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
         ).round(1)
-        monthly_totals_raw["Spend MoM"] = monthly_totals_raw["Spend"].pct_change().mul(100).round(1)
-        monthly_totals_raw["Income MoM"] = monthly_totals_raw["Income"].pct_change().mul(100).round(1)
+        monthly_totals_raw["Investment Rate"] = (
+            monthly_totals_raw["Invested"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
+        ).round(1)
+        # A previous month of exactly £0 makes pct_change() produce +inf rather
+        # than a crash now that the Decimal cast above is in place -- but
+        # "infinite% increase" is a worse read than just leaving it blank.
+        monthly_totals_raw["Spend MoM"] = (
+            monthly_totals_raw["Spend"].pct_change().mul(100).replace([float("inf"), float("-inf")], float("nan")).round(1)
+        )
+        monthly_totals_raw["Income MoM"] = (
+            monthly_totals_raw["Income"].pct_change().mul(100).replace([float("inf"), float("-inf")], float("nan")).round(1)
+        )
 
-        monthly_totals = monthly_totals_raw.sort_values("Month", ascending=False).copy()
-        monthly_totals["Spend"] = monthly_totals["Spend"].map("£{:.2f}".format)
-        monthly_totals["Income"] = monthly_totals["Income"].map("£{:.2f}".format)
-        monthly_totals["Net"] = monthly_totals["Net"].map("£{:.2f}".format)
-        monthly_totals["Savings Rate"] = monthly_totals["Savings Rate"].map(
-            lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
-        )
-        monthly_totals["Spend MoM"] = monthly_totals["Spend MoM"].map(
-            lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
-        )
-        monthly_totals["Income MoM"] = monthly_totals["Income MoM"].map(
-            lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
-        )
-        st.dataframe(monthly_totals, width="stretch", hide_index=True)
+        st.subheader("Averages")
+        st.caption(f"Mean across the {len(monthly_totals_raw)} month(s) in range.")
+        avg_values = {
+            "Income": (monthly_totals_raw["Income"].mean(), False),
+            "Spend": (monthly_totals_raw["Spend"].mean(), False),
+            "Net": (monthly_totals_raw["Net"].mean(), False),
+            "Savings Rate": (monthly_totals_raw["Savings Rate"].mean(), True),
+            "Invested": (monthly_totals_raw["Invested"].mean(), False),
+            "Transferred / Excluded": (monthly_totals_raw["Transferred"].mean(), False),
+        }
+        avg_cols = st.columns(6)
+        for col, (label, (val, is_pct)) in zip(avg_cols, avg_values.items()):
+            with col:
+                st.markdown(
+                    _card(f"Avg {label}", _fmt(val, is_pct), row_colors[label],
+                          tooltip=f"Average monthly {label.lower()} across the selected range."),
+                    unsafe_allow_html=True,
+                )
 
-        # Savings rate over time
-        sr_chart = monthly_totals_raw[monthly_totals_raw["Income"] > 0]
+        st.divider()
+        st.subheader("Savings & Investing Over Time")
+
+        sr_chart = monthly_totals_raw[monthly_totals_raw["Income"] > 0].copy()
         if len(sr_chart) > 1:
-            st.subheader("Savings Rate Over Time")
+            sr_chart["Actual Savings"] = sr_chart["Income"] - sr_chart["Spend"]
             fig_sr = px.line(sr_chart, x="Month", y="Savings Rate",
-                             labels={"Savings Rate": "Savings Rate (%)"},
+                             labels={"Savings Rate": "Rate (%)"},
                              markers=True)
             fig_sr.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.4,
                              annotation_text="break even", annotation_position="bottom right")
-            fig_sr.update_traces(line_color="#2ecc71", marker_color="#2ecc71")
-            fig_sr.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
-                                 yaxis_ticksuffix="%")
-            st.plotly_chart(fig_sr, width="stretch")
+            fig_sr.update_traces(name="Savings Rate (%)", line_color="#2ecc71", marker_color="#2ecc71")
+            fig_sr.add_trace(go.Scatter(
+                x=sr_chart["Month"], y=sr_chart["Investment Rate"], name="Investment Rate (%)",
+                mode="lines+markers", line=dict(color="#9b59b6"),
+            ))
+            fig_sr.add_trace(go.Scatter(
+                x=sr_chart["Month"], y=sr_chart["Actual Savings"], name="Actual Savings (£)",
+                mode="lines+markers", line=dict(color="#3498db"), yaxis="y2",
+            ))
+            fig_sr.update_layout(
+                xaxis_tickangle=-45, margin=dict(t=20, b=0), yaxis_ticksuffix="%",
+                yaxis2=dict(title="Actual Savings (£)", overlaying="y", side="right"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                xaxis_type="category", xaxis_categoryorder="category ascending",
+            )
+            st.plotly_chart(fig_sr, width="stretch", key="savings_rate_chart")
+        else:
+            st.info("Need at least two months with income to chart savings.")
 
-        st.divider()
-        st.subheader("Monthly Spend by Subcategory")
-        available_cats = sorted(spend_time[spend_time["llm_category"].notna()]["llm_category"].unique())
-        if available_cats:
-            selected_time_cat = st.selectbox("Select category", available_cats, key="time_sub_cat")
-            sub_time_data = spend_time[
-                (spend_time["llm_category"] == selected_time_cat) &
-                spend_time["llm_subcategory"].notna()
-            ].copy()
-            if not sub_time_data.empty:
-                monthly_sub = (
-                    sub_time_data.groupby(["month", "llm_subcategory"])["amount"]
-                    .sum().abs().reset_index()
-                    .rename(columns={"amount": "Spend", "month": "Month", "llm_subcategory": "Subcategory"})
-                )
-                sub_order = (
-                    monthly_sub.groupby("Subcategory")["Spend"]
-                    .sum()
-                    .sort_values(ascending=False)
-                    .index.tolist()
-                )
-                fig_sub = px.bar(monthly_sub, x="Month", y="Spend", color="Subcategory",
-                                 title=f"{selected_time_cat} — Monthly Spend by Subcategory",
-                                 labels={"Spend": "Total Spend (£)"}, barmode="stack",
-                                 category_orders={"Subcategory": sub_order})
-                fig_sub.update_layout(xaxis_tickangle=-45, margin=dict(t=40))
-                st.plotly_chart(fig_sub, width="stretch")
-            else:
-                st.info("No subcategory data for this category in the selected range.")
+        invested_chart = monthly_totals_raw[monthly_totals_raw["Invested"] > 0]
+        if len(invested_chart) > 1:
+            fig_inv = px.line(invested_chart, x="Month", y="Invested",
+                              labels={"Invested": "Invested (£)"}, markers=True)
+            fig_inv.update_traces(line_color="#9b59b6", marker_color="#9b59b6")
+            fig_inv.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
+                                  xaxis_type="category", xaxis_categoryorder="category ascending")
+            st.plotly_chart(fig_inv, width="stretch", key="invested_over_time_chart")
     else:
-        st.info("No spend transactions in the selected range.")
+        st.info("No transactions in the selected range.")
+
+    st.divider()
+    st.subheader("Spending Over Time")
+    time_outgoing_metric = st.selectbox("Metric", time_outgoing_metrics, key="time_outgoing_metric")
+    _time_chart_pair("time_outgoing", time_outgoing_metric, sign="negative")
+
+    st.divider()
+    st.subheader("Income Over Time")
+    time_incoming_metric = st.selectbox("Metric", time_incoming_metrics, key="time_incoming_metric")
+    _time_chart_pair("time_incoming", time_incoming_metric, sign="positive")
+
+    if not filtered.empty:
+        st.divider()
+        with st.expander("Monthly Totals (Actual)"):
+            monthly_totals = monthly_totals_raw.sort_values("Month", ascending=False)
+            st.dataframe(
+                monthly_totals[[
+                    "Month", "Income", "Spend", "Net", "Savings Rate",
+                    "Invested", "Investment Rate", "Transferred", "Income MoM", "Spend MoM",
+                ]],
+                width="stretch", hide_index=True,
+                column_config={
+                    "Month": st.column_config.Column(
+                        "Month", help="Calendar month, based on the selected date range."),
+                    "Income": st.column_config.NumberColumn(
+                        "Income", format="£%.2f",
+                        help="Actual Income — the incoming (positive) side of every Income-role category."),
+                    "Spend": st.column_config.NumberColumn(
+                        "Spend", format="£%.2f",
+                        help="Actual Spend — the outgoing (negative) side of every Spend-role category."),
+                    "Net": st.column_config.NumberColumn(
+                        "Net", format="£%.2f", help="Income minus Spend for the month."),
+                    "Savings Rate": st.column_config.NumberColumn(
+                        "Savings Rate", format="%.1f%%",
+                        help="Net as a percentage of Income. Blank when there was no income that month."),
+                    "Invested": st.column_config.NumberColumn(
+                        "Invested", format="£%.2f",
+                        help="Money moved into investment categories (outgoing side only, so a "
+                             "withdrawal can't cancel out a contribution)."),
+                    "Investment Rate": st.column_config.NumberColumn(
+                        "Investment Rate", format="%.1f%%",
+                        help="Invested as a percentage of Income. Blank when there was no income that month."),
+                    "Transferred": st.column_config.NumberColumn(
+                        "Transferred", format="£%.2f",
+                        help="Money moved to transfer or excluded categories (outgoing side only)."),
+                    "Income MoM": st.column_config.NumberColumn(
+                        "Income MoM", format="%+.1f%%", help="Change in Income vs the previous month."),
+                    "Spend MoM": st.column_config.NumberColumn(
+                        "Spend MoM", format="%+.1f%%", help="Change in Spend vs the previous month."),
+                },
+            )
 
 
 # ── Tab 3: Transactions ────────────────────────────────────────────────────────
 
 with tab_txns:
     st.subheader(f"{len(filtered)} transactions")
-    st.caption("Edit Category or Subcategory cells directly — type any value including new labels. Click Save to apply.")
+
+    if not filtered.empty:
+        st.caption("Just for fun — not part of your financial totals elsewhere in the app.")
+        fun_color = "rgba(127, 140, 141, 0.16)"
+        merchant_counts = filtered["merchant_name"].dropna().value_counts()
+        biggest_idx = filtered["amount"].abs().idxmax()
+        biggest_row = filtered.loc[biggest_idx]
+        day_counts = filtered["created_at"].dt.day_name().value_counts()
+
+        fun_cards = [
+            ("Transactions", str(len(filtered)),
+             "Total transactions in the selected range and filters."),
+            ("Unique Merchants", str(filtered["merchant_name"].nunique()),
+             "Distinct merchant names seen in the selected range."),
+            ("Most Frequent Merchant",
+             merchant_counts.index[0] if not merchant_counts.empty else "—",
+             f"Appears {merchant_counts.iloc[0]} times." if not merchant_counts.empty else "No merchant data."),
+            ("Biggest Transaction", f"£{abs(biggest_row['amount']):.2f}",
+             f"{biggest_row['merchant_name'] or biggest_row['description'] or 'Unknown'} "
+             f"on {biggest_row['created_at'].date()}."),
+            ("Avg Transaction Size", f"£{filtered['amount'].abs().mean():.2f}",
+             "Mean absolute amount across every transaction in range."),
+            ("Busiest Day", day_counts.index[0] if not day_counts.empty else "—",
+             f"{day_counts.iloc[0]} transactions fall on a {day_counts.index[0]}." if not day_counts.empty else ""),
+        ]
+        fun_cols = st.columns(6)
+        for col, (label, value, tooltip) in zip(fun_cols, fun_cards):
+            with col:
+                st.markdown(_card(label, value, fun_color, tooltip=tooltip), unsafe_allow_html=True)
+
+        st.divider()
+
+    st.caption(
+        "Pick Category/Subcategory from your existing taxonomy to fix a misclassification. "
+        "To add a brand-new category or subcategory, use the Settings tab first."
+    )
 
     edit_df = filtered[["id", "created_at", "amount", "merchant_name", "description",
                          "user_context", "llm_category", "llm_subcategory"]].copy()
-    edit_df["created_at"] = edit_df["created_at"].dt.strftime("%Y-%m-%d")
-    edit_df["amount"] = edit_df["amount"].map("£{:.2f}".format)
-    edit_df["clear"] = False
+    edit_df["llm_category"] = edit_df["llm_category"].fillna("")
+    edit_df["llm_subcategory"] = edit_df["llm_subcategory"].fillna("")
+    edit_df["user_context"] = edit_df["user_context"].fillna("")
     edit_df = edit_df.rename(columns={
         "created_at": "Date", "amount": "Amount", "merchant_name": "Merchant",
         "description": "Description", "user_context": "Context",
         "llm_category": "Category", "llm_subcategory": "Subcategory",
-        "clear": "Clear",
     }).reset_index(drop=True)
+
+    # A row's current label might not be in the taxonomy anymore (renamed/
+    # removed elsewhere) -- include it anyway so the dropdown can still show
+    # the row's actual value instead of silently blanking it.
+    category_options = sorted(set(all_parents) | set(edit_df["Category"]) - {""})
+    subcategory_options = sorted(set(all_subs) | set(edit_df["Subcategory"]) - {""})
 
     edited = st.data_editor(
         edit_df,
         column_config={
             "id": st.column_config.Column("ID", disabled=True, width="small"),
-            "Date": st.column_config.Column(disabled=True, width="small"),
-            "Amount": st.column_config.Column(disabled=True, width="small"),
+            "Date": st.column_config.DateColumn(
+                "Date", format="YYYY-MM-DD", width="small",
+                help="The time-of-day from the original transaction is kept as-is -- only the date changes."),
+            "Amount": st.column_config.NumberColumn("Amount", disabled=True, format="£%.2f", width="small"),
             "Merchant": st.column_config.Column(disabled=True),
             "Description": st.column_config.Column(disabled=True),
-            "Context": st.column_config.Column(disabled=True),
-            "Category": st.column_config.TextColumn("Category", width="medium"),
-            "Subcategory": st.column_config.TextColumn("Subcategory", width="medium"),
-            "Clear": st.column_config.CheckboxColumn("Clear", width="small"),
+            "Context": st.column_config.TextColumn("Context", width="medium"),
+            "Category": st.column_config.SelectboxColumn(
+                "Category", options=[""] + category_options, width="medium"),
+            "Subcategory": st.column_config.SelectboxColumn(
+                "Subcategory", options=[""] + subcategory_options, width="medium"),
         },
         width="stretch",
         hide_index=True,
         num_rows="fixed",
     )
 
-    btn_col1, btn_col2 = st.columns([1, 1])
-    with btn_col1:
-        if st.button("Save changes", type="primary"):
-            changes = 0
-            for i in range(len(edit_df)):
-                orig_cat = edit_df.at[i, "Category"]
-                orig_sub = edit_df.at[i, "Subcategory"]
-                new_cat = edited.at[i, "Category"]
-                new_sub = edited.at[i, "Subcategory"]
-                txn_id = edit_df.at[i, "id"]
-                new_cat, new_sub = sanitize_classification_edit(new_cat, new_sub)
-                if orig_cat != new_cat or orig_sub != new_sub:
-                    if new_cat:
-                        parent_id = upsert_parent(new_cat)
-                        if new_sub:
-                            upsert_subcategory(new_sub, parent_id)
-                    update_classification(
-                        transaction_id=txn_id,
-                        category=new_cat or None,
-                        subcategory=new_sub or None,
-                        confidence=None,
-                        model="manual",
-                    )
-                    changes += 1
-            if changes:
-                st.success(f"Saved {changes} change(s).")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No changes detected.")
-    with btn_col2:
-        if st.button("Clear selected labels"):
-            to_clear = [edit_df.at[i, "id"] for i in range(len(edit_df)) if edited.at[i, "Clear"]]
-            if to_clear:
-                placeholders = ", ".join("?" * len(to_clear))
-                con.execute(
-                    f"""UPDATE transactions
-                        SET llm_category = NULL, llm_subcategory = NULL,
-                            classified_at = NULL, llm_model = NULL, llm_confidence = NULL
-                        WHERE id IN ({placeholders})""",
-                    to_clear,
+    if st.button("Save changes", type="primary"):
+        changes = 0
+        for i in range(len(edit_df)):
+            txn_id = edit_df.at[i, "id"]
+
+            orig_cat = edit_df.at[i, "Category"]
+            orig_sub = edit_df.at[i, "Subcategory"]
+            new_cat, new_sub = sanitize_classification_edit(
+                edited.at[i, "Category"], edited.at[i, "Subcategory"])
+            if orig_cat != (new_cat or "") or orig_sub != (new_sub or ""):
+                if new_cat:
+                    parent_id = upsert_parent(new_cat)
+                    if new_sub:
+                        upsert_subcategory(new_sub, parent_id)
+                update_classification(
+                    transaction_id=txn_id,
+                    category=new_cat or None,
+                    subcategory=new_sub or None,
+                    confidence=None,
+                    model="manual",
                 )
-                st.success(f"Cleared labels for {len(to_clear)} transaction(s).")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No rows checked.")
+                changes += 1
+
+            # Date only edits the calendar date -- the original time-of-day
+            # (e.g. the actual moment Monzo recorded the purchase) is kept,
+            # since the date picker has no way to set a time.
+            orig_datetime = edit_df.at[i, "Date"]
+            new_date = edited.at[i, "Date"]
+            new_date = new_date.date() if hasattr(new_date, "date") else new_date
+            orig_context = edit_df.at[i, "Context"]
+            new_context = edited.at[i, "Context"] or ""
+            date_changed = orig_datetime.date() != new_date
+            context_changed = orig_context != new_context
+            if date_changed or context_changed:
+                new_datetime = datetime.combine(new_date, orig_datetime.time()) if date_changed else orig_datetime
+                update_transaction_details(
+                    transaction_id=txn_id,
+                    created_at=new_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                    user_context=new_context or None,
+                )
+                changes += 1
+
+        if changes:
+            st.success(f"Saved {changes} change(s).")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.info("No changes detected.")
 
 
 # ── Tab 4: Category Drill-Down ─────────────────────────────────────────────────
@@ -488,105 +832,201 @@ with tab_drill:
     if classified.empty:
         st.info("No classified transactions in the selected range.")
     else:
+        st.caption(
+            "All figures are Actual — categorized by the roles set in the Settings "
+            "tab. See Overview for the Standard vs Actual distinction."
+        )
         selected_cat = st.selectbox(
             "Select parent category",
             sorted(classified["llm_category"].unique()),
+            key="drill_selected_category",
         )
         cat_df = classified[classified["llm_category"] == selected_cat]
-        spend_cat = cat_df[cat_df["amount"] < 0]
-        income_cat = cat_df[cat_df["amount"] > 0]
-        total_spend_cat = abs(spend_cat["amount"].sum())
-        total_income_cat = income_cat["amount"].sum()
-        net_cat = total_income_cat - total_spend_cat
 
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Transactions", len(cat_df))
-        col2.metric("Total Spend", f"£{total_spend_cat:.2f}")
-        col3.metric("Total Income", f"£{total_income_cat:.2f}")
-        col4.metric("Net", f"£{net_cat:.2f}", delta=round(net_cat, 2), delta_color="normal")
-        col5.metric("Subcategories", int(cat_df["llm_subcategory"].nunique()))
+        # Roles like "transfer"/"investment" are bidirectional (e.g. Transfers
+        # has both an Inbound and an Outbound subcategory) -- restricting each
+        # to its expected direction (income=incoming, everything else=outgoing)
+        # means summing signed amounts can never let an inflow cancel an
+        # outflow, matching how Overview computes these same totals.
+        role_sign = {"income": "positive", "spend": "negative", "investment": "negative",
+                     "transfer": "negative", "excluded": "negative"}
+        income_cat = cat_df.loc[(cat_df["role"] == "income") & (cat_df["amount"] > 0), "amount"].sum()
+        spend_cat = abs(cat_df.loc[(cat_df["role"] == "spend") & (cat_df["amount"] < 0), "amount"].sum())
+        invested_cat = abs(cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] < 0), "amount"].sum())
+        excluded_cat = abs(cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] < 0), "amount"].sum())
+        net_cat = income_cat - spend_cat
+
+        # Invested/Transferred-Excluded only show their outgoing side above --
+        # but since both can also carry an incoming side under the same role
+        # (e.g. an investment withdrawal, or an inbound transfer/refund), a
+        # category with ONLY incoming activity would otherwise show £0.00 here
+        # while the subcategory chart below it shows a real, nonzero amount.
+        # Surface the incoming side as its own card whenever it's nonzero so
+        # the cards never disagree with what the charts are showing.
+        invested_in_cat = cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] > 0), "amount"].sum()
+        excluded_in_cat = cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] > 0), "amount"].sum()
+
+        stat_color = "rgba(127, 140, 141, 0.16)"
+        top_cols = st.columns(3)
+        with top_cols[0]:
+            st.markdown(_card("Transactions", str(len(cat_df)), stat_color,
+                               tooltip="Transactions in this category, in the selected range."),
+                        unsafe_allow_html=True)
+        with top_cols[1]:
+            st.markdown(_card("Subcategories", str(int(cat_df["llm_subcategory"].nunique())), stat_color,
+                               tooltip="Distinct subcategories used within this category."),
+                        unsafe_allow_html=True)
+        with top_cols[2]:
+            st.markdown(_card("Net", f"£{net_cat:.2f}", row_colors["Net"],
+                               tooltip="Actual Income minus Actual Spend for this category."),
+                        unsafe_allow_html=True)
+
+        # (display label, color key into row_colors, value, tooltip)
+        invested_label = "Invested (Outgoing)" if invested_in_cat > 0 else "Invested"
+        excluded_label = "Transferred / Excluded (Outgoing)" if excluded_in_cat > 0 else "Transferred / Excluded"
+        role_cards = [
+            ("Income", "Income", income_cat,
+             "Every transaction in this category whose role is Income (incoming side only)."),
+            ("Spend", "Spend", spend_cat,
+             "Every transaction in this category whose role is Spend (outgoing side only)."),
+            (invested_label, "Invested", invested_cat,
+             "Money moved into investment categories here (outgoing side only, so a withdrawal can't cancel a contribution)."),
+            (excluded_label, "Transferred / Excluded", excluded_cat,
+             "Money moved to transfer or excluded categories here (outgoing side only)."),
+        ]
+        if invested_in_cat > 0:
+            role_cards.append(("Invested (Incoming)", "Invested", invested_in_cat,
+                "Money that came back out of investment categories here (e.g. a withdrawal or sale) -- "
+                "kept separate so it can't cancel out the outgoing figure."))
+        if excluded_in_cat > 0:
+            role_cards.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in_cat,
+                "Money that came in through transfer or excluded categories here (e.g. a refund or an inbound "
+                "transfer) -- kept separate so it can't cancel out the outgoing figure."))
+
+        role_cols = st.columns(len(role_cards))
+        for col, (label, color_key, value, tooltip) in zip(role_cols, role_cards):
+            with col:
+                st.markdown(_card(label, f"£{value:.2f}", row_colors[color_key], tooltip=tooltip),
+                            unsafe_allow_html=True)
 
         st.divider()
 
-        chart_col1, chart_col2 = st.columns(2)
-
-        with chart_col1:
-            classified_spend_cat = spend_cat[spend_cat["llm_subcategory"].notna()]
-            if not classified_spend_cat.empty:
-                sub_spend = (
-                    classified_spend_cat.groupby("llm_subcategory")["amount"]
-                    .sum().abs().reset_index()
-                    .rename(columns={"llm_subcategory": "Subcategory", "amount": "Amount"})
-                    .sort_values("Amount", ascending=True)
+        # Income/Spend are one-directional by definition, but Invested/
+        # Transferred/Excluded can genuinely have both an outgoing and an
+        # incoming subcategory under the same role (e.g. Transfers has both
+        # an Inbound and an Outbound Transfer subcategory) -- checking only
+        # one fixed direction per role would make that other side vanish from
+        # this view entirely. Check both directions and chart whichever
+        # actually has data, labeling which side it is whenever a role could
+        # go either way.
+        role_labels = {"income": "Income", "spend": "Spend", "investment": "Invested",
+                       "transfer": "Transferred", "excluded": "Excluded"}
+        role_colors = {"income": "Greens", "spend": "Reds", "investment": "Purples",
+                       "transfer": "Blues", "excluded": "Greys"}
+        bidirectional = {"income": False, "spend": False, "investment": True,
+                          "transfer": True, "excluded": True}
+        chart_specs = []
+        for role, label in role_labels.items():
+            signs = ["negative", "positive"] if bidirectional[role] else [role_sign[role]]
+            for sign in signs:
+                mask = (cat_df["role"] == role) & (
+                    (cat_df["amount"] > 0) if sign == "positive" else (cat_df["amount"] < 0)
                 )
-                fig = px.bar(sub_spend, x="Amount", y="Subcategory", orientation="h",
-                             title=f"Spend by Subcategory",
-                             labels={"Amount": "Total Spend (£)"},
-                             color="Amount", color_continuous_scale="Reds")
-                fig.update_layout(showlegend=False, coloraxis_showscale=False,
-                                  height=max(250, len(sub_spend) * 45),
-                                  margin=dict(l=0, r=0, t=40, b=0))
-                st.plotly_chart(fig, width="stretch")
-            else:
-                st.info("No spend in this category.")
+                if abs(cat_df.loc[mask, "amount"].sum()) > 0:
+                    suffix = "" if len(signs) == 1 else (" (Incoming)" if sign == "positive" else " (Outgoing)")
+                    chart_specs.append((role, sign, f"{label}{suffix}"))
 
-        with chart_col2:
-            classified_income_cat = income_cat[income_cat["llm_subcategory"].notna()]
-            if not classified_income_cat.empty:
-                sub_income = (
-                    classified_income_cat.groupby("llm_subcategory")["amount"]
-                    .sum().reset_index()
-                    .rename(columns={"llm_subcategory": "Subcategory", "amount": "Amount"})
-                    .sort_values("Amount", ascending=True)
-                )
-                fig2 = px.bar(sub_income, x="Amount", y="Subcategory", orientation="h",
-                              title=f"Income by Subcategory",
-                              labels={"Amount": "Total Income (£)"},
-                              color="Amount", color_continuous_scale="Greens")
-                fig2.update_layout(showlegend=False, coloraxis_showscale=False,
-                                   height=max(250, len(sub_income) * 45),
-                                   margin=dict(l=0, r=0, t=40, b=0))
-                st.plotly_chart(fig2, width="stretch")
-            else:
-                st.info("No income in this category.")
+        if chart_specs:
+            chart_cols = st.columns(len(chart_specs))
+            for col, (role, sign, chart_label) in zip(chart_cols, chart_specs):
+                with col:
+                    breakdown = role_breakdown(
+                        cat_df, (role,), "llm_subcategory", sign=sign
+                    ).sort_values("Amount", ascending=True)
+                    fig = px.bar(breakdown, x="Amount", y="Subcategory", orientation="h",
+                                 title=f"{chart_label} by Subcategory",
+                                 labels={"Amount": f"{chart_label} (£)"},
+                                 color="Amount", color_continuous_scale=role_colors[role])
+                    fig.update_layout(showlegend=False, coloraxis_showscale=False,
+                                      height=max(250, len(breakdown) * 45),
+                                      margin=dict(l=0, r=0, t=40, b=0))
+                    st.plotly_chart(fig, width="stretch", key=f"drill_{selected_cat}_{role}_{sign}_chart")
 
+        # "Unclassified" (no subcategory) is included here, same as the charts
+        # above via role_breakdown -- otherwise this table's per-role totals
+        # wouldn't add up to what the charts show for the same category.
         sub_summary = (
-            cat_df[cat_df["llm_subcategory"].notna()]
+            cat_df.assign(llm_subcategory=cat_df["llm_subcategory"].fillna("Unclassified"))
             .groupby("llm_subcategory")
-            .agg(
-                Transactions=("id", "count"),
-                Spend=("amount", lambda x: abs(x[x < 0].sum())),
-                Income=("amount", lambda x: x[x > 0].sum()),
-            )
+            .agg(Transactions=("id", "count"))
             .reset_index()
             .rename(columns={"llm_subcategory": "Subcategory"})
-            .sort_values("Spend", ascending=False)
-            .reset_index(drop=True)
         )
-        if not sub_summary.empty:
-            sub_summary["Avg Spend"] = sub_summary.apply(
-                lambda r: f"£{r['Spend'] / r['Transactions']:.2f}" if r['Spend'] > 0 else "—", axis=1
+        if not sub_summary.empty and chart_specs:
+            for role, sign, chart_label in chart_specs:
+                bd = role_breakdown(cat_df, (role,), "llm_subcategory", sign=sign)
+                role_sums = bd.set_index("Subcategory")["Amount"]
+                sub_summary[chart_label] = sub_summary["Subcategory"].map(role_sums).fillna(0)
+
+            # A subcategory's own rows are almost always one direction, so a
+            # plain per-row average/latest-date/share-of-total is a meaningful
+            # "how big, how recent, how much of this category" signal without
+            # needing another sign split like the £ columns above.
+            grouped = cat_df.assign(
+                llm_subcategory=cat_df["llm_subcategory"].fillna("Unclassified")
+            ).groupby("llm_subcategory")
+            avg_amount = grouped["amount"].apply(lambda s: s.astype(float).abs().mean())
+            last_txn = grouped["created_at"].max()
+            sub_summary["Avg Transaction"] = sub_summary["Subcategory"].map(avg_amount)
+            sub_summary["Last Transaction"] = sub_summary["Subcategory"].map(last_txn)
+
+            sort_col = chart_specs[0][2]
+            total_for_share = sub_summary[sort_col].sum()
+            share_label = f"% of {sort_col}"
+            sub_summary[share_label] = (
+                (sub_summary[sort_col] / total_for_share * 100).round(1) if total_for_share > 0 else 0.0
             )
-            sub_summary["Spend"] = sub_summary["Spend"].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
-            sub_summary["Income"] = sub_summary["Income"].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
+
+            sub_summary = sub_summary.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            for _, _, chart_label in chart_specs:
+                sub_summary[chart_label] = sub_summary[chart_label].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
+            sub_summary["Avg Transaction"] = sub_summary["Avg Transaction"].map("£{:.2f}".format)
+            sub_summary["Last Transaction"] = sub_summary["Last Transaction"].dt.strftime("%Y-%m-%d")
+            sub_summary[share_label] = sub_summary[share_label].map(lambda x: f"{x:.1f}%")
+
             st.subheader("Subcategory Summary")
             st.dataframe(sub_summary, width="stretch", hide_index=True)
 
         st.subheader("Transactions")
         display_cat = cat_df[["created_at", "amount", "merchant_name", "description",
                                "user_context", "llm_subcategory"]].copy()
-        display_cat["created_at"] = display_cat["created_at"].dt.strftime("%Y-%m-%d")
-        display_cat["amount"] = display_cat["amount"].map("£{:.2f}".format)
         display_cat.columns = ["Date", "Amount", "Merchant", "Description", "Context", "Subcategory"]
-        st.dataframe(display_cat, width="stretch", hide_index=True)
+        st.dataframe(
+            display_cat, width="stretch", hide_index=True,
+            column_config={
+                "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                "Amount": st.column_config.NumberColumn("Amount", format="£%.2f"),
+            },
+        )
 
 
 # ── Tab 5: Top Merchants ──────────────────────────────────────────────────────
 
 with tab_merchants:
-    merch_spend = filtered[filtered["amount"] < 0].copy()
+    st.caption(
+        "Actual Spend only — investments, transfers, and refunds aren't counted as merchant spend."
+    )
+    stat_color = "rgba(127, 140, 141, 0.16)"
+    # Same direction-restriction used everywhere else: a "spend"-role category
+    # can still have a stray positive-amount row (e.g. an unclassified refund),
+    # and without this, total_spend/avg below would sum signed amounts before
+    # taking abs(), letting it quietly cancel out real spend.
+    merch_spend = filtered[(filtered["role"] == "spend") & (filtered["amount"] < 0)].copy()
+    # merchant_name is often blank for direct debits/bank transfers, which
+    # report counterparty_name instead -- falling back to that (and then to
+    # the raw description) keeps those from all getting lumped into "Unknown".
     merch_spend["merchant_display"] = (
-        merch_spend["merchant_name"].fillna(merch_spend["description"]).fillna("Unknown")
+        merchant_display_name(merch_spend).fillna(merch_spend["description"]).fillna("Unknown")
     )
 
     if merch_spend.empty:
@@ -602,37 +1042,86 @@ with tab_merchants:
             )
             .reset_index()
             .rename(columns={"merchant_display": "Merchant"})
-            .sort_values("total_spend", ascending=False)
+            .sort_values(["total_spend", "Merchant"], ascending=[False, True])
             .reset_index(drop=True)
         )
 
-        top_n = min(20, len(by_merchant))
-        top_chart = by_merchant.head(top_n).sort_values("total_spend")
-        fig_m = px.bar(
-            top_chart, x="total_spend", y="Merchant", orientation="h",
-            title=f"Top {top_n} Merchants by Spend",
-            labels={"total_spend": "Total Spend (£)"},
-            color="total_spend", color_continuous_scale="Reds",
-        )
-        fig_m.update_layout(
-            showlegend=False, coloraxis_showscale=False,
-            height=max(400, top_n * 36),
-            margin=dict(l=0, r=0, t=40, b=0),
-        )
-        st.plotly_chart(fig_m, width="stretch")
+        merch_ctrl1, merch_ctrl2 = st.columns([3, 1])
+        with merch_ctrl1:
+            merchant_search = st.text_input(
+                "Search merchants", placeholder="merchant name...", key="merchant_search"
+            )
+        with merch_ctrl2:
+            top_n_choice = st.selectbox("Top N", [10, 20, 50, "All"], index=1, key="merchant_top_n")
 
-        st.subheader(f"All Merchants ({len(by_merchant)})")
-        merch_display = by_merchant.copy()
-        merch_display["total_spend"] = merch_display["total_spend"].map("£{:.2f}".format)
-        merch_display["avg_transaction"] = merch_display["avg_transaction"].map("£{:.2f}".format)
-        merch_display["last_seen"] = pd.to_datetime(merch_display["last_seen"]).dt.strftime("%Y-%m-%d")
-        merch_display = merch_display.rename(columns={
-            "total_spend": "Total Spend",
-            "transactions": "Transactions",
-            "avg_transaction": "Avg Transaction",
-            "last_seen": "Last Seen",
-        })
-        st.dataframe(merch_display, width="stretch", hide_index=True)
+        if merchant_search:
+            by_merchant = by_merchant[
+                by_merchant["Merchant"].str.contains(merchant_search, case=False, na=False, regex=False)
+            ]
+
+        if by_merchant.empty:
+            st.info("No merchants match that search.")
+        else:
+            rank_by = st.radio("Rank merchants by", ["Total Spend", "Frequency"],
+                                horizontal=True, key="merchant_rank_by")
+            rank_col = "total_spend" if rank_by == "Total Spend" else "transactions"
+            by_merchant = by_merchant.sort_values(
+                [rank_col, "Merchant"], ascending=[False, True]
+            ).reset_index(drop=True)
+
+            total_spend_all = by_merchant["total_spend"].sum()
+            top_row = by_merchant.iloc[0]
+            stat_cols = st.columns(4)
+            with stat_cols[0]:
+                st.markdown(_card("Merchants", str(len(by_merchant)), stat_color,
+                                   tooltip="Distinct merchants matching the current search, in range."),
+                            unsafe_allow_html=True)
+            with stat_cols[1]:
+                st.markdown(_card("Total Spend", f"£{total_spend_all:.2f}", row_colors["Spend"],
+                                   tooltip="Actual Spend summed across all matching merchants."),
+                            unsafe_allow_html=True)
+            with stat_cols[2]:
+                st.markdown(_card("Avg per Merchant", f"£{(total_spend_all / len(by_merchant)):.2f}", stat_color,
+                                   tooltip="Total Spend divided by the number of matching merchants."),
+                            unsafe_allow_html=True)
+            with stat_cols[3]:
+                st.markdown(_card("Top Merchant", top_row["Merchant"], stat_color,
+                                   tooltip=f"£{top_row['total_spend']:.2f} across {int(top_row['transactions'])} transaction(s)."),
+                            unsafe_allow_html=True)
+
+            top_n = len(by_merchant) if top_n_choice == "All" else min(top_n_choice, len(by_merchant))
+            top_chart = by_merchant.head(top_n).sort_values(rank_col)
+            chart_title = f"Merchants by {rank_by}" if top_n >= len(by_merchant) else f"Top {top_n} Merchants by {rank_by}"
+            axis_label = "Total Spend (£)" if rank_col == "total_spend" else "Transactions (#)"
+            color_scale = "Reds" if rank_col == "total_spend" else "Blues"
+            fig_m = px.bar(
+                top_chart, x=rank_col, y="Merchant", orientation="h",
+                title=chart_title,
+                labels={rank_col: axis_label},
+                color=rank_col, color_continuous_scale=color_scale,
+            )
+            fig_m.update_layout(
+                showlegend=False, coloraxis_showscale=False,
+                height=max(400, top_n * 36),
+                margin=dict(l=0, r=0, t=40, b=0),
+            )
+            st.plotly_chart(fig_m, width="stretch", key="top_merchants_chart")
+
+            st.subheader(f"All Merchants ({len(by_merchant)})")
+            merch_display = by_merchant.rename(columns={
+                "total_spend": "Total Spend",
+                "transactions": "Transactions",
+                "avg_transaction": "Avg Transaction",
+                "last_seen": "Last Seen",
+            })
+            st.dataframe(
+                merch_display, width="stretch", hide_index=True,
+                column_config={
+                    "Total Spend": st.column_config.NumberColumn("Total Spend", format="£%.2f"),
+                    "Avg Transaction": st.column_config.NumberColumn("Avg Transaction", format="£%.2f"),
+                    "Last Seen": st.column_config.DateColumn("Last Seen", format="YYYY-MM-DD"),
+                },
+            )
 
 
 # ── Tab 6: Subscriptions ──────────────────────────────────────────────────────
@@ -656,16 +1145,29 @@ with tab_subs:
     monthly_cost = sum(s["amount"] * FREQ_MONTHLY[s["frequency"]] for s in active_subs)
     annual_cost = monthly_cost * 12
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Active Subscriptions", len(active_subs))
-    col2.metric("Est. Monthly Cost", f"£{monthly_cost:.2f}")
-    col3.metric("Est. Annual Cost", f"£{annual_cost:.2f}")
+    kpi_color = "rgba(127, 140, 141, 0.16)"
+    kpi_cols = st.columns(3)
+    with kpi_cols[0]:
+        st.markdown(_card("Active Subscriptions", str(len(active_subs)), kpi_color,
+                           tooltip="Subscriptions not marked Inactive."),
+                    unsafe_allow_html=True)
+    with kpi_cols[1]:
+        st.markdown(_card("Est. Monthly Cost", f"£{monthly_cost:.2f}", row_colors["Spend"],
+                           tooltip="Sum of every active subscription's amount, normalized to a monthly rate."),
+                    unsafe_allow_html=True)
+    with kpi_cols[2]:
+        st.markdown(_card("Est. Annual Cost", f"£{annual_cost:.2f}", row_colors["Spend"],
+                           tooltip="Est. Monthly Cost x 12."),
+                    unsafe_allow_html=True)
 
     st.divider()
 
     # ── Add manually ───────────────────────────────────────────────────────────
     st.subheader("Add Subscription")
-    known_merchants = sorted(df["merchant_name"].dropna().unique().tolist())
+    # merchant_name is often blank for direct debits/bank transfers (which
+    # report counterparty_name instead), so falling back to that here means a
+    # subscription paid that way can still be matched up to its transactions.
+    known_merchants = sorted(merchant_display_name(df).dropna().unique().tolist())
     with st.form("add_sub_form"):
         c1, c2 = st.columns([2, 2])
         sub_name = c1.text_input("Display Name", placeholder="e.g. Netflix")
@@ -767,9 +1269,15 @@ with tab_subs:
         st.info("No recurring patterns detected yet — more transaction history will improve detection.")
 
 
-# ── Tab 7: Taxonomy ────────────────────────────────────────────────────────────
+# ── Tab 7: Settings ────────────────────────────────────────────────────────────
 
-with tab_taxonomy:
+with tab_settings:
+    st.caption("Manage categories and set each one's Role, which controls what counts as Income, Spend, Investment, Transfer, or is Excluded on the Overview and in Telegram summaries.")
+
+    INHERIT = "(inherit)"
+    role_by_parent_id = {p["id"]: p["role"] for p in get_parents()}
+    sub_role_info = {s["id"]: s for s in get_subcategories()}
+
     # Session state for right-panel mode
     for _k in ("tax_edit_sub", "tax_view_sub", "tax_edit_parent", "tax_del_parent", "tax_wipe_parent", "tax_del_sub"):
         if _k not in st.session_state:
@@ -788,7 +1296,44 @@ with tab_taxonomy:
     """)
     tax_parent_names = [p["name"] for p in tax_parents]
 
-    tax_left, tax_right = st.columns([2, 3])
+    settings_stat_color = "rgba(127, 140, 141, 0.16)"
+    total_txns = _query("SELECT COUNT(*) AS n FROM transactions")[0]["n"]
+    total_classified = _query("SELECT COUNT(*) AS n FROM transactions WHERE llm_category IS NOT NULL")[0]["n"]
+    total_subs_all = sum(p["sub_count"] for p in tax_parents)
+    classified_pct = (total_classified / total_txns * 100) if total_txns else 0.0
+
+    stat_cols = st.columns(4)
+    with stat_cols[0]:
+        st.markdown(_card("Parent Categories", str(len(tax_parents)), settings_stat_color,
+                           tooltip="Total parent categories in your taxonomy."),
+                    unsafe_allow_html=True)
+    with stat_cols[1]:
+        st.markdown(_card("Subcategories", str(total_subs_all), settings_stat_color,
+                           tooltip="Total subcategories across all parent categories."),
+                    unsafe_allow_html=True)
+    with stat_cols[2]:
+        st.markdown(_card("Classified", f"{classified_pct:.0f}%", settings_stat_color,
+                           tooltip=f"{total_classified} of {total_txns} transactions have a category assigned."),
+                    unsafe_allow_html=True)
+    with stat_cols[3]:
+        st.markdown(_card("Unclassified", str(total_txns - total_classified), settings_stat_color,
+                           tooltip="Transactions with no category assigned yet."),
+                    unsafe_allow_html=True)
+
+    st.divider()
+
+    # Only split into two columns when there's actually something to show on
+    # the right -- otherwise the tree gets squeezed into 2/5 of the page width
+    # for no reason while an idle "click something" message sits in the rest.
+    has_active_panel = any([
+        st.session_state.tax_edit_parent, st.session_state.tax_del_parent,
+        st.session_state.tax_wipe_parent, st.session_state.tax_del_sub,
+        st.session_state.tax_edit_sub, st.session_state.tax_view_sub,
+    ])
+    if has_active_panel:
+        tax_left, tax_right = st.columns([2, 3])
+    else:
+        tax_left, tax_right = st.container(), st.container()
 
     # ── Left: tree of parents + subcategories ──────────────────────────────────
     with tax_left:
@@ -826,8 +1371,19 @@ with tab_taxonomy:
             ]
             is_active_parent = pid in (st.session_state.tax_edit_parent, st.session_state.tax_del_parent, st.session_state.tax_wipe_parent)
 
-            label = f"**{pname}** — {parent['txn_count']} txns · {parent['sub_count']} subcats"
+            current_role = role_by_parent_id.get(pid, "spend")
+            label = f"**{pname}** — {parent['txn_count']} txns · {parent['sub_count']} subcats · Role: {current_role}"
             with st.expander(label, expanded=bool(active_sub_ids or is_active_parent)):
+
+                new_role = st.selectbox(
+                    "Role", ROLES, index=ROLES.index(current_role), key=f"role_{pid}",
+                    help="What this category counts as for Income/Spend/Investment totals "
+                         "on the Overview tab and in the weekly/monthly Telegram summaries."
+                )
+                if new_role != current_role:
+                    set_parent_role(pid, new_role)
+                    st.cache_data.clear()
+                    st.rerun()
 
                 # Parent action buttons
                 pb1, pb2, pb3 = st.columns(3)
@@ -854,14 +1410,25 @@ with tab_taxonomy:
                         st.session_state.tax_view_sub = None
 
                 if subs_for_parent:
-                    st.caption("Subcategories")
+                    st.caption(f"Subcategories — role defaults to {current_role} unless overridden")
+                    role_options = [INHERIT, *ROLES]
                     for sub in subs_for_parent:
                         sid = sub["id"]
                         is_sel = sid in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub)
-                        sc1, sc2, sc3, sc4 = st.columns([4, 1, 1, 1])
+                        sc1, sc_role, sc2, sc3, sc4 = st.columns([3, 2, 1, 1, 1])
                         with sc1:
                             label_text = f"**{sub['name']}**" if is_sel else sub["name"]
                             st.markdown(f"{label_text} *({sub['txn_count']})*")
+                        with sc_role:
+                            current_override = (sub_role_info.get(sid) or {}).get("role_override") or INHERIT
+                            new_override = st.selectbox(
+                                "Role override", role_options, index=role_options.index(current_override),
+                                key=f"role_sub_{sid}", label_visibility="collapsed"
+                            )
+                            if new_override != current_override:
+                                set_subcategory_role(sid, None if new_override == INHERIT else new_override)
+                                st.cache_data.clear()
+                                st.rerun()
                         with sc2:
                             if st.button("✏️", key=f"es_{sid}", help="Edit name/parent"):
                                 st.session_state.tax_edit_sub = sid
@@ -912,16 +1479,33 @@ with tab_taxonomy:
                     with c2:
                         cancel = st.form_submit_button("Cancel")
                     if save and new_pname.strip():
-                        if new_pname.strip() != parent_row["name"]:
-                            # DuckDB FK constraint fires on any UPDATE to a referenced parent row,
-                            # even non-key columns. Workaround: insert new name, re-point subs, delete old.
-                            new_pid = upsert_parent(new_pname.strip())
-                            con.execute("UPDATE subcategories SET parent_id = ? WHERE parent_id = ?", [new_pid, pid])
-                            con.execute("UPDATE transactions SET llm_category = ? WHERE llm_category = ?", [new_pname.strip(), parent_row["name"]])
-                            con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
-                        st.session_state.tax_edit_parent = None
-                        st.cache_data.clear()
-                        st.rerun()
+                        stripped = new_pname.strip()
+                        # upsert_parent() below is a get-or-create -- renaming to a name
+                        # that already belongs to a DIFFERENT parent would silently merge
+                        # the two categories together with no warning at all. Block it
+                        # instead, same as duplicate-name adds are already blocked elsewhere.
+                        name_collision = stripped != parent_row["name"] and stripped.lower() in {
+                            p["name"].lower() for p in tax_parents if p["id"] != pid
+                        }
+                        if name_collision:
+                            st.error(f'"{stripped}" already exists as a category — rename to a unique name, or delete one of them first.')
+                        else:
+                            if stripped != parent_row["name"]:
+                                # DuckDB FK constraint fires on any UPDATE to a referenced parent row,
+                                # even non-key columns. Workaround: insert new name, re-point subs, delete old.
+                                new_pid = upsert_parent(stripped)
+                                con.execute("UPDATE subcategories SET parent_id = ? WHERE parent_id = ?", [new_pid, pid])
+                                con.execute("UPDATE transactions SET llm_category = ? WHERE llm_category = ?", [stripped, parent_row["name"]])
+                                # Carry the role override across the rename -- otherwise a
+                                # custom category's role silently resets to its default.
+                                con.execute(
+                                    "UPDATE category_roles SET parent_id = ? WHERE parent_id = ? AND subcategory_id IS NULL",
+                                    [new_pid, pid],
+                                )
+                                con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
+                            st.session_state.tax_edit_parent = None
+                            st.cache_data.clear()
+                            st.rerun()
                     if cancel:
                         st.session_state.tax_edit_parent = None
                         st.rerun()
@@ -939,6 +1523,15 @@ with tab_taxonomy:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary"):
+                        # Role overrides reference parent/subcategory ids, and ids get
+                        # reused after a delete (new_id = MAX(id)+1) -- an orphaned
+                        # override left behind here could later attach itself to an
+                        # unrelated category that happens to reuse the same id.
+                        con.execute(
+                            "DELETE FROM category_roles WHERE subcategory_id IN "
+                            "(SELECT id FROM subcategories WHERE parent_id = ?)", [pid]
+                        )
+                        con.execute("DELETE FROM category_roles WHERE parent_id = ? AND subcategory_id IS NULL", [pid])
                         con.execute("DELETE FROM subcategories WHERE parent_id = ?", [pid])
                         con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
                         con.execute("UPDATE transactions SET llm_category = NULL, llm_subcategory = NULL WHERE llm_category = ?", [parent_row["name"]])
@@ -1001,6 +1594,7 @@ with tab_taxonomy:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary", key="confirm_del_sub"):
+                        con.execute("DELETE FROM category_roles WHERE subcategory_id = ?", [sid])
                         con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
                         con.execute(
                             "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
@@ -1036,25 +1630,47 @@ with tab_taxonomy:
                     with c2:
                         cancel = st.form_submit_button("Cancel")
                     if save:
-                        name_changed = new_sname.strip() and new_sname.strip() != sub["name"]
+                        effective_name = new_sname.strip() or sub["name"]
+                        name_changed = effective_name != sub["name"]
                         parent_changed = new_sparent != sub["parent_name"]
-                        if name_changed:
-                            con.execute("UPDATE subcategories SET name = ? WHERE id = ?", [new_sname.strip(), sid])
-                            con.execute(
-                                "UPDATE transactions SET llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                                [new_sname.strip(), sub["name"], sub["parent_name"]],
+                        target_parent_id = upsert_parent(new_sparent) if parent_changed else sub["parent_id"]
+
+                        # subcategories has a UNIQUE(name, parent_id) constraint --
+                        # saving into a (name, parent) combo that's already taken by
+                        # another subcategory would otherwise crash with an uncaught
+                        # DuckDB constraint violation instead of a friendly message.
+                        collision = (name_changed or parent_changed) and _query(
+                            "SELECT 1 AS x FROM subcategories WHERE name = ? AND parent_id = ? AND id != ?",
+                            [effective_name, target_parent_id, sid],
+                        )
+                        if collision:
+                            st.error(
+                                f'"{effective_name}" already exists under {new_sparent} — '
+                                f"choose a different name, or delete/merge the existing one first."
                             )
-                        if parent_changed:
-                            new_pid = upsert_parent(new_sparent)
-                            con.execute("UPDATE subcategories SET parent_id = ? WHERE id = ?", [new_pid, sid])
-                            effective = new_sname.strip() if name_changed else sub["name"]
-                            con.execute(
-                                "UPDATE transactions SET llm_category = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                                [new_sparent, effective, sub["parent_name"]],
-                            )
-                        st.session_state.tax_edit_sub = None
-                        st.cache_data.clear()
-                        st.rerun()
+                        else:
+                            if name_changed:
+                                con.execute("UPDATE subcategories SET name = ? WHERE id = ?", [effective_name, sid])
+                                con.execute(
+                                    "UPDATE transactions SET llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
+                                    [effective_name, sub["name"], sub["parent_name"]],
+                                )
+                            if parent_changed:
+                                con.execute("UPDATE subcategories SET parent_id = ? WHERE id = ?", [target_parent_id, sid])
+                                con.execute(
+                                    "UPDATE transactions SET llm_category = ? WHERE llm_subcategory = ? AND llm_category = ?",
+                                    [new_sparent, effective_name, sub["parent_name"]],
+                                )
+                                # Keep the override's parent_id in sync with the move --
+                                # unused by role resolution (which only keys off
+                                # subcategory_id) but avoids a stale, confusing value.
+                                con.execute(
+                                    "UPDATE category_roles SET parent_id = ? WHERE subcategory_id = ?",
+                                    [target_parent_id, sid],
+                                )
+                            st.session_state.tax_edit_sub = None
+                            st.cache_data.clear()
+                            st.rerun()
                     if cancel:
                         st.session_state.tax_edit_sub = None
                         st.rerun()
@@ -1121,17 +1737,10 @@ with tab_taxonomy:
                 else:
                     st.info("No transactions assigned to this subcategory.")
 
-        else:
-            st.info("Click ✏️ to edit, 🔗 to view transactions, or 🗑️ to delete a subcategory.")
-
     # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────
     st.divider()
     with st.expander("⚠️ Danger Zone"):
         st.markdown("**Wipe entire taxonomy**")
-
-        total_txns = _query("SELECT COUNT(*) AS n FROM transactions")[0]["n"]
-        total_classified = _query("SELECT COUNT(*) AS n FROM transactions WHERE llm_category IS NOT NULL")[0]["n"]
-        total_subs_all = sum(p["sub_count"] for p in tax_parents)
 
         st.warning(
             f"This permanently deletes all **{len(tax_parents)} parent categories** and "
@@ -1157,6 +1766,11 @@ with tab_taxonomy:
                    SET llm_category = NULL, llm_subcategory = NULL,
                        classified_at = NULL, llm_model = NULL, llm_confidence = NULL"""
             )
+            # Without this, a role override left behind here could later attach
+            # itself to an unrelated category re-seeded with the same reused id
+            # (ids restart from MAX(id)+1, which is 1 again once these tables
+            # are empty).
+            con.execute("DELETE FROM category_roles")
             con.execute("DELETE FROM subcategories")
             con.execute("DELETE FROM parent_categories")
             st.session_state.wipe_taxonomy_ack = False

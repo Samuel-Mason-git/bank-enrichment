@@ -184,25 +184,49 @@ covering most common personal spending:
 | Career & Learning | Online Learning, Books, Certifications |
 | Transfers | Inbound Transfer, Outbound Transfer |
 
-This is a starting point, not a constraint. Everything can be changed from the **Taxonomy tab** 
+This is a starting point, not a constraint. Everything can be changed from the **Settings tab** 
 in the local dashboard — rename parents, add or delete subcategories, move subcategories 
 between parents, view which transactions sit under each label, and wipe labels per category 
 so the LLM re-classifies against your updated structure. Because context is stored separately 
 from labels, restructuring the taxonomy and re-running classification never loses any data.
 
+The default taxonomy is only seeded into a genuinely empty database — the very first time
+you run the pipeline or dashboard. Once any parent category exists, seeding is skipped
+entirely, so wiping the taxonomy from the Settings tab and building your own from scratch
+is safe: the defaults won't quietly get added back in alongside it on a later restart.
+
+### Category Roles & Standard vs Actual
+
+Every category has a **Role** — Income, Spend, Investment, Transfer, or Excluded — set from
+the Settings tab, at the parent level (subcategories inherit it, or can override it
+individually, e.g. a "Refunds" subcategory under "Income" is Excluded rather than Income).
+Roles drive what actually counts as income or spend in the weekly/monthly Telegram summaries
+and throughout the dashboard, so a refund or an internal transfer between your own accounts
+doesn't inflate your real income or spend.
+
+This is why most of the dashboard shows two versions of the same figures:
+
+- **Standard** — every £ counted by amount sign alone (money in = income, money out = spend),
+  regardless of category.
+- **Actual** — the same figures computed from each category's Role instead, so refunds,
+  transfers, and investment movements are correctly excluded or reclassified.
+
 ## Local Dashboard
 
 A Streamlit dashboard runs on your machine and reads directly from the local DuckDB database.
+Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
+filters, a text search across merchant/description/context, and toggles for skipped/unclassified
+transactions.
 
 | Tab | Description |
 |-----|-------------|
-| Overview | KPI cards (spend, income, net, unclassified) + spend and income charts by category |
-| Spending Over Time | Stacked monthly spend chart + monthly spend/income/net/transaction count table |
-| Transactions | Full filterable and searchable table — edit labels inline, type new ones |
-| Category Drill-Down | Pick any parent category to see subcategory breakdowns and transactions |
-| Top Merchants | Ranks merchants by total spend (chart + full table) with transaction count, average spend, and last-seen date |
-| Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, monthly and annual cost totals |
-| Taxonomy | Tree view of all categories — add, rename, move, and delete. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). |
+| Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
+| Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
+| Transactions | Full filterable table with a few "fun fact" stat cards up top (unique merchants, biggest transaction, busiest day, etc). Category and Subcategory are edited via dropdowns restricted to your existing taxonomy, so labels stay consistent; Date and Context are also editable; Merchant and Description are read-only. |
+| Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Transferred-Excluded, split into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
+| Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
+| Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
+| Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). |
 
 ## What You End Up With
 
@@ -233,7 +257,8 @@ at any point using a new taxonomy and it will classify correctly every time.
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
 │       ├── database_functions.py  # Shared DuckDB library — includes a CLI (run the file directly) to print stats/transactions
-│       └── dashboard.py       # Streamlit dashboard
+│       ├── dashboard.py       # Streamlit dashboard
+│       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
 ├── sql/
 │   ├── tables.sql             # Local database schema (transactions, categories)
 │   └── server_tables.sql      # Server database schema (queue, stats, rules)

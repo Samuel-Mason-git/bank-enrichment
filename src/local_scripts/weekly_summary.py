@@ -15,7 +15,7 @@ SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "weekly_summary.log") if DB_PATH else "weekly_summary.log"
 
-from database_functions import init_db, get_con
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role
 
 log = logging.getLogger(__name__)
 
@@ -81,44 +81,21 @@ def get_missing_weeks() -> list[str]:
 
 
 def get_week_stats(week_key: str) -> dict:
-    con = get_con()
     monday, sunday = _week_bounds(week_key)
     week_start = f"{monday} 00:00:00"
     week_end = f"{sunday} 23:59:59"
 
-    base_filter = "skipped = FALSE AND created_at BETWEEN ? AND ?"
-    params = [week_start, week_end]
+    totals = get_totals_by_role(week_start, week_end)
+    total_spend = totals["spend"]
+    total_income = totals["income"]
+    total_invested = totals["investment"]
+    total_transferred = totals["transfer"] + totals["excluded"]
 
-    total_spend = abs(con.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND {base_filter}",
-        params
-    ).fetchone()[0])
+    spend_by_cat = get_category_totals_by_role("spend", week_start, week_end)
+    income_by_cat = get_category_totals_by_role("income", week_start, week_end)
 
-    total_income = con.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND {base_filter}",
-        params
-    ).fetchone()[0]
-
-    spend_by_cat = con.execute(
-        f"""SELECT llm_category, SUM(ABS(amount)) as total
-           FROM transactions
-           WHERE amount < 0 AND llm_category IS NOT NULL AND {base_filter}
-           GROUP BY llm_category
-           ORDER BY total DESC""",
-        params
-    ).fetchall()
-
-    income_by_cat = con.execute(
-        f"""SELECT llm_category, SUM(amount) as total
-           FROM transactions
-           WHERE amount > 0 AND llm_category IS NOT NULL AND {base_filter}
-           GROUP BY llm_category
-           ORDER BY total DESC""",
-        params
-    ).fetchall()
-
-    classified_spend = sum(r[1] for r in spend_by_cat)
-    classified_income = sum(r[1] for r in income_by_cat)
+    classified_spend = sum(abs(float(r["total"])) for r in spend_by_cat)
+    classified_income = sum(float(r["total"]) for r in income_by_cat)
 
     return {
         "week": week_key,
@@ -126,11 +103,13 @@ def get_week_stats(week_key: str) -> dict:
         "sunday": sunday,
         "total_spend": float(total_spend),
         "total_income": float(total_income),
+        "total_invested": float(total_invested),
+        "total_transferred": float(total_transferred),
         "net": float(total_income - total_spend),
         "unclassified_spend": float(total_spend - classified_spend),
         "unclassified_income": float(total_income - classified_income),
-        "spend_by_category": [{"category": r[0], "amount": float(r[1])} for r in spend_by_cat],
-        "income_by_category": [{"category": r[0], "amount": float(r[1])} for r in income_by_cat],
+        "spend_by_category": [{"category": r["category"], "amount": abs(float(r["total"]))} for r in spend_by_cat],
+        "income_by_category": [{"category": r["category"], "amount": float(r["total"])} for r in income_by_cat],
     }
 
 
@@ -143,6 +122,10 @@ def format_weekly_message(stats: dict) -> str:
     lines.append(f"💸 Spend: £{stats['total_spend']:.2f}")
     lines.append(f"💰 Income: £{stats['total_income']:.2f}")
     lines.append(f"{'📈' if stats['net'] >= 0 else '📉'} Net: £{stats['net']:.2f}")
+    if stats["total_invested"] > 0.005:
+        lines.append(f"📊 Invested: £{stats['total_invested']:.2f}")
+    if stats["total_transferred"] > 0.005:
+        lines.append(f"↔ Transferred: £{stats['total_transferred']:.2f} (excluded from totals)")
 
     if stats["spend_by_category"] or stats["unclassified_spend"] > 0.005:
         lines.append("\n*Spend by category:*")
@@ -172,8 +155,10 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
     response.raise_for_status()
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM weekly_summaries").fetchone()[0]
     con.execute(
-        "INSERT INTO weekly_summaries (id, send_date, total_spend, total_income, net, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-        [next_id, week_key, stats["total_spend"], stats["total_income"], stats["net"], time.strftime("%Y-%m-%d %H:%M:%S")]
+        """INSERT INTO weekly_summaries (id, send_date, total_spend, total_income, net, total_invested, sent_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [next_id, week_key, stats["total_spend"], stats["total_income"], stats["net"],
+         stats["total_invested"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )
     log.info(f"Weekly report sent and recorded for {week_key}")
 

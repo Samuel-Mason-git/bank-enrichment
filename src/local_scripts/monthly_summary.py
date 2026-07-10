@@ -15,7 +15,7 @@ SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "monthly_summary.log") if DB_PATH else "monthly_summary.log"
 
-from database_functions import init_db, get_con
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role
 
 log = logging.getLogger(__name__)
 
@@ -56,50 +56,29 @@ def get_missing_months() -> list[str]:
 
 
 def get_month_stats(month_str: str) -> dict:
-    con = get_con()
     month_start = f"{month_str}-01"
     year, month = int(month_str[:4]), int(month_str[5:7])
     last_day = (date(year, month, 28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     month_end = f"{last_day} 23:59:59"
 
-    base_filter = "skipped = FALSE AND created_at BETWEEN ? AND ?"
-    params = [month_start, month_end]
+    totals = get_totals_by_role(month_start, month_end)
+    total_spend = totals["spend"]
+    total_income = totals["income"]
+    total_invested = totals["investment"]
+    total_transferred = totals["transfer"] + totals["excluded"]
 
-    total_spend = abs(con.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND {base_filter}",
-        params
-    ).fetchone()[0])
-
-    total_income = con.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND {base_filter}",
-        params
-    ).fetchone()[0]
-
-    spend_by_cat = con.execute(
-        f"""SELECT llm_category, SUM(ABS(amount)) as total
-           FROM transactions
-           WHERE amount < 0 AND llm_category IS NOT NULL AND {base_filter}
-           GROUP BY llm_category
-           ORDER BY total DESC""",
-        params
-    ).fetchall()
-
-    income_by_cat = con.execute(
-        f"""SELECT llm_category, SUM(amount) as total
-           FROM transactions
-           WHERE amount > 0 AND llm_category IS NOT NULL AND {base_filter}
-           GROUP BY llm_category
-           ORDER BY total DESC""",
-        params
-    ).fetchall()
+    spend_by_cat = get_category_totals_by_role("spend", month_start, month_end)
+    income_by_cat = get_category_totals_by_role("income", month_start, month_end)
 
     return {
         "month": month_str,
         "total_spend": float(total_spend),
         "total_income": float(total_income),
+        "total_invested": float(total_invested),
+        "total_transferred": float(total_transferred),
         "net": float(total_income - total_spend),
-        "spend_by_category": [{"category": r[0], "amount": float(r[1])} for r in spend_by_cat],
-        "income_by_category": [{"category": r[0], "amount": float(r[1])} for r in income_by_cat],
+        "spend_by_category": [{"category": r["category"], "amount": abs(float(r["total"]))} for r in spend_by_cat],
+        "income_by_category": [{"category": r["category"], "amount": float(r["total"])} for r in income_by_cat],
     }
 
 
@@ -109,6 +88,10 @@ def format_monthly_message(stats: dict) -> str:
     lines.append(f"💸 Spend: £{stats['total_spend']:.2f}")
     lines.append(f"💰 Income: £{stats['total_income']:.2f}")
     lines.append(f"{'📈' if stats['net'] >= 0 else '📉'} Net: £{stats['net']:.2f}")
+    if stats["total_invested"] > 0.005:
+        lines.append(f"📊 Invested: £{stats['total_invested']:.2f}")
+    if stats["total_transferred"] > 0.005:
+        lines.append(f"↔ Transferred: £{stats['total_transferred']:.2f} (excluded from totals)")
 
     if stats["spend_by_category"]:
         lines.append("\n*Spend by category:*")
@@ -135,8 +118,10 @@ def send_monthly_report(month_str: str, message: str) -> None:
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM monthly_summaries").fetchone()[0]
     stats = get_month_stats(month_str)
     con.execute(
-        "INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-        [next_id, month_str, stats["total_spend"], stats["total_income"], stats["net"], time.strftime("%Y-%m-%d %H:%M:%S")]
+        """INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, total_invested, sent_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [next_id, month_str, stats["total_spend"], stats["total_income"], stats["net"],
+         stats["total_invested"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )
     log.info(f"Monthly report sent and recorded for {month_str}")
 
