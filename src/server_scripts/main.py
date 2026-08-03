@@ -611,17 +611,51 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
 
 
 @app.get("/dashboard/rules", response_class=HTMLResponse)
-async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    rows = con.execute("SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id").fetchall()
-    rules = [
-        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6], "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
+def _get_rules(con):
+    rows = con.execute(
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, "
+        "match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
+    ).fetchall()
+    return [
+        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3],
+         "match_value": r[4], "auto_context": r[5], "enabled": r[6],
+         "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
         for r in rows
     ]
+
+
+def _get_test_transactions(con):
+    rows = con.execute(
+        "SELECT id, payload, received_at FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
+    ).fetchall()
+    txns = []
+    for row in rows:
+        data = json.loads(row[1]).get("data", {})
+        amount_pence = data.get("amount", 0)
+        merchant = (data.get("merchant") or {}).get("name") or ""
+        counterparty = (data.get("counterparty") or {}).get("name") or ""
+        description = data.get("description") or ""
+        display = merchant or counterparty or description or row[0]
+        amount_str = f"£{abs(amount_pence) / 100:.2f}"
+        date_str = str(row[2])[:10]
+        txns.append({
+            "id": row[0],
+            "label": f"{display} · {amount_str} · {date_str}",
+            "merchant_name": merchant,
+            "description": description,
+            "counterparty_name": counterparty,
+            "category": data.get("category") or "",
+            "amount": round(abs(amount_pence) / 100, 2),
+        })
+    return txns
+
+
+async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    con = get_con()
     return templates.TemplateResponse(
         request=request,
         name="rules.html",
-        context={"rules": rules, "active_nav": "rules"}
+        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules"}
     )
 
 
