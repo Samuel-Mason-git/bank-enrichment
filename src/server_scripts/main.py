@@ -538,7 +538,7 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
             if match_field_2 and match_type_2 and match_value_2:
                 v2 = get_field(match_field_2)
                 cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
-            matched = cond1 and cond2
+            matched = bool(enabled) and cond1 and cond2
         except Exception as e:
             matched = False
 
