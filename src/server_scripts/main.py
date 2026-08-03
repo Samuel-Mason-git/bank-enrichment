@@ -547,17 +547,10 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
             "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
         })
 
-    rows = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
-    ).fetchall()
-    all_rules = [
-        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6], "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
-        for r in rows
-    ]
     return templates.TemplateResponse(
         request=request,
         name="rules.html",
-        context={"rules": all_rules, "active_nav": "rules", "test_results": results, "test_data": test_data}
+        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules", "test_results": results, "test_data": test_data}
     )
 
 
@@ -610,7 +603,6 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
-@app.get("/dashboard/rules", response_class=HTMLResponse)
 def _get_rules(con):
     rows = con.execute(
         "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, "
@@ -650,6 +642,7 @@ def _get_test_transactions(con):
     return txns
 
 
+@app.get("/dashboard/rules", response_class=HTMLResponse)
 async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     return templates.TemplateResponse(
