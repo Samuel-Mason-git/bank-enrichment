@@ -62,24 +62,24 @@ def _transaction_context(**overrides):
 class TestNavConsistency:
     """Regression guard for the bug where transaction.html was missing the Rules link."""
 
-    def test_dashboard_has_three_nav_links_and_correct_active(self, env):
+    def test_dashboard_has_four_nav_links_and_correct_active(self, env):
         html = env.get_template("dashboard.html").render(**_dashboard_context(active_nav="dashboard"))
-        assert len(_nav_links(html)) == 3
+        assert len(_nav_links(html)) == 4
         assert 'href="/dashboard" class="nav-link active"' in html
 
-    def test_rules_has_three_nav_links_and_correct_active(self, env):
+    def test_rules_has_four_nav_links_and_correct_active(self, env):
         html = env.get_template("rules.html").render(rules=[], active_nav="rules")
-        assert len(_nav_links(html)) == 3
+        assert len(_nav_links(html)) == 4
         assert 'href="/dashboard/rules" class="nav-link active"' in html
 
-    def test_db_has_three_nav_links_and_correct_active(self, env):
+    def test_db_has_four_nav_links_and_correct_active(self, env):
         html = env.get_template("db.html").render(tables=[], active_nav="db")
-        assert len(_nav_links(html)) == 3
+        assert len(_nav_links(html)) == 4
         assert 'href="/dashboard/db" class="nav-link active"' in html
 
-    def test_transaction_has_three_nav_links(self, env):
+    def test_transaction_has_four_nav_links(self, env):
         html = env.get_template("transaction.html").render(**_transaction_context())
-        assert len(_nav_links(html)) == 3
+        assert len(_nav_links(html)) == 4
 
     def test_transaction_has_no_active_nav_item(self, env):
         html = env.get_template("transaction.html").render(**_transaction_context())
@@ -173,16 +173,31 @@ class TestLogoutPage:
         assert 'href="/dashboard"' in html
 
 
+def _db_table(name, columns, rows):
+    return {"name": name, "columns": columns, "rows": rows,
+            "total": len(rows), "page": 1, "total_pages": 1, "page_param": None}
+
+
 class TestDbView:
     def test_renders_empty_tables(self, env):
         html = env.get_template("db.html").render(tables=[
-            {"name": "stats", "columns": ["id"], "rows": []},
+            _db_table("stats", ["id"], []),
         ])
         assert "No rows" in html
 
     def test_renders_table_rows(self, env):
         html = env.get_template("db.html").render(tables=[
-            {"name": "stats", "columns": ["id", "total_received"], "rows": [(1, 5)]},
+            _db_table("stats", ["id", "total_received"], [(1, 5)]),
         ])
         assert "stats" in html
         assert "total_received" in html
+
+    def test_shows_row_count_in_label(self, env):
+        html = env.get_template("db.html").render(tables=[
+            _db_table("rules", ["id", "name"], [(1, "My Rule"), (2, "Rule 2")]),
+        ])
+        assert "2 rows" in html
+
+    def test_logs_nav_link_present(self, env):
+        html = env.get_template("db.html").render(tables=[], active_nav="db")
+        assert 'href="/dashboard/logs"' in html
