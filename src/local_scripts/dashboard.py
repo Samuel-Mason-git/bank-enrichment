@@ -183,6 +183,22 @@ if search:
     )
     filtered = filtered[mask]
 
+# ── Export (sidebar, after filters applied) ───────────────────────────────────
+
+_export_cols = ["created_at", "merchant_name", "counterparty_name", "description",
+                "amount", "llm_category", "llm_subcategory", "user_context"]
+_export_df = filtered[[c for c in _export_cols if c in filtered.columns]].copy()
+_export_df["created_at"] = _export_df["created_at"].dt.strftime("%Y-%m-%d %H:%M")
+st.sidebar.divider()
+st.sidebar.download_button(
+    label="Export CSV",
+    data=_export_df.to_csv(index=False),
+    file_name=f"transactions_{date_from}_{date_to}.csv",
+    mime="text/csv",
+    help="Download the current filtered transactions as a CSV.",
+    use_container_width=True,
+)
+
 # ── Previous period (same duration, immediately before) ────────────────────────
 
 _period_days = (date_to - date_from).days
@@ -429,6 +445,10 @@ with tab_overview:
 
     st.divider()
 
+    # Total actual income for the filtered period — used to compute "% of Income"
+    # on outgoing breakdowns so you can see e.g. rent is 28% of income.
+    _income_total = role_breakdown(filtered, ROLE_METRICS["Income"], "llm_category", sign="positive")["Amount"].sum()
+
     def _breakdown_chart(col, key_prefix: str, title: str, metric: str, color_scale: str, sign: str):
         with col:
             group_by = st.radio(
@@ -445,6 +465,14 @@ with tab_overview:
                                   height=max(300, len(breakdown) * 45),
                                   margin=dict(l=0, r=0, t=40, b=0))
                 st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
+                total = breakdown["Amount"].sum()
+                if total > 0:
+                    pct_table = breakdown.sort_values("Amount", ascending=False).copy()
+                    pct_table["% of total"] = (pct_table["Amount"] / total * 100).round(1).astype(str) + "%"
+                    if sign == "negative" and _income_total > 0:
+                        pct_table["% of income"] = (pct_table["Amount"] / _income_total * 100).round(1).astype(str) + "%"
+                    pct_table["Amount"] = pct_table["Amount"].map("£{:.2f}".format)
+                    st.dataframe(pct_table, hide_index=True, width="stretch")
             else:
                 st.info(f"No {title.lower()} in range.")
 
@@ -462,6 +490,44 @@ with tab_overview:
         incoming_metric = st.selectbox("Incomings metric", incoming_metrics, key="overview_incoming_metric")
     _breakdown_chart(chart_col1, "overview_outgoing", outgoing_metric, outgoing_metric, "Reds", sign="negative")
     _breakdown_chart(chart_col2, "overview_incoming", incoming_metric, incoming_metric, "Greens", sign="positive")
+
+    st.divider()
+    with st.expander("Monthly breakdown", expanded=False):
+        if not filtered.empty and "created_at" in filtered.columns:
+            _mdf = filtered.copy()
+            _mdf["_month"] = pd.to_datetime(_mdf["created_at"]).dt.to_period("M").astype(str)
+            _spend_roles = ROLE_METRICS.get("Spend", [])
+            _income_roles = ROLE_METRICS.get("Income", [])
+            _invest_roles = ROLE_METRICS.get("Invested", [])
+            _mdf["_income"] = _mdf.apply(
+                lambda r: r["amount"] if r["role"] in _income_roles and r["amount"] > 0 else 0, axis=1)
+            _mdf["_spend"] = _mdf.apply(
+                lambda r: abs(r["amount"]) if r["role"] in _spend_roles and r["amount"] < 0 else 0, axis=1)
+            _mdf["_invested"] = _mdf.apply(
+                lambda r: abs(r["amount"]) if r["role"] in _invest_roles and r["amount"] < 0 else 0, axis=1)
+            _monthly = (
+                _mdf.groupby("_month")
+                .agg(_income=("_income", "sum"), _spend=("_spend", "sum"), _invested=("_invested", "sum"))
+                .reset_index()
+                .sort_values("_month", ascending=False)
+            )
+            _monthly["Net"] = (_monthly["_income"] - _monthly["_spend"]).round(2)
+            _monthly["Savings Rate"] = _monthly.apply(
+                lambda r: f"{(r['Net'] / r['_income'] * 100):.1f}%" if r["_income"] > 0 else "—", axis=1)
+            _monthly = _monthly.rename(columns={
+                "_month": "Month", "_income": "Income (£)",
+                "_spend": "Spend (£)", "_invested": "Invested (£)",
+            })
+            _monthly["Income (£)"] = _monthly["Income (£)"].map("£{:.2f}".format)
+            _monthly["Spend (£)"] = _monthly["Spend (£)"].map("£{:.2f}".format)
+            _monthly["Invested (£)"] = _monthly["Invested (£)"].map("£{:.2f}".format)
+            _monthly["Net"] = _monthly["Net"].map(lambda v: f"£{v:.2f}")
+            st.dataframe(
+                _monthly[["Month", "Income (£)", "Spend (£)", "Invested (£)", "Net", "Savings Rate"]],
+                hide_index=True, width="stretch",
+            )
+        else:
+            st.info("No data in current filter range.")
 
 
 # ── Tab 2: Over Time ────────────────────────────────────────────────────────────
@@ -747,11 +813,28 @@ with tab_txns:
         "llm_category": "Category", "llm_subcategory": "Subcategory",
     }).reset_index(drop=True)
 
+    # "Focus category" narrows the editor to one category at a time so the
+    # Subcategory dropdown only shows that category's options (SelectboxColumn
+    # cannot vary options per-row, so this is the practical workaround).
+    _cats_in_table = sorted(set(edit_df["Category"]) - {""})
+    focus_cat = st.selectbox(
+        "Focus category for editing subcategories",
+        options=["All categories"] + _cats_in_table,
+        key="txn_focus_cat",
+        help="Narrows the table to one category so the Subcategory dropdown only shows relevant options.",
+    )
+    if focus_cat != "All categories":
+        edit_df = edit_df[edit_df["Category"] == focus_cat].reset_index(drop=True)
+
     # A row's current label might not be in the taxonomy anymore (renamed/
     # removed elsewhere) -- include it anyway so the dropdown can still show
     # the row's actual value instead of silently blanking it.
     category_options = sorted(set(all_parents) | set(edit_df["Category"]) - {""})
-    subcategory_options = sorted(set(all_subs) | set(edit_df["Subcategory"]) - {""})
+    _focused_cats = set(edit_df["Category"]) - {""}
+    subcategory_options = sorted(
+        {sub for cat in _focused_cats for sub in subs_by_parent.get(cat, [])}
+        | (set(edit_df["Subcategory"]) - {""})
+    )
 
     edited = st.data_editor(
         edit_df,
@@ -783,6 +866,9 @@ with tab_txns:
             orig_sub = edit_df.at[i, "Subcategory"]
             new_cat, new_sub = sanitize_classification_edit(
                 edited.at[i, "Category"], edited.at[i, "Subcategory"])
+            # Clear subcategory if it doesn't belong to the newly chosen category
+            if new_cat and new_sub and new_sub not in subs_by_parent.get(new_cat, []):
+                new_sub = None
             if orig_cat != (new_cat or "") or orig_sub != (new_sub or ""):
                 if new_cat:
                     parent_id = upsert_parent(new_cat)
@@ -1130,15 +1216,20 @@ with tab_subs:
     subs = get_subscriptions()
     confirmed_names = {s["name"] for s in subs}
 
-    # Auto-inactive subscriptions with no matching transaction in last 2 months
-    two_months_ago = (pd.Timestamp.now() - pd.DateOffset(months=2))
-    for s in subs:
-        if not s["active"]:
-            continue
-        if should_deactivate_subscription(s, df, two_months_ago):
-            toggle_subscription(s["id"])
-    subs = get_subscriptions()
-    confirmed_names = {s["name"] for s in subs}
+    # Auto-inactive subscriptions with no matching transaction in last 2 months.
+    # Guard with session_state so this only fires once per browser session —
+    # running it on every rerun would immediately re-disable anything the user
+    # just manually enabled, and could cascade-disable on each button click.
+    if "subs_auto_deactivated" not in st.session_state:
+        two_months_ago = (pd.Timestamp.now() - pd.DateOffset(months=2))
+        for s in subs:
+            if not s["active"]:
+                continue
+            if should_deactivate_subscription(s, df, two_months_ago):
+                toggle_subscription(s["id"])
+        st.session_state.subs_auto_deactivated = True
+        subs = get_subscriptions()
+        confirmed_names = {s["name"] for s in subs}
 
     # ── KPI cards ──────────────────────────────────────────────────────────────
     active_subs = [s for s in subs if s["active"]]
