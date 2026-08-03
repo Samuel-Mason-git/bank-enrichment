@@ -80,35 +80,48 @@
 
     <div class="section-label">Test Rules</div>
     <div class="rules-form">
-        <form method="POST" action="/dashboard/rules/test">
+        <form method="POST" action="/dashboard/rules/test" id="test-form">
+            {% set _txns = transactions | default([]) %}
+            {% if _txns %}
+            <div class="form-group" style="margin-bottom:14px;">
+                <label for="tx-picker">Pick a transaction from queue</label>
+                <select id="tx-picker" onchange="fillFromTransaction(this.value)" style="width:100%;">
+                    <option value="">— select to auto-fill fields below —</option>
+                    {% for tx in _txns %}
+                    <option value="{{ tx.id }}">{{ tx.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;margin-bottom:8px;">Or fill in manually</div>
+            {% endif %}
             <div class="form-grid">
                 <div class="form-group">
                     <label>Merchant Name</label>
-                    <input name="merchant_name" value="{{ test_data.merchant_name if test_data else '' }}" placeholder="e.g. PureGym">
+                    <input id="test-merchant" name="merchant_name" value="{{ test_data.merchant_name if test_data else '' }}" placeholder="e.g. PureGym">
                 </div>
                 <div class="form-group">
                     <label>Description</label>
-                    <input name="description" value="{{ test_data.description if test_data else '' }}" placeholder="e.g. Monthly Direct Debit">
+                    <input id="test-description" name="description" value="{{ test_data.description if test_data else '' }}" placeholder="e.g. Monthly Direct Debit">
                 </div>
                 <div class="form-group">
                     <label>Counterparty Name</label>
-                    <input name="counterparty_name" value="{{ test_data.counterparty_name if test_data else '' }}" placeholder="e.g. John Smith">
+                    <input id="test-counterparty" name="counterparty_name" value="{{ test_data.counterparty_name if test_data else '' }}" placeholder="e.g. John Smith">
                 </div>
                 <div class="form-group">
                     <label>Category</label>
-                    <input name="category" value="{{ test_data.category if test_data else '' }}" placeholder="e.g. personal_care">
+                    <input id="test-category" name="category" value="{{ test_data.category if test_data else '' }}" placeholder="e.g. personal_care">
                 </div>
                 <div class="form-group">
                     <label>Amount (£)</label>
-                    <input name="amount" type="number" step="0.01" value="{{ test_data.amount if test_data else '' }}" placeholder="e.g. 9.99">
+                    <input id="test-amount" name="amount" type="number" step="0.01" value="{{ test_data.amount if test_data else '' }}" placeholder="e.g. 9.99">
                 </div>
-                <div class="form-group" style="justify-content:flex-end;align-items:flex-end;">
-                    <button type="submit" class="btn-add-rule">▶ Test</button>
-                </div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+                <button type="submit" class="btn-add-rule">▶ Test</button>
             </div>
         </form>
         {% if test_results is defined %}
-        <div style="margin-top:16px;">
+        <div style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
             {% set matched = test_results | selectattr('matched') | list %}
             {% if matched %}
             <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">{{ matched | length }} rule{{ 's' if matched | length != 1 else '' }} matched — first match wins:</div>
@@ -185,6 +198,19 @@
 
 {% block extra_body %}
 <script>
+const TX_DATA = {{ transactions | default([]) | tojson }};
+
+function fillFromTransaction(id) {
+    if (!id) return;
+    const tx = TX_DATA.find(t => t.id === id);
+    if (!tx) return;
+    document.getElementById("test-merchant").value = tx.merchant_name;
+    document.getElementById("test-description").value = tx.description;
+    document.getElementById("test-counterparty").value = tx.counterparty_name;
+    document.getElementById("test-category").value = tx.category;
+    document.getElementById("test-amount").value = tx.amount;
+}
+
 const TEXT_TYPES = [
     { value: "contains", label: "Contains" },
     { value: "exact",    label: "Exact" },
