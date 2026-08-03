@@ -476,6 +476,18 @@ async def delete_transaction(transaction_id: str, request: Request, credentials:
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
+@app.post("/dashboard/transaction/{transaction_id}/edit-context", response_class=HTMLResponse)
+async def edit_transaction_context(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    form = await request.form()
+    context = (form.get("context") or "").strip()
+    if context:
+        get_con().execute(
+            "UPDATE webhook_queue SET user_context = ?, enriched_at = ? WHERE id = ?",
+            [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+        )
+    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
+
+
 @app.post("/dashboard/transaction/{transaction_id}/reset", response_class=HTMLResponse)
 async def reset_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
@@ -484,6 +496,91 @@ async def reset_transaction(transaction_id: str, request: Request, credentials: 
         [transaction_id]
     )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
+
+@app.post("/dashboard/rules/test", response_class=HTMLResponse)
+async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    from check_rules import _extract_field, _matches
+    import re as _re
+    form = await request.form()
+    test_data = {
+        "merchant_name": (form.get("merchant_name") or "").strip(),
+        "description": (form.get("description") or "").strip(),
+        "counterparty_name": (form.get("counterparty_name") or "").strip(),
+        "category": (form.get("category") or "").strip(),
+        "amount": (form.get("amount") or "0").strip(),
+    }
+    try:
+        amount_pence = int(float(test_data["amount"]) * 100)
+    except ValueError:
+        amount_pence = 0
+
+    con = get_con()
+    rules = con.execute(
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
+    ).fetchall()
+
+    results = []
+    for rule in rules:
+        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
+
+        def get_field(field):
+            if field == "merchant_name": return test_data["merchant_name"] or None
+            if field == "description": return test_data["description"] or None
+            if field == "counterparty_name": return test_data["counterparty_name"] or None
+            if field == "category": return test_data["category"] or None
+            if field == "amount": return amount_pence
+            return None
+
+        try:
+            v1 = get_field(match_field)
+            cond1 = v1 is not None and _matches(v1, match_type, match_value)
+            cond2 = True
+            if match_field_2 and match_type_2 and match_value_2:
+                v2 = get_field(match_field_2)
+                cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
+            matched = bool(enabled) and cond1 and cond2
+        except Exception as e:
+            matched = False
+
+        results.append({
+            "id": rule_id, "name": name, "enabled": enabled,
+            "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
+        })
+
+    rows = con.execute(
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
+    ).fetchall()
+    all_rules = [
+        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3], "match_value": r[4], "auto_context": r[5], "enabled": r[6], "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
+        for r in rows
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="rules.html",
+        context={"rules": all_rules, "active_nav": "rules", "test_results": results, "test_data": test_data}
+    )
+
+
+@app.post("/dashboard/rules/{rule_id}/edit", response_class=HTMLResponse)
+async def edit_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    match_field = (form.get("match_field") or "").strip()
+    match_type = (form.get("match_type") or "").strip()
+    match_value = (form.get("match_value") or "").strip()
+    auto_context = (form.get("auto_context") or "").strip()
+    match_field_2 = (form.get("match_field_2") or "").strip() or None
+    match_type_2 = (form.get("match_type_2") or "").strip() or None
+    match_value_2 = (form.get("match_value_2") or "").strip() or None
+    auto_skip = form.get("auto_skip") == "on"
+    if name and match_field and match_type and match_value and (auto_context or auto_skip):
+        con = get_con()
+        con.execute(
+            "UPDATE rules SET name=?, match_field=?, match_type=?, match_value=?, auto_context=?, match_field_2=?, match_type_2=?, match_value_2=?, auto_skip=? WHERE id=?",
+            [name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, rule_id]
+        )
+    return RedirectResponse(url="/dashboard/rules", status_code=303)
+
 
 @app.post("/dashboard/rules/{rule_id}/delete", response_class=HTMLResponse)
 async def delete_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
@@ -535,32 +632,42 @@ async def toggle_rule(rule_id: int, request: Request, credentials: HTTPBasicCred
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
+DB_PAGE_SIZE = 50
+
 @app.get("/dashboard/db", response_class=HTMLResponse)
-async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials),
+                  queue_page: int = Query(1, ge=1)):
     con = get_con()
     stats_rows = con.execute("SELECT * FROM stats").fetchall()
     stats_cols = ["id", "total_received", "total_amount_pence", "requests_sent", "total_enriched", "total_processed"]
+
+    queue_total = con.execute("SELECT COUNT(*) FROM webhook_queue").fetchone()[0]
     queue_rows = con.execute(
-        "SELECT id, payload, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC"
+        "SELECT id, payload, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC LIMIT ? OFFSET ?",
+        [DB_PAGE_SIZE, (queue_page - 1) * DB_PAGE_SIZE]
     ).fetchall()
     queue_cols = ["id", "payload", "received_at", "status", "user_context", "enriched_at", "request_count"]
+    queue_total_pages = max(1, -(-queue_total // DB_PAGE_SIZE))
+
     rules_rows = con.execute(
         "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
     ).fetchall()
     rules_cols = ["id", "name", "match_field", "match_type", "match_value", "auto_context", "enabled", "match_field_2", "match_type_2", "match_value_2", "auto_skip"]
+
     quick_categories_rows = con.execute(
         "SELECT id, category, subcategory, merchant_name, rank FROM quick_categories ORDER BY merchant_name, rank"
     ).fetchall()
     quick_categories_cols = ["id", "category", "subcategory", "merchant_name", "rank"]
+
     return templates.TemplateResponse(
         request=request,
         name="db.html",
         context={
             "tables": [
-                {"name": "stats", "columns": stats_cols, "rows": stats_rows},
-                {"name": "webhook_queue", "columns": queue_cols, "rows": queue_rows},
-                {"name": "rules", "columns": rules_cols, "rows": rules_rows},
-                {"name": "quick_categories", "columns": quick_categories_cols, "rows": quick_categories_rows},
+                {"name": "stats", "columns": stats_cols, "rows": stats_rows, "total": len(stats_rows), "page": 1, "total_pages": 1, "page_param": None},
+                {"name": "webhook_queue", "columns": queue_cols, "rows": queue_rows, "total": queue_total, "page": queue_page, "total_pages": queue_total_pages, "page_param": "queue_page"},
+                {"name": "rules", "columns": rules_cols, "rows": rules_rows, "total": len(rules_rows), "page": 1, "total_pages": 1, "page_param": None},
+                {"name": "quick_categories", "columns": quick_categories_cols, "rows": quick_categories_rows, "total": len(quick_categories_rows), "page": 1, "total_pages": 1, "page_param": None},
             ],
             "active_nav": "db",
         }
@@ -570,7 +677,13 @@ async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(
 PAGE_SIZE = 20
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials), page: int = Query(1, ge=1)):
+async def dashboard(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(verify_credentials),
+    page: int = Query(1, ge=1),
+    status_filter: str = Query("", alias="status"),
+    search: str = Query(""),
+):
     con = get_con()
     lifetime = con.execute(
         "SELECT total_received, total_amount_pence, requests_sent, total_enriched, total_processed FROM stats WHERE id = 1"
@@ -578,17 +691,29 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
     queue_stats = con.execute(
         "SELECT status, COUNT(*) FROM webhook_queue WHERE status != 'processed' GROUP BY status"
     ).fetchall()
-    total_queue = con.execute(
-        "SELECT COUNT(*) FROM webhook_queue WHERE status != 'processed'"
-    ).fetchone()[0]
+
+    where_clauses = ["status != 'processed'"]
+    params: list = []
+    if status_filter == "skipped":
+        where_clauses.append("skipped = TRUE")
+    elif status_filter in ("pending", "enriched"):
+        where_clauses.append("status = ?")
+        params.append(status_filter)
+    if search:
+        where_clauses.append("(id LIKE ? OR payload LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_sql = " AND ".join(where_clauses)
+    total_queue = con.execute(f"SELECT COUNT(*) FROM webhook_queue WHERE {where_sql}", params).fetchone()[0]
     rows = con.execute(
-        "SELECT id, received_at, status, request_count, payload, skipped FROM webhook_queue WHERE status != 'processed' ORDER BY received_at DESC LIMIT ? OFFSET ?",
-        [PAGE_SIZE, (page - 1) * PAGE_SIZE]
+        f"SELECT id, received_at, status, request_count, payload, skipped FROM webhook_queue WHERE {where_sql} ORDER BY received_at DESC LIMIT ? OFFSET ?",
+        params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]
     ).fetchall()
 
     queue = []
     for row in rows:
         amount_pence = json.loads(row[4]).get("data", {}).get("amount", 0)
+        data = json.loads(row[4]).get("data", {})
         queue.append({
             "id": row[0],
             "received_at": row[1],
@@ -597,6 +722,8 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "amount": f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}",
             "is_debit": amount_pence < 0,
             "skipped": bool(row[5]),
+            "description": data.get("description", ""),
+            "merchant": (data.get("merchant") or {}).get("name", "") or data.get("counterparty", {}).get("name", ""),
         })
 
     total_received, total_amount_pence, requests_sent, total_enriched, total_processed = lifetime or (0, 0, 0, 0, 0)
@@ -616,8 +743,39 @@ async def dashboard(request: Request, credentials: HTTPBasicCredentials = Depend
             "page": page,
             "total_pages": total_pages,
             "total_queue": total_queue,
+            "status_filter": status_filter,
+            "search": search,
             "active_nav": "dashboard",
         }
+    )
+
+
+@app.post("/dashboard/bulk/delete-skipped", response_class=HTMLResponse)
+async def bulk_delete_skipped(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    get_con().execute("DELETE FROM webhook_queue WHERE skipped = TRUE")
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.post("/dashboard/bulk/requeue-pending", response_class=HTMLResponse)
+async def bulk_requeue_pending(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    get_con().execute(
+        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL, skipped = FALSE WHERE status = 'pending'"
+    )
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.get("/dashboard/logs", response_class=HTMLResponse)
+async def logs_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials), lines: int = Query(200, ge=10, le=2000)):
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        log_lines = all_lines[-lines:]
+    except FileNotFoundError:
+        log_lines = ["Log file not found."]
+    return templates.TemplateResponse(
+        request=request,
+        name="logs.html",
+        context={"log_lines": log_lines, "lines": lines, "active_nav": "logs"}
     )
 
 

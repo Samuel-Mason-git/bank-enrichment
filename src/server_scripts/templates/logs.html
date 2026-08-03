@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Logs — Bank Enrichment{% endblock %}
+
+{% block content %}
+
+    <div class="logs-toolbar">
+        <div class="section-label" style="margin:0;">Server Log</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <form method="get" action="/dashboard/logs" style="display:flex;gap:6px;align-items:center;">
+                <label style="font-size:0.75rem;color:#71717a;">Lines</label>
+                <select name="lines" onchange="this.form.submit()" class="queue-filter-select">
+                    {% for n in [100, 200, 500, 1000, 2000] %}
+                    <option value="{{ n }}" {% if n == lines %}selected{% endif %}>{{ n }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+            <button class="btn-row-enrich" onclick="location.reload()">↻ Refresh</button>
+        </div>
+    </div>
+
+    <div class="card log-card">
+        <pre class="log-pre">{% for line in log_lines %}{{ line }}{% endfor %}</pre>
+    </div>
+
+{% endblock %}
+
+{% block extra_body %}
+<script>
+// Scroll to bottom of log on load
+document.querySelector('.log-pre').scrollTop = document.querySelector('.log-pre').scrollHeight;
+window.addEventListener('load', function() {
+    const pre = document.querySelector('.log-pre');
+    pre.scrollTop = pre.scrollHeight;
+});
+</script>
+{% endblock %}

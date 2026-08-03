@@ -24,10 +24,19 @@
         <div class="enrichment-meta">Marked as skipped {{ enriched_at }}</div>
     </div>
     {% elif user_context %}
-    <div class="enrichment-card">
-        <div class="enrichment-label">Enrichment</div>
-        <div class="enrichment-context">"{{ user_context }}"</div>
+    <div class="enrichment-card" id="enrichment-display">
+        <div class="enrichment-label">Enrichment <button type="button" class="btn-inline-edit" onclick="showEditContext()">Edit</button></div>
+        <div class="enrichment-context" id="enrichment-text">"{{ user_context }}"</div>
         <div class="enrichment-meta">Enriched {{ enriched_at }}</div>
+    </div>
+    <div id="edit-context-form" style="display:none; margin-bottom:16px;">
+        <form method="post" action="/dashboard/transaction/{{ transaction_id }}/edit-context">
+            <textarea name="context" class="modal-textarea" rows="3" style="width:100%;box-sizing:border-box;">{{ user_context }}</textarea>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+                <button type="submit" class="btn-enrich-submit">Save</button>
+                <button type="button" class="btn-modal-cancel" onclick="hideEditContext()">Cancel</button>
+            </div>
+        </form>
     </div>
     {% endif %}
 
@@ -110,4 +119,18 @@
         </form>
     </div>
 
+{% endblock %}
+
+{% block extra_body %}
+<script>
+function showEditContext() {
+    document.getElementById('enrichment-display').style.display = 'none';
+    document.getElementById('edit-context-form').style.display = 'block';
+    document.querySelector('#edit-context-form textarea').focus();
+}
+function hideEditContext() {
+    document.getElementById('edit-context-form').style.display = 'none';
+    document.getElementById('enrichment-display').style.display = 'block';
+}
+</script>
 {% endblock %}

@@ -5,7 +5,7 @@
 {% block content %}
 
     {% for table in tables %}
-    <div class="section-label">{{ table.name }}</div>
+    <div class="section-label">{{ table.name }} <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:0.75rem;color:#a1a1aa;">({{ table.total }} rows)</span></div>
     <div class="card" style="margin-bottom: 32px;">
         <table>
             <thead>
@@ -28,6 +28,21 @@
                 {% endif %}
             </tbody>
         </table>
+        {% if table.total_pages > 1 %}
+        <div class="pagination" style="margin-top:12px;">
+            {% if table.page > 1 %}
+            <a href="/dashboard/db?{{ table.page_param }}={{ table.page - 1 }}" class="page-btn">← Previous</a>
+            {% else %}
+            <span class="page-btn disabled">← Previous</span>
+            {% endif %}
+            <span style="font-size:0.8rem;color:#71717a;">Page {{ table.page }} of {{ table.total_pages }}</span>
+            {% if table.page < table.total_pages %}
+            <a href="/dashboard/db?{{ table.page_param }}={{ table.page + 1 }}" class="page-btn">Next →</a>
+            {% else %}
+            <span class="page-btn disabled">Next →</span>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
     {% endfor %}
 
