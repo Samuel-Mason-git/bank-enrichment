@@ -226,6 +226,80 @@ a:hover { text-decoration: underline; }
 
 .mono { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; font-size: 0.78rem; }
 
+/* ── Queue controls (filter + bulk actions) ─────────────────── */
+.queue-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.queue-filter-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.queue-search-input {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #e4e4e7;
+    font-size: 0.8rem;
+    width: 220px;
+    outline: none;
+}
+.queue-search-input:focus { border-color: #a1a1aa; }
+.queue-filter-select {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #e4e4e7;
+    font-size: 0.8rem;
+    background: #fff;
+    cursor: pointer;
+}
+.queue-bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.auto-refresh-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.78rem;
+    color: #71717a;
+    cursor: pointer;
+    user-select: none;
+}
+.tx-link { text-decoration: none; color: inherit; }
+.tx-link:hover .tx-merchant { text-decoration: underline; }
+.tx-merchant { font-size: 0.82rem; font-weight: 600; color: #18181b; }
+.tx-desc { font-size: 0.75rem; color: #71717a; }
+
+/* ── Logs ────────────────────────────────────────────────────── */
+.logs-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.log-card { padding: 0; overflow: hidden; }
+.log-pre {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: #3f3f46;
+    background: #fafafa;
+    padding: 16px;
+    margin: 0;
+    max-height: 70vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 /* ── Queue header & pagination ──────────────────────────────── */
 .queue-header {
     display: flex;
@@ -476,7 +550,23 @@ a:hover { text-decoration: underline; }
     letter-spacing: 0.08em;
     color: #16a34a;
     margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
+.btn-inline-edit {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #d4d4d8;
+    background: #fafafa;
+    color: #52525b;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.btn-inline-edit:hover { background: #f4f4f5; border-color: #a1a1aa; }
 .enrichment-context {
     font-size: 0.95rem;
     color: #14532d;

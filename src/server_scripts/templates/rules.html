@@ -4,9 +4,9 @@
 
 {% block content %}
 
-    <div class="section-label">Add Rule</div>
+    <div class="section-label" id="form-section-label">Add Rule</div>
     <div class="rules-form">
-        <form method="POST" action="/dashboard/rules/add">
+        <form method="POST" action="/dashboard/rules/add" id="rule-form">
             <div class="form-grid">
                 <div class="form-group">
                     <label for="name">Rule Name</label>
@@ -70,9 +70,71 @@
                 <span id="match_value_hint" style="font-size:0.7rem;color:#a1a1aa;display:none;"></span>
                 <span id="match_value_hint_2" style="font-size:0.7rem;color:#a1a1aa;display:none;"></span>
                 <span></span>
-                <button type="submit" class="btn-add-rule">+ Add Rule</button>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button type="button" id="cancel-edit" onclick="cancelEdit()" class="btn-row-enrich" style="display:none;">Cancel</button>
+                    <button type="submit" id="submit-btn" class="btn-add-rule">+ Add Rule</button>
+                </div>
             </div>
         </form>
+    </div>
+
+    <div class="section-label">Test Rules</div>
+    <div class="rules-form">
+        <form method="POST" action="/dashboard/rules/test">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Merchant Name</label>
+                    <input name="merchant_name" value="{{ test_data.merchant_name if test_data else '' }}" placeholder="e.g. PureGym">
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input name="description" value="{{ test_data.description if test_data else '' }}" placeholder="e.g. Monthly Direct Debit">
+                </div>
+                <div class="form-group">
+                    <label>Counterparty Name</label>
+                    <input name="counterparty_name" value="{{ test_data.counterparty_name if test_data else '' }}" placeholder="e.g. John Smith">
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <input name="category" value="{{ test_data.category if test_data else '' }}" placeholder="e.g. personal_care">
+                </div>
+                <div class="form-group">
+                    <label>Amount (£)</label>
+                    <input name="amount" type="number" step="0.01" value="{{ test_data.amount if test_data else '' }}" placeholder="e.g. 9.99">
+                </div>
+                <div class="form-group" style="justify-content:flex-end;align-items:flex-end;">
+                    <button type="submit" class="btn-add-rule">▶ Test</button>
+                </div>
+            </div>
+        </form>
+        {% if test_results is defined %}
+        <div style="margin-top:16px;">
+            {% set matched = test_results | selectattr('matched') | list %}
+            {% if matched %}
+            <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">{{ matched | length }} rule{{ 's' if matched | length != 1 else '' }} matched — first match wins:</div>
+            {% else %}
+            <div style="margin-bottom:8px;font-size:0.8rem;color:#71717a;">No rules matched.</div>
+            {% endif %}
+            <table>
+                <thead><tr><th>Rule</th><th>Enabled</th><th>Result</th><th>Would apply</th></tr></thead>
+                <tbody>
+                {% for r in test_results %}
+                <tr style="{% if r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
+                    <td class="rule-name">{{ r.name }}</td>
+                    <td><span class="badge {% if r.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if r.enabled %}yes{% else %}no{% endif %}</span></td>
+                    <td>{% if r.matched %}<span class="badge badge-enabled">✓ match</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
+                    <td class="rule-context">
+                        {% if r.matched %}
+                            {% if r.auto_skip %}<span class="badge badge-disabled" style="background:#fef3c7;color:#92400e;">skip</span>{% endif %}
+                            {% if r.auto_context %}"{{ r.auto_context }}"{% endif %}
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
 
     <div class="section-label">{{ rules | length }} rule{{ 's' if rules | length != 1 else '' }}</div>
@@ -101,6 +163,7 @@
                     <td><span class="badge {% if rule.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if rule.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                     <td>
                         <div class="row-actions">
+                            <button type="button" class="btn-row-enrich" onclick="editRule({{ rule.id }})">Edit</button>
                             <form method="POST" action="/dashboard/rules/{{ rule.id }}/toggle">
                                 <button type="submit" class="btn-row-enrich">{% if rule.enabled %}Disable{% else %}Enable{% endif %}</button>
                             </form>
@@ -131,6 +194,7 @@ const AMOUNT_TYPES = [
     { value: "amount_range", label: "Amount range" },
     { value: "amount_exact", label: "Exact amount" },
 ];
+const RULES_DATA = {{ rules | tojson }};
 
 function updateMatchType() {
     const field = document.getElementById("match_field").value;
@@ -216,6 +280,50 @@ function toggleAutoSkip() {
     const ctx = document.getElementById("auto_context");
     ctx.required = !skip;
     ctx.placeholder = skip ? "Optional — shown as context if provided" : "e.g. Monthly gym membership";
+}
+
+function editRule(id) {
+    const rule = RULES_DATA.find(r => r.id === id);
+    if (!rule) return;
+
+    const form = document.getElementById("rule-form");
+    form.action = `/dashboard/rules/${id}/edit`;
+
+    document.getElementById("name").value = rule.name;
+
+    // Set field first so updateMatchType() populates the right options, then set value
+    document.getElementById("match_field").value = rule.match_field;
+    updateMatchType();
+    document.getElementById("match_type").value = rule.match_type;
+    document.getElementById("match_value").value = rule.match_value;
+
+    document.getElementById("auto_context").value = rule.auto_context || "";
+    document.getElementById("auto_skip").checked = !!rule.auto_skip;
+    toggleAutoSkip();
+
+    document.getElementById("match_field_2").value = rule.match_field_2 || "";
+    updateMatchType2();
+    if (rule.match_field_2) {
+        document.getElementById("match_type_2").value = rule.match_type_2 || "";
+        document.getElementById("match_value_2").value = rule.match_value_2 || "";
+    }
+
+    document.getElementById("form-section-label").textContent = `Edit Rule: ${rule.name}`;
+    document.getElementById("submit-btn").textContent = "Save Changes";
+    document.getElementById("cancel-edit").style.display = "inline-block";
+
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function cancelEdit() {
+    const form = document.getElementById("rule-form");
+    form.action = "/dashboard/rules/add";
+    form.reset();
+    updateMatchType();
+    updateMatchType2();
+    document.getElementById("form-section-label").textContent = "Add Rule";
+    document.getElementById("submit-btn").textContent = "+ Add Rule";
+    document.getElementById("cancel-edit").style.display = "none";
 }
 
 updateMatchType();

@@ -40,6 +40,33 @@
     </div>
     {% endif %}
 
+    <div class="queue-controls">
+        <form method="get" action="/dashboard" class="queue-filter-form" id="filter-form">
+            <input type="text" name="search" value="{{ search }}" placeholder="Search ID, merchant, description…" class="queue-search-input">
+            <select name="status" class="queue-filter-select" onchange="document.getElementById('filter-form').submit()">
+                <option value="" {% if not status_filter %}selected{% endif %}>All statuses</option>
+                <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>Pending</option>
+                <option value="enriched" {% if status_filter == 'enriched' %}selected{% endif %}>Enriched</option>
+                <option value="skipped" {% if status_filter == 'skipped' %}selected{% endif %}>Skipped</option>
+            </select>
+            <button type="submit" class="btn-row-enrich">Filter</button>
+            {% if status_filter or search %}
+            <a href="/dashboard" class="btn-row-enrich">Clear</a>
+            {% endif %}
+        </form>
+        <div class="queue-bulk-actions">
+            <label class="auto-refresh-label">
+                <input type="checkbox" id="auto-refresh-toggle"> Auto-refresh
+            </label>
+            <form method="post" action="/dashboard/bulk/requeue-pending" onsubmit="return confirm('Reset all pending transactions?')">
+                <button type="submit" class="btn-row-enrich">↩ Re-queue pending</button>
+            </form>
+            <form method="post" action="/dashboard/bulk/delete-skipped" onsubmit="return confirm('Delete ALL skipped transactions? This cannot be undone.')">
+                <button type="submit" class="btn-row-delete">✕ Delete skipped</button>
+            </form>
+        </div>
+    </div>
+
     <div class="queue-header">
         <span class="queue-count">{{ total_queue }} transaction{{ 's' if total_queue != 1 else '' }}</span>
         {% if total_pages > 1 %}
@@ -52,7 +79,7 @@
         <table>
             <thead>
                 <tr>
-                    <th>Transaction ID</th>
+                    <th>Transaction</th>
                     <th>Amount</th>
                     <th>Received</th>
                     <th>Status</th>
@@ -63,7 +90,12 @@
             <tbody>
                 {% for row in queue %}
                 <tr>
-                    <td><a href="/dashboard/transaction/{{ row.id }}">{{ row.id }}</a></td>
+                    <td>
+                        <a href="/dashboard/transaction/{{ row.id }}" class="tx-link">
+                            {% if row.merchant %}<span class="tx-merchant">{{ row.merchant }}</span><br>{% endif %}
+                            <span class="tx-desc">{{ row.description or row.id }}</span>
+                        </a>
+                    </td>
                     <td><span class="amount-badge {% if row.is_debit %}debit{% else %}credit{% endif %}">{{ row.amount }}</span></td>
                     <td>{{ row.received_at }}</td>
                     <td><span class="badge {% if row.skipped %}skipped{% else %}{{ row.status }}{% endif %}">{% if row.skipped %}skipped{% else %}{{ row.status }}{% endif %}</span></td>
@@ -90,7 +122,7 @@
     {% if total_pages > 1 %}
     <div class="pagination">
         {% if page > 1 %}
-        <a href="/dashboard?page={{ page - 1 }}" class="page-btn">← Previous</a>
+        <a href="/dashboard?page={{ page - 1 }}&status={{ status_filter }}&search={{ search }}" class="page-btn">← Previous</a>
         {% else %}
         <span class="page-btn disabled">← Previous</span>
         {% endif %}
@@ -100,7 +132,7 @@
                 {% if p == page %}
                 <span class="page-num active">{{ p }}</span>
                 {% elif p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
-                <a href="/dashboard?page={{ p }}" class="page-num">{{ p }}</a>
+                <a href="/dashboard?page={{ p }}&status={{ status_filter }}&search={{ search }}" class="page-num">{{ p }}</a>
                 {% elif p == page - 3 or p == page + 3 %}
                 <span class="page-ellipsis">…</span>
                 {% endif %}
@@ -108,7 +140,7 @@
         </div>
 
         {% if page < total_pages %}
-        <a href="/dashboard?page={{ page + 1 }}" class="page-btn">Next →</a>
+        <a href="/dashboard?page={{ page + 1 }}&status={{ status_filter }}&search={{ search }}" class="page-btn">Next →</a>
         {% else %}
         <span class="page-btn disabled">Next →</span>
         {% endif %}
@@ -147,5 +179,25 @@ function closeModal() {
 document.getElementById('enrich-modal').addEventListener('click', function(e) {
     if (e.target === this) closeModal();
 });
+
+// Auto-refresh
+const refreshToggle = document.getElementById('auto-refresh-toggle');
+let refreshTimer = null;
+const REFRESH_INTERVAL = 30000;
+function startRefresh() {
+    refreshTimer = setInterval(() => location.reload(), REFRESH_INTERVAL);
+}
+function stopRefresh() {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+}
+refreshToggle.addEventListener('change', function() {
+    if (this.checked) startRefresh(); else stopRefresh();
+    localStorage.setItem('autoRefresh', this.checked ? '1' : '0');
+});
+if (localStorage.getItem('autoRefresh') === '1') {
+    refreshToggle.checked = true;
+    startRefresh();
+}
 </script>
 {% endblock %}
