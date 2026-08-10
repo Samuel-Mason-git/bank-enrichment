@@ -156,6 +156,16 @@ show_skipped = st.sidebar.checkbox("Show skipped", value=False)
 show_unclassified = st.sidebar.checkbox("Show unclassified", value=True)
 
 st.sidebar.divider()
+st.sidebar.markdown("#### 🚫 Exclude")
+_all_display_names = sorted(merchant_display_name(df).dropna().unique().tolist())
+exclude_merchants = st.sidebar.multiselect(
+    "Exclude merchant / counterparty",
+    options=_all_display_names,
+    key="exclude_merchants",
+    help="Hide all transactions from these merchants or counterparties in every view.",
+)
+
+st.sidebar.divider()
 if st.sidebar.button("Refresh data"):
     st.cache_data.clear()
     st.rerun()
@@ -182,6 +192,8 @@ if search:
         | filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     filtered = filtered[mask]
+if exclude_merchants:
+    filtered = filtered[~merchant_display_name(filtered).isin(exclude_merchants)]
 
 # ── Export (sidebar, after filters applied) ───────────────────────────────────
 
@@ -224,6 +236,8 @@ if search:
         | prev_filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     prev_filtered = prev_filtered[_mask]
+if exclude_merchants:
+    prev_filtered = prev_filtered[~merchant_display_name(prev_filtered).isin(exclude_merchants)]
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
