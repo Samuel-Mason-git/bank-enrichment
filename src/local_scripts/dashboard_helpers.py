@@ -58,10 +58,12 @@ def merchant_display_name(df: pd.DataFrame) -> pd.Series:
     debits and bank transfers never populate merchant_name at all (e.g. a
     subscription paid by direct debit rather than card), so relying on
     merchant_name alone silently drops those transactions from any
-    merchant-based grouping or matching."""
+    merchant-based grouping or matching. Empty strings are treated as null
+    so a Monzo transaction with merchant_name='' still falls back correctly."""
+    merchant = df["merchant_name"].replace("", None)
     if "counterparty_name" in df.columns:
-        return df["merchant_name"].fillna(df["counterparty_name"])
-    return df["merchant_name"]
+        return merchant.fillna(df["counterparty_name"])
+    return merchant
 
 
 def detect_subscriptions(
