@@ -20,6 +20,12 @@ DB_PATH = os.getenv("DB_PATH")
 CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
 MODEL = "claude-sonnet-4-6"
 BATCH_SIZE = 15
+# Output tokens are billed per token generated, so a ceiling well above what
+# a batch needs costs nothing -- while hitting it truncates the JSON, fails
+# _extract_json(), and drops all BATCH_SIZE transactions from that pass. A
+# full batch of 15 needs roughly 600-700 tokens; this leaves real headroom
+# for longer category names and larger batches.
+MAX_TOKENS = 4096
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "llm_classifier.log") if DB_PATH else "llm_classifier.log"
 
@@ -42,6 +48,62 @@ def _configure_standalone_logging():
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
+def _payload_facts(t: dict) -> list[str]:
+    """Where the purchase happened and how it was made, read out of the raw
+    Monzo payload. This is context the bank already provides, so surfacing it
+    to the classifier means the user doesn't have to type it -- e.g. an
+    in-person purchase in Spain is evidently holiday spend without them
+    writing "on holiday" on every single transaction.
+
+    Returns an empty list rather than raising for anything unparseable: a bad
+    payload should cost the prompt some detail, never abort a whole batch."""
+    raw = t.get("raw_payload")
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        data = payload.get("data") or {}
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+    facts = []
+    merchant = data.get("merchant") or {}
+    if merchant:
+        if merchant.get("atm"):
+            facts.append("Type: ATM cash withdrawal")
+        elif merchant.get("online"):
+            # An online merchant's address is its registered office, not
+            # anywhere the user has been -- reporting it as a location would
+            # turn a subscription billed from San Francisco into a trip to
+            # California. Say it was online and give no place at all.
+            facts.append("Type: online purchase (merchant location is not where the user was)")
+        else:
+            address = merchant.get("address") or {}
+            where = ", ".join(
+                p for p in (address.get("city"), address.get("country")) if p
+            )
+            if where:
+                facts.append(f"Purchased in person in: {where}")
+
+    # Monzo's own tags for the merchant (#groceries, #takeaway, ...). They
+    # describe what the shop sells, not what was bought -- #groceries covers a
+    # supermarket run that was actually toiletries or cigarettes -- so they go
+    # in as a hint about the merchant and never as a category assignment.
+    tags = (merchant.get("suggested_tags") or "").split()
+    if tags:
+        facts.append(
+            "Merchant's general product range, NOT what was bought "
+            f"(ignore entirely when the context says what it was): {' '.join(tags)}"
+        )
+
+    local_currency = data.get("local_currency")
+    local_amount = data.get("local_amount")
+    if local_currency and local_currency != data.get("currency") and local_amount is not None:
+        # Monzo reports amounts in minor units.
+        facts.append(f"Charged in {local_currency} ({abs(local_amount) / 100:.2f} {local_currency})")
+    return facts
+
+
 def _format_transaction(t: dict) -> str:
     parts = [
         f"ID: {t['id']}",
@@ -49,12 +111,20 @@ def _format_transaction(t: dict) -> str:
     ]
     if t.get("merchant_name"):
         parts.append(f"Merchant: {t['merchant_name']}")
+    # Direct debits and bank transfers populate counterparty_name instead of
+    # merchant_name, and their description is a payment reference ("89GJTS7",
+    # "NO REF") that says nothing. Without this the classifier sees no payee at
+    # all for those and has only the user's context to go on -- which is why
+    # they currently have to type "Electricity Bill" next to OCTOPUS ENERGY.
+    if t.get("counterparty_name"):
+        parts.append(f"Counterparty: {t['counterparty_name']}")
     if t.get("description"):
         parts.append(f"Description: {t['description']}")
     if t.get("user_context"):
         parts.append(f"Context: {t['user_context']}")
     if t.get("monzo_category"):
         parts.append(f"Bank category: {t['monzo_category']}")
+    parts.extend(_payload_facts(t))
     return " | ".join(parts)
 
 
@@ -105,7 +175,7 @@ Instructions:
 - Assign each transaction to the single most appropriate parent category.
 - Reuse existing categories wherever they genuinely fit — only create a new one if no existing category is a good match.
 - Think carefully about overlap between categories. For example, a train journey could be Transport or Holidays & Travel — use the context to decide which is most accurate, not just the most obvious surface label.
-- "Holidays & Travel" should ONLY be used when the context explicitly states the transaction is part of a holiday or trip away. A flight, hotel, or Airbnb with no context does not automatically qualify — but context saying "holiday in Spain" or "weekend trip to Amsterdam" does. Regular commuting, local travel, and day-to-day transport belong in Transport.
+- A holiday/travel category applies when the transaction is part of a trip away. Treat an in-person purchase in a foreign country as holiday spend unless the context says otherwise (a work trip, a relocation, someone living abroad) — the "Purchased in person in" line is reliable evidence of where the user actually was. An online purchase is NOT evidence of travel no matter which country the merchant is registered in, so never infer a trip from one. A flight, hotel, or Airbnb bought at home with no context does not automatically qualify, but context saying "holiday in Spain" or "weekend trip to Amsterdam" does. Regular commuting, local travel, and day-to-day transport belong in Transport.
 - Use the human context field as the primary signal — it tells you what the transaction actually was.
 - Prefer precision over speed: if a transaction could reasonably fit two categories, pick the one that best reflects its true purpose based on all available information.
 - You may create a new parent category if none of the existing ones are a good fit, but exhaust existing options first.
@@ -162,6 +232,19 @@ def _extract_json(raw: str) -> list:
         raise ValueError(f"Could not extract JSON array from response: {e}\nRaw: {raw[:200]}")
 
 
+def _warn_if_truncated(response, pass_name: str, batch_size: int) -> None:
+    """A response cut off at max_tokens produces invalid JSON, which then looks
+    exactly like a bad reply from the model -- and costs the entire batch. Say
+    so explicitly, because the fix (raise MAX_TOKENS or lower BATCH_SIZE) is
+    completely different from the fix for a genuinely malformed response."""
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        log.error(
+            f"{pass_name} hit the {MAX_TOKENS}-token output limit and was truncated -- "
+            f"all {batch_size} transactions in this batch will be dropped from this pass. "
+            f"Raise MAX_TOKENS or lower BATCH_SIZE (currently {BATCH_SIZE})."
+        )
+
+
 def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcategories: list[dict]) -> dict[str, dict]:
     """Returns {transaction_id: {"category": ..., "subcategory": ...}} for confident matches only."""
     if not subcategories:
@@ -171,9 +254,10 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
+        _warn_if_truncated(response, "Pass 0", len(transactions))
         raw = response.content[0].text.strip()
         results = _extract_json(raw)
         matched = {}
@@ -189,21 +273,21 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
 def classify_parents(client: anthropic.Anthropic, transactions: list[dict], parents: list[dict]) -> dict[str, str]:
     """Returns {transaction_id: parent_category_name}"""
     prompt = _pass1_prompt(transactions, parents)
-    print("\n" + "="*60)
-    print("PASS 1 PROMPT:")
-    print("="*60)
-    print(prompt)
+    log.info("Pass 1: classifying parent categories")
+    # Prompts and responses carry your context sentences, so they sit at debug
+    # level rather than being printed unconditionally -- the scheduled task
+    # captures stdout, and that is not somewhere personal spending detail
+    # belongs by default.
+    log.debug(f"Pass 1 prompt:\n{prompt}")
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
+        _warn_if_truncated(response, "Pass 1", len(transactions))
         raw = response.content[0].text.strip()
-        print("\n" + "="*60)
-        print("PASS 1 RESPONSE:")
-        print("="*60)
-        print(raw)
+        log.debug(f"Pass 1 response:\n{raw}")
         results = _extract_json(raw)
         return {r["id"]: r["category"] for r in results}
     except Exception as e:
@@ -214,21 +298,17 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
 def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict], parent_name: str, subcategories: list[dict], all_parent_names: list[str]) -> dict[str, str]:
     """Returns {transaction_id: subcategory_name}"""
     prompt = _pass2_prompt(transactions, parent_name, subcategories, all_parent_names)
-    print("\n" + "="*60)
-    print(f"PASS 2 PROMPT ({parent_name}):")
-    print("="*60)
-    print(prompt)
+    log.info(f"Pass 2: assigning subcategories under '{parent_name}'")
+    log.debug(f"Pass 2 prompt ({parent_name}):\n{prompt}")
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
+        _warn_if_truncated(response, f"Pass 2 ({parent_name})", len(transactions))
         raw = response.content[0].text.strip()
-        print("\n" + "="*60)
-        print(f"PASS 2 RESPONSE ({parent_name}):")
-        print("="*60)
-        print(raw)
+        log.debug(f"Pass 2 response ({parent_name}):\n{raw}")
         results = _extract_json(raw)
         return {r["id"]: r["subcategory"] for r in results}
     except Exception as e:
