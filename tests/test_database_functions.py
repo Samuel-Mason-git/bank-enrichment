@@ -1,5 +1,7 @@
+import duckdb
 import pytest
 
+import database_functions
 from database_functions import (
     get_con, write_to_db, get_transaction, get_all_transactions,
     get_unclassified, get_recent, get_stats, update_classification,
@@ -566,3 +568,198 @@ class TestHelpers:
         rows = _rows("SELECT id FROM transactions WHERE id = ?", ["tx_001"])
         assert len(rows) == 1
         assert rows[0]["id"] == "tx_001"
+
+
+class TestBackups:
+    @pytest.fixture(autouse=True)
+    def _isolate_backup_dir(self, tmp_path, monkeypatch):
+        """backup_dir() derives from DB_PATH, so pointing DB_PATH at tmp_path
+        keeps every backup written by these tests out of the real data dir."""
+        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+
+    def test_creates_a_restorable_export(self, db, tmp_path):
+        write_to_db([_txn(id="tx_backup", user_context="before the wipe")])
+        target = database_functions.backup_db("test")
+
+        assert (target / "schema.sql").is_file()
+        assert (target / "load.sql").is_file()
+
+        restored = duckdb.connect(":memory:")
+        restored.execute(f"IMPORT DATABASE '{target}'")
+        rows = restored.execute(
+            "SELECT id, user_context FROM transactions"
+        ).fetchall()
+        restored.close()
+        assert rows == [("tx_backup", "before the wipe")]
+
+    def test_survives_wiping_the_live_data(self, db):
+        """The whole point: the backup must still hold the rows after the
+        destructive action it was taken to protect against."""
+        write_to_db([_txn(id="tx_doomed")])
+        target = database_functions.backup_db("wipe-taxonomy")
+        get_con().execute("DELETE FROM transactions")
+
+        restored = duckdb.connect(":memory:")
+        restored.execute(f"IMPORT DATABASE '{target}'")
+        count = restored.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        restored.close()
+        assert count == 1
+
+    def test_reason_appears_in_the_directory_name(self, db):
+        target = database_functions.backup_db("delete-parent")
+        assert target.name.endswith("_delete-parent")
+
+    def test_unsafe_reason_characters_are_replaced(self, db):
+        """The reason is built from category names, which are free text and can
+        contain path separators (e.g. 'GP / Medical')."""
+        target = database_functions.backup_db("GP / Medical")
+        assert "/" not in target.name and "\\" not in target.name
+        assert target.parent == database_functions.backup_dir()
+
+    def test_two_backups_in_the_same_second_do_not_collide(self, db):
+        write_to_db([_txn(id="tx_a")])
+        first = database_functions.backup_db("same-second")
+        second = database_functions.backup_db("same-second")
+        assert first != second
+        assert first.is_dir() and second.is_dir()
+
+    def test_list_backups_is_newest_first(self, db):
+        database_functions.backup_db("one")
+        database_functions.backup_db("two")
+        listed = database_functions.list_backups()
+        assert len(listed) == 2
+        assert listed == sorted(listed, reverse=True)
+
+    def test_list_backups_is_empty_before_any_backup(self, db):
+        assert database_functions.list_backups() == []
+
+    def test_old_backups_are_pruned(self, db, monkeypatch):
+        monkeypatch.setattr(database_functions, "BACKUPS_KEPT", 3)
+        for i in range(5):
+            database_functions.backup_db(f"run{i}")
+        remaining = database_functions.list_backups()
+        assert len(remaining) == 3
+        # Pruning must drop the OLDEST, so the most recent run survives.
+        assert any(p.name.endswith("_run4") for p in remaining)
+        assert not any(p.name.endswith("_run0") for p in remaining)
+
+
+class TestBackupManifest:
+    @pytest.fixture(autouse=True)
+    def _isolate_backup_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+
+    def test_records_what_the_backup_contains(self, db):
+        write_to_db([_txn(id="tx_a", created="2025-03-01T10:00:00")])
+        write_to_db([_txn(id="tx_b", created="2026-02-01T10:00:00")])
+        update_classification("tx_a", "Food & Drink", "Coffee Shops", 1.0, "test")
+        parent_id = upsert_parent("Food & Drink")
+        upsert_subcategory("Coffee Shops", parent_id)
+        upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
+
+        target = database_functions.backup_db("test")
+        manifest = database_functions.read_backup_manifest(target)
+
+        assert manifest["transactions"] == 2
+        assert manifest["classified"] == 1
+        assert manifest["reason"] == "test"
+        assert manifest["parent_categories"] == 1
+        assert manifest["subcategories"] == 1
+        assert manifest["subscriptions"] == 1
+        assert manifest["earliest"] == "2025-03-01"
+        assert manifest["latest"] == "2026-02-01"
+
+    def test_manifest_describes_the_state_before_the_destructive_action(self, db):
+        """The counts have to reflect what was saved, not what is left behind."""
+        write_to_db([_txn(id="tx_doomed")])
+        target = database_functions.backup_db("wipe")
+        get_con().execute("DELETE FROM transactions")
+        assert database_functions.read_backup_manifest(target)["transactions"] == 1
+
+    def test_empty_database_has_no_coverage_dates(self, db):
+        target = database_functions.backup_db("empty")
+        manifest = database_functions.read_backup_manifest(target)
+        assert manifest["transactions"] == 0
+        assert manifest["earliest"] is None and manifest["latest"] is None
+
+    def test_missing_manifest_reads_as_empty(self, db, tmp_path):
+        """Backups taken before manifests existed, and folders a human dropped
+        into backups/ by hand, must list rather than raise."""
+        stray = database_functions.backup_dir() / "hand-made-copy"
+        stray.mkdir(parents=True)
+        assert database_functions.read_backup_manifest(stray) == {}
+
+    def test_corrupt_manifest_reads_as_empty(self, db):
+        target = database_functions.backup_db("test")
+        (target / database_functions.MANIFEST_NAME).write_text("{not json")
+        assert database_functions.read_backup_manifest(target) == {}
+
+    def test_size_counts_every_exported_file(self, db):
+        write_to_db([_txn(id="tx_a")])
+        target = database_functions.backup_db("test")
+        size = database_functions.backup_size_bytes(target)
+        assert size > 0
+        assert size == sum(p.stat().st_size for p in target.rglob("*") if p.is_file())
+
+
+class TestDeleteBackup:
+    @pytest.fixture(autouse=True)
+    def _isolate_backup_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+
+    def test_removes_only_the_chosen_backup(self, db):
+        keep = database_functions.backup_db("keep")
+        doomed = database_functions.backup_db("doomed")
+
+        database_functions.delete_backup(doomed)
+
+        assert not doomed.exists()
+        assert keep.is_dir()
+        assert database_functions.list_backups() == [keep]
+
+    def test_accepts_a_string_path(self, db):
+        """The dashboard round-trips the choice through session_state, which
+        stores it as a string."""
+        target = database_functions.backup_db("test")
+        database_functions.delete_backup(str(target))
+        assert not target.exists()
+
+    def test_refuses_a_path_outside_the_backups_directory(self, db, tmp_path):
+        """This ends in rmtree() on a value that arrives from a UI control --
+        anything that isn't a backup folder must be refused, not deleted."""
+        outsider = tmp_path / "important_data"
+        outsider.mkdir()
+        with pytest.raises(ValueError):
+            database_functions.delete_backup(outsider)
+        assert outsider.is_dir()
+
+    def test_refuses_the_backups_directory_itself(self, db):
+        database_functions.backup_db("test")
+        root = database_functions.backup_dir()
+        with pytest.raises(ValueError):
+            database_functions.delete_backup(root)
+        assert root.is_dir()
+
+    def test_refuses_a_traversal_out_of_the_backups_directory(self, db, tmp_path):
+        outsider = tmp_path / "important_data"
+        outsider.mkdir()
+        database_functions.backup_db("test")
+        escape = database_functions.backup_dir() / ".." / "important_data"
+        with pytest.raises(ValueError):
+            database_functions.delete_backup(escape)
+        assert outsider.is_dir()
+
+    def test_refuses_a_nested_directory_rather_than_a_backup(self, db):
+        """Only direct children of backups/ are backups; a subdirectory inside
+        one is part of an export, not a deletable unit."""
+        target = database_functions.backup_db("test")
+        nested = target / "nested"
+        nested.mkdir()
+        with pytest.raises(ValueError):
+            database_functions.delete_backup(nested)
+
+    def test_refuses_a_backup_that_is_already_gone(self, db):
+        target = database_functions.backup_db("test")
+        database_functions.delete_backup(target)
+        with pytest.raises(ValueError):
+            database_functions.delete_backup(target)

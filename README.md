@@ -215,8 +215,12 @@ This is why most of the dashboard shows two versions of the same figures:
 
 A Streamlit dashboard runs on your machine and reads directly from the local DuckDB database.
 Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
-filters, a text search across merchant/description/context, and toggles for skipped/unclassified
-transactions.
+filters, a text search across merchant/description/context, toggles for skipped/unclassified
+transactions, and an **Exclude** block for hiding noise — pick merchants/counterparties from a
+dropdown, or paste transaction IDs for one-offs that have no name to match on. Exclusions apply to
+the current period, the previous period it's compared against, and the CSV export, so every figure
+stays consistent. They last for the browser session only and are never written to the database —
+excluding something hides it from view, it does not delete or reclassify it.
 
 | Tab | Description |
 |-----|-------------|
@@ -226,7 +230,29 @@ transactions.
 | Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Transferred-Excluded, split into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
 | Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
 | Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
-| Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). |
+| Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Backups section (see below). |
+
+### Backups
+
+A full backup of the local database is taken automatically before anything irreversible —
+deleting a category or subcategory, wiping labels, bulk-reassigning transactions to another
+subcategory, or wiping the entire taxonomy. There is nothing to enable; the Backups section in
+the Settings tab also has a **Back up now** button for taking one by hand.
+
+Backups are written to a `backups/` folder next to your database, one directory per backup, named
+`<timestamp>_<reason>`. Each is a DuckDB `EXPORT DATABASE` — a logical dump (`schema.sql`,
+`load.sql`, and one Parquet file per table) rather than a copy of the `.db` file, which is open
+and may have un-checkpointed changes sitting in its WAL. Restore one with:
+
+```sql
+IMPORT DATABASE 'path/to/backups/20260813-220341_manual';
+```
+
+Every backup carries a `manifest.json` recording what it captured at the time it was taken, so the
+Settings tab can tell you what you'd get back before you restore: transaction count, how many were
+classified, taxonomy size, subscription count, the date range covered, and size on disk. The most
+recent 10 are kept and older ones pruned automatically; any backup can also be deleted by hand
+from the same section (behind a confirmation, since it's the safety net for everything else).
 
 ## What You End Up With
 

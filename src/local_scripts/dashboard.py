@@ -16,10 +16,13 @@ from database_functions import (
     init_db, get_con, update_classification, update_transaction_details, upsert_parent, upsert_subcategory,
     get_subscriptions, upsert_subscription, update_subscription, toggle_subscription, delete_subscription,
     get_parents, get_subcategories, set_parent_role, set_subcategory_role, ROLES,
+    backup_db, list_backups, read_backup_manifest, backup_size_bytes,
+    delete_backup, BACKUPS_KEPT,
 )
 from dashboard_helpers import (
     FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
     sanitize_classification_edit, ROLE_METRICS, role_breakdown, merchant_display_name,
+    backup_label, backup_reason, backup_coverage, format_bytes,
 )
 
 st.set_page_config(
@@ -1642,6 +1645,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary"):
+                        backup_db(f"delete-parent-{parent_row['name']}")
                         # Role overrides reference parent/subcategory ids, and ids get
                         # reused after a delete (new_id = MAX(id)+1) -- an orphaned
                         # override left behind here could later attach itself to an
@@ -1676,6 +1680,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm wipe", type="primary"):
+                        backup_db(f"wipe-labels-{parent_row['name']}")
                         con.execute(
                             """UPDATE transactions
                                SET llm_category = NULL, llm_subcategory = NULL,
@@ -1713,6 +1718,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary", key="confirm_del_sub"):
+                        backup_db(f"delete-subcategory-{sub['name']}")
                         con.execute("DELETE FROM category_roles WHERE subcategory_id = ?", [sid])
                         con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
                         con.execute(
@@ -1821,6 +1827,7 @@ with tab_settings:
                     with st.form("reassign_all_form"):
                         target_key = st.selectbox("Move all transactions to:", list(reassign_map.keys()))
                         if st.form_submit_button("Move all", type="secondary"):
+                            backup_db(f"move-all-{sub['name']}")
                             tgt = reassign_map[target_key]
                             con.execute(
                                 "UPDATE transactions SET llm_category = ?, llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
@@ -1856,6 +1863,121 @@ with tab_settings:
                 else:
                     st.info("No transactions assigned to this subcategory.")
 
+    # ── Backups ────────────────────────────────────────────────────────────────
+    st.divider()
+    _backups = list_backups()
+    with st.expander(
+        f"💾 Backups ({len(_backups)})"
+        + (f" — last {backup_label(_backups[0])}" if _backups else " — none yet")
+    ):
+        st.caption(
+            "A backup is taken automatically before anything irreversible — deleting a "
+            "category or subcategory, wiping labels, bulk-reassigning transactions, or "
+            f"wiping the taxonomy. The most recent {BACKUPS_KEPT} are kept; older ones are "
+            "pruned, and any of them can be deleted by hand below. Restore one with "
+            "DuckDB's `IMPORT DATABASE '<folder>'`."
+        )
+        if st.button("Back up now"):
+            path = backup_db("manual")
+            st.success(f"Backed up to {path}")
+            st.rerun()
+
+        if _backups:
+            _manifests = [(p, read_backup_manifest(p)) for p in _backups]
+            # Headline the newest backup's contents -- the question this section
+            # exists to answer is "if I restore, what do I get back?", and that
+            # is almost always about the most recent one.
+            _newest_path, _newest = _manifests[0]
+            if _newest:
+                st.markdown(
+                    f"**Latest backup** holds **{_newest.get('transactions', 0):,} transactions** "
+                    f"({_newest.get('classified', 0):,} classified) across "
+                    f"**{_newest.get('parent_categories', 0)} categories** / "
+                    f"{_newest.get('subcategories', 0)} subcategories, plus "
+                    f"{_newest.get('subscriptions', 0)} subscription(s) — "
+                    f"covering {backup_coverage(_newest)}, "
+                    f"{format_bytes(backup_size_bytes(_newest_path))} on disk."
+                )
+
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "When": backup_label(p),
+                        "Reason": backup_reason(p),
+                        "Transactions": m.get("transactions"),
+                        "Classified": m.get("classified"),
+                        "Categories": m.get("parent_categories"),
+                        "Subcats": m.get("subcategories"),
+                        "Covers": backup_coverage(m),
+                        "Size": format_bytes(backup_size_bytes(p)),
+                        "Folder": str(p),
+                    }
+                    for p, m in _manifests
+                ]),
+                hide_index=True, width="stretch",
+                column_config={
+                    "When": st.column_config.Column("When", help="When this backup was taken."),
+                    "Reason": st.column_config.Column(
+                        "Reason", help="What triggered it — 'manual' for the button above, "
+                                       "otherwise the destructive action it was taken before."),
+                    "Transactions": st.column_config.NumberColumn(
+                        "Transactions", format="%d",
+                        help="Transactions captured in this backup. Blank for a backup taken "
+                             "before manifests existed, or a folder added here by hand."),
+                    "Classified": st.column_config.NumberColumn(
+                        "Classified", format="%d",
+                        help="How many of those transactions had a category assigned at the time."),
+                    "Categories": st.column_config.NumberColumn(
+                        "Categories", format="%d", help="Parent categories in the taxonomy."),
+                    "Subcats": st.column_config.NumberColumn(
+                        "Subcats", format="%d", help="Subcategories in the taxonomy."),
+                    "Covers": st.column_config.Column(
+                        "Covers", help="Date range of the transactions inside this backup."),
+                    "Size": st.column_config.Column("Size", help="Total size of the export on disk."),
+                    "Folder": st.column_config.Column(
+                        "Folder", help="Pass this to IMPORT DATABASE to restore."),
+                },
+            )
+
+            # Deleting a backup throws away a safety net, so it gets the same
+            # two-step confirm the rest of the app uses for destructive actions
+            # rather than a single click next to a table.
+            st.divider()
+            if "confirm_del_backup" not in st.session_state:
+                st.session_state.confirm_del_backup = None
+
+            _chosen = st.selectbox(
+                "Delete a backup",
+                options=_backups,
+                format_func=lambda p: f"{backup_label(p)} · {backup_reason(p)}",
+                key="backup_to_delete",
+                help="Backups are pruned automatically once there are more than "
+                     f"{BACKUPS_KEPT}. Delete one by hand to reclaim space sooner.",
+            )
+            if st.button("Delete backup", key="del_backup"):
+                st.session_state.confirm_del_backup = str(_chosen)
+
+            if st.session_state.confirm_del_backup:
+                _pending = Path(st.session_state.confirm_del_backup)
+                _pending_manifest = read_backup_manifest(_pending)
+                st.warning(
+                    f"Delete the backup from **{backup_label(_pending)}** "
+                    f"({backup_reason(_pending)})? It holds "
+                    f"**{_pending_manifest.get('transactions', 'an unknown number of')} "
+                    f"transactions** and cannot be recovered."
+                    + ("\n\nThis is your only backup." if len(_backups) == 1 else "")
+                )
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if st.button("Yes, delete it", type="primary", key="confirm_del_backup_yes"):
+                        delete_backup(_pending)
+                        st.session_state.confirm_del_backup = None
+                        st.rerun()
+                with _dc2:
+                    if st.button("Cancel", key="confirm_del_backup_no"):
+                        st.session_state.confirm_del_backup = None
+                        st.rerun()
+
     # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────
     st.divider()
     with st.expander("⚠️ Danger Zone"):
@@ -1868,7 +1990,8 @@ with tab_settings:
             f"Your raw transactions and context sentences are **never touched** — only the "
             f"category structure and label assignments are removed. The default taxonomy "
             f"is re-seeded automatically the next time the pipeline or dashboard starts, and "
-            f"transactions will need to be re-classified from scratch."
+            f"transactions will need to be re-classified from scratch.\n\n"
+            f"A full backup is taken first — see the Backups section above to restore it."
         )
 
         wipe_ack = st.checkbox("I understand this cannot be undone", key="wipe_taxonomy_ack")
@@ -1880,6 +2003,7 @@ with tab_settings:
         wipe_ready = wipe_ack and wipe_text.strip() == "WIPE TAXONOMY"
 
         if st.button("Permanently wipe entire taxonomy", type="primary", disabled=not wipe_ready):
+            backup_db("wipe-taxonomy")
             con.execute(
                 """UPDATE transactions
                    SET llm_category = NULL, llm_subcategory = NULL,

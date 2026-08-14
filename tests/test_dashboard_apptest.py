@@ -391,3 +391,173 @@ def test_inbound_and_outbound_transfers_match_between_overview_and_drilldown(tmp
 
     overview_tab = at.tabs[0]
     assert _has_card(overview_tab, "Transferred / Excluded", "£674.00")
+
+
+def _seed_two_merchants(tmp_path):
+    """Two spend transactions with distinct payees -- one reporting a
+    merchant_name, one reporting only a counterparty_name (the direct-debit
+    shape), so the exclude filter is exercised against both sides of
+    merchant_display_name()'s fallback."""
+    database_functions.DB_PATH = str(tmp_path / "test_dashboard.db")
+    database_functions.init_db()
+    database_functions.write_to_db([
+        {"id": "tx_tesco", "payload": {"data": {
+            "amount": -999, "currency": "GBP", "description": "Weekly shop",
+            "category": "groceries", "merchant": {"name": "Tesco"},
+            "counterparty": {"name": ""}, "is_load": False,
+            "created": "2026-01-15T10:00:00", "settled": "2026-01-15T10:00:00",
+        }}, "user_context": "weekly shop", "skipped": False,
+         "received_at": "2026-01-15T10:00:00", "enriched_at": "2026-01-15T10:00:01"},
+        {"id": "tx_rent", "payload": {"data": {
+            "amount": -50000, "currency": "GBP", "description": "DD RENT",
+            "category": "bills", "merchant": {"name": ""},
+            "counterparty": {"name": "Landlord"}, "is_load": False,
+            "created": "2026-01-16T10:00:00", "settled": "2026-01-16T10:00:00",
+        }}, "user_context": "monthly rent", "skipped": False,
+         "received_at": "2026-01-16T10:00:00", "enriched_at": "2026-01-16T10:00:01"},
+    ])
+
+
+def _txn_count(at) -> str:
+    """The Transactions tab's subheader is 'N transactions' for the currently
+    filtered set -- the most direct read of what the filters actually did."""
+    return at.tabs[2].subheader[0].value
+
+
+def test_exclude_merchant_offers_counterparty_only_payees(tmp_path):
+    """The exclude multiselect must list payees that only ever populate
+    counterparty_name (direct debits), not just card merchants."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    options = at.sidebar.multiselect(key="exclude_merchants").options
+    assert "Tesco" in options
+    assert "Landlord" in options
+
+
+def test_exclude_merchant_removes_matching_transactions(tmp_path):
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    assert _txn_count(at) == "2 transactions"
+
+    at.sidebar.multiselect(key="exclude_merchants").set_value(["Tesco"]).run()
+    assert not at.exception
+    assert _txn_count(at) == "1 transactions"
+
+
+def test_exclude_counterparty_only_payee_removes_its_transactions(tmp_path):
+    """Regression guard for the merchant_name='' fallback: excluding a
+    direct-debit payee must actually filter it out, not silently match nothing."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at.sidebar.multiselect(key="exclude_merchants").set_value(["Landlord"]).run()
+    assert not at.exception
+    assert _txn_count(at) == "1 transactions"
+
+
+def test_exclude_by_id_accepts_newline_and_comma_separated_ids(tmp_path):
+    """IDs get pasted in from a CSV or copied one-per-line off the table, so
+    both separators (and stray whitespace) have to parse the same way."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+
+    at.sidebar.text_area(key="exclude_ids").set_value("tx_tesco").run()
+    assert not at.exception
+    assert _txn_count(at) == "1 transactions"
+
+    at.sidebar.text_area(key="exclude_ids").set_value(" tx_tesco , tx_rent ").run()
+    assert not at.exception
+    assert _txn_count(at) == "0 transactions"
+
+    at.sidebar.text_area(key="exclude_ids").set_value("tx_tesco\n\ntx_rent\n").run()
+    assert not at.exception
+    assert _txn_count(at) == "0 transactions"
+
+
+def test_unknown_exclude_id_leaves_data_untouched(tmp_path):
+    """A typo'd or stale ID should be a no-op, never an exception."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at.sidebar.text_area(key="exclude_ids").set_value("tx_does_not_exist").run()
+    assert not at.exception
+    assert _txn_count(at) == "2 transactions"
+
+
+def test_manual_backup_button_writes_a_backup(tmp_path):
+    """End-to-end wiring check: the Settings tab's backup button must actually
+    produce a restorable export next to the database."""
+    _seed(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    assert database_functions.list_backups() == []
+
+    settings_tab = at.tabs[6]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    next(b for b in settings_tab.button if b.label == "Back up now").click().run()
+
+    assert not at.exception
+    backups = database_functions.list_backups()
+    assert len(backups) == 1
+    assert (backups[0] / "schema.sql").is_file()
+
+    # The listing must say what was actually saved, not just that a backup
+    # happened -- the seed holds exactly one transaction.
+    summary = next(
+        md.value for md in at.tabs[6].markdown if "Latest backup" in md.value
+    )
+    assert "1 transactions" in summary
+
+
+def _settings_button(at, label: str):
+    return next(b for b in at.tabs[6].button if b.label == label)
+
+
+def test_backup_delete_requires_confirmation(tmp_path):
+    """Deleting a backup throws away a safety net, so the first click must only
+    ask -- matching how the rest of the app handles destructive actions."""
+    _seed(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    _settings_button(at, "Back up now").click().run()
+    assert len(database_functions.list_backups()) == 1
+
+    _settings_button(at, "Delete backup").click().run()
+
+    assert not at.exception
+    assert len(database_functions.list_backups()) == 1, "must not delete on the first click"
+    assert any("cannot be recovered" in w.value for w in at.tabs[6].warning)
+
+
+def test_backup_delete_confirmed_removes_it(tmp_path):
+    _seed(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    _settings_button(at, "Back up now").click().run()
+    _settings_button(at, "Delete backup").click().run()
+    _settings_button(at, "Yes, delete it").click().run()
+
+    assert not at.exception
+    assert database_functions.list_backups() == []
+
+
+def test_backup_delete_can_be_cancelled(tmp_path):
+    _seed(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    _settings_button(at, "Back up now").click().run()
+    before = database_functions.list_backups()
+
+    _settings_button(at, "Delete backup").click().run()
+    next(b for b in at.tabs[6].button if b.key == "confirm_del_backup_no").click().run()
+    # AppTest does not follow the st.rerun() the Cancel handler triggers -- the
+    # captured tree is the one rendered up to that call, which still holds the
+    # confirmation. One more run() gives the tree the browser would show.
+    at.run()
+
+    assert not at.exception
+    assert database_functions.list_backups() == before
+    assert not any("cannot be recovered" in w.value for w in at.tabs[6].warning)
+
+
+def test_backup_delete_warns_when_it_is_the_only_one(tmp_path):
+    _seed(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    _settings_button(at, "Back up now").click().run()
+    _settings_button(at, "Delete backup").click().run()
+
+    warning = next(w.value for w in at.tabs[6].warning if "cannot be recovered" in w.value)
+    assert "only backup" in warning
