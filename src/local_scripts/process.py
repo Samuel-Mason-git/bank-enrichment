@@ -13,6 +13,7 @@ from database_functions import (
 from llm_labelling import run as run_classifier
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
+from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -134,6 +135,22 @@ if __name__ == "__main__":
         run_classifier()
     except Exception as e:
         log.error(f"LLM classification run failed: {e}", exc_info=True)
+
+    # Decisions first, then this month's review -- so a proposal approved on the
+    # phone is applied before anything new is proposed on top of it.
+    try:
+        applied = collect_taxonomy_decisions()
+        if applied:
+            log.info(f"Applied {applied} approved taxonomy proposal(s)")
+    except Exception as e:
+        log.error(f"Collecting taxonomy decisions failed: {e}", exc_info=True)
+
+    try:
+        proposed = run_taxonomy_review()
+        if proposed:
+            log.info(f"Sent {len(proposed)} taxonomy proposal(s) for review")
+    except Exception as e:
+        log.error(f"Taxonomy review run failed: {e}", exc_info=True)
 
     try:
         run_monthly_summary()

@@ -68,6 +68,70 @@ class TelegramBot:
 
 
 
+    def send_taxonomy_intro(self, chat_id: int, count: int, follow_up: int = 0):
+        """The entry card. Sent once before the individual proposal cards so a
+        burst of category questions arrives with an explanation rather than
+        appearing out of nowhere a month after the last one."""
+        if follow_up:
+            text = (
+                f"⏰ <b>Still waiting on {count} category suggestion"
+                f"{'s' if count != 1 else ''}</b>\n\n"
+                "No rush — they'll keep until you decide. Nothing changes unless you approve."
+            )
+        else:
+            text = (
+                "🗂 <b>Monthly taxonomy review</b>\n\n"
+                f"I looked over your existing categories and found <b>{count}</b> "
+                f"group{'s' if count != 1 else ''} of transactions that may deserve "
+                "a category of their own.\n\n"
+                "Each card below shows what it found and why. "
+                "<b>Approving moves only the transactions listed on that card</b> — "
+                "denying changes nothing at all."
+            )
+        self.send_message(chat_id, text)
+
+    def send_taxonomy_proposal(self, chat_id: int, proposal: dict):
+        """One card per proposed category, carrying its own evidence so the
+        decision can be made from the notification without opening anything."""
+        examples = proposal.get("examples") or []
+        count = proposal["evidence_count"]
+        plural = "s" if count != 1 else ""
+        is_move = proposal.get("action") == "move"
+        # A move reassigns into a category the user already has, so it must not
+        # read as "a new category" -- that is a materially different decision.
+        if is_move:
+            heading = f"↪️ Move into <b>{proposal['proposed_sub']}</b>"
+        else:
+            heading = f"🏷 New category: <b>{proposal['proposed_sub']}</b>"
+        if is_move:
+            target = proposal["proposed_sub"]
+            where = f" (in {proposal['target_parent']})" if proposal.get("target_parent") else ""
+            action_line = (
+                f"Would move <b>{count}</b> transaction{plural} from "
+                f"<b>{proposal['source_sub']}</b> into your existing "
+                f"<b>{target}</b>{where}."
+            )
+        else:
+            action_line = (
+                f"Would split <b>{count}</b> transaction{plural} out of "
+                f"<b>{proposal['source_sub']}</b> (in {proposal['parent_name']}) "
+                f"into a new category."
+            )
+        lines = [heading, "", f"<i>{proposal['rationale']}</i>", "", action_line]
+        if examples:
+            lines.append("")
+            lines.append("<b>For example:</b>")
+            lines += [f"  • {e}" for e in examples]
+        return self._post("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"taxprop:approve:{proposal['local_id']}"},
+                {"text": "❌ Deny", "callback_data": f"taxprop:deny:{proposal['local_id']}"},
+            ]]},
+        })
+
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']

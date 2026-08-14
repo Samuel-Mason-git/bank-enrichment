@@ -103,6 +103,54 @@ def run_requester(bot) -> None:
                     log.error(f"Follow-up {request_count} failed for {transaction_id}: {e}", exc_info=True)
 
 
+# Taxonomy proposals are not urgent and the monthly cadence means a nudge that
+# arrives too fast reads as nagging about something the user consciously left.
+# Two gentle reminders, then it stops asking and the proposal simply waits --
+# an undecided proposal is cleared by the next month's run, never auto-applied.
+TAXONOMY_FOLLOW_UPS = [
+    (0, 86_400 * 3),   # 3 days after the cards were sent
+    (1, 86_400 * 7),   # a week after that
+]
+
+
+def run_taxonomy_follow_ups(bot) -> None:
+    """Re-send the intro card for proposals still awaiting a decision."""
+    import os
+    con = get_con()
+    for follow_up_count, delay_seconds in TAXONOMY_FOLLOW_UPS:
+        cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - delay_seconds))
+        rows = con.execute(
+            """SELECT local_id, parent_name, source_sub, proposed_sub, rationale,
+                      evidence_count, examples, action, target_parent
+               FROM taxonomy_proposals
+               WHERE status = 'pending' AND follow_up_count = ?
+                 AND COALESCE(last_nudged_at, sent_at) <= ?""",
+            [follow_up_count, cutoff]
+        ).fetchall()
+        if not rows:
+            continue
+        try:
+            chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+            bot.send_taxonomy_intro(chat_id, len(rows), follow_up=follow_up_count + 1)
+            for r in rows:
+                bot.send_taxonomy_proposal(chat_id, {
+                    "local_id": r[0], "parent_name": r[1], "source_sub": r[2],
+                    "proposed_sub": r[3], "rationale": r[4], "evidence_count": r[5],
+                    "examples": json.loads(r[6] or "[]"),
+                    "action": r[7], "target_parent": r[8],
+                })
+            con.execute(
+                """UPDATE taxonomy_proposals
+                   SET follow_up_count = follow_up_count + 1, last_nudged_at = ?
+                   WHERE status = 'pending' AND follow_up_count = ?""",
+                [time.strftime("%Y-%m-%d %H:%M:%S"), follow_up_count]
+            )
+            log.info(f"Taxonomy follow-up {follow_up_count + 1} sent for {len(rows)} proposal(s)")
+        except Exception as e:
+            log.error(f"Taxonomy follow-up {follow_up_count} failed: {e}", exc_info=True)
+        return
+
+
 def run_cleanup() -> None:
     con = get_con()
     cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400 * 5))
@@ -121,6 +169,10 @@ async def requester_loop(bot) -> None:
             run_requester(bot)
         except Exception as e:
             log.error(f"Requester loop error: {e}", exc_info=True)
+        try:
+            run_taxonomy_follow_ups(bot)
+        except Exception as e:
+            log.error(f"Taxonomy follow-up loop error: {e}", exc_info=True)
         try:
             run_cleanup()
         except Exception as e:

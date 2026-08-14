@@ -70,6 +70,33 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
     sent_at      TIMESTAMP NOT NULL
 );
 
+-- Monthly taxonomy-gap proposals: coherent clusters found inside an existing
+-- subcategory that may deserve their own. Sent to Telegram for approval, and
+-- the local pipeline applies whatever comes back approved. evidence_ids is the
+-- exact set of transactions shown on the card, so approving moves precisely
+-- what was reviewed and nothing else.
+-- NOTE: keep semicolons out of comments in this file. init_db() splits it on
+-- the semicolon character, so one inside a comment silently breaks schema load.
+CREATE TABLE IF NOT EXISTS taxonomy_proposals (
+    id             INTEGER PRIMARY KEY,
+    parent_name    VARCHAR NOT NULL,
+    source_sub     VARCHAR NOT NULL,
+    -- 'create' makes a new subcategory, 'move' reassigns into an existing one.
+    action         VARCHAR NOT NULL DEFAULT 'create'
+        CHECK (action IN ('create', 'move')),
+    target_parent  VARCHAR NOT NULL DEFAULT '',
+    proposed_sub   VARCHAR NOT NULL,
+    rationale      VARCHAR NOT NULL,
+    evidence_ids   JSON    NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    status         VARCHAR NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
+    proposed_at    TIMESTAMP NOT NULL,
+    decided_at     TIMESTAMP,
+    applied_at     TIMESTAMP,
+    run_key        VARCHAR NOT NULL   -- e.g. '2026-08', so one review per month
+);
+
 -- User-set Income/Spend/Investment/Transfer/Excluded role per category.
 -- subcategory_id NULL = applies to the whole parent. Empty until edited in Settings.
 CREATE TABLE IF NOT EXISTS category_roles (
