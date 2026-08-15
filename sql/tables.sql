@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS monthly_summaries (
     total_spend  DECIMAL(19,4) NOT NULL,
     total_income DECIMAL(19,4) NOT NULL,
     net          DECIMAL(19,4) NOT NULL,
+    total_invested DECIMAL(19,4),
     sent_at      TIMESTAMP NOT NULL
 );
 
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
     total_spend  DECIMAL(19,4) NOT NULL,
     total_income DECIMAL(19,4) NOT NULL,
     net          DECIMAL(19,4) NOT NULL,
+    total_invested DECIMAL(19,4),
     sent_at      TIMESTAMP NOT NULL
 );
 
@@ -75,8 +77,6 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
 -- the local pipeline applies whatever comes back approved. evidence_ids is the
 -- exact set of transactions shown on the card, so approving moves precisely
 -- what was reviewed and nothing else.
--- NOTE: keep semicolons out of comments in this file. init_db() splits it on
--- the semicolon character, so one inside a comment silently breaks schema load.
 CREATE TABLE IF NOT EXISTS taxonomy_proposals (
     id             INTEGER PRIMARY KEY,
     parent_name    VARCHAR NOT NULL,

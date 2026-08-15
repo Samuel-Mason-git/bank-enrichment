@@ -25,6 +25,29 @@ def get_con() -> duckdb.DuckDBPyConnection:
     return _con
 
 
+def split_sql_statements(sql: str) -> list[str]:
+    """Split a schema file into executable statements.
+
+    Comments are stripped BEFORE splitting on the semicolon. Splitting naively
+    meant one semicolon inside a comment cut a CREATE TABLE in half, and the
+    resulting fragments are invalid SQL -- so the whole schema load failed on
+    something as innocuous as "sent for approval; the pipeline applies it".
+    Quotes are tracked so a '--' inside a string literal is left alone."""
+    cleaned = []
+    for line in sql.splitlines():
+        if line.strip().startswith("--"):
+            continue
+        in_string = False
+        for i, char in enumerate(line):
+            if char == "'":
+                in_string = not in_string
+            elif char == "-" and not in_string and line[i:i + 2] == "--":
+                line = line[:i]
+                break
+        cleaned.append(line)
+    return [s.strip() for s in "\n".join(cleaned).split(";") if s.strip()]
+
+
 def init_db(read_only: bool = False) -> None:
     global _con
     if _con is not None:
@@ -34,11 +57,8 @@ def init_db(read_only: bool = False) -> None:
     _con = duckdb.connect(DB_PATH, read_only=read_only)
     if not read_only:
         sql_path = Path(__file__).parent.parent.parent / "sql" / "tables.sql"
-        sql = sql_path.read_text()
-        for statement in sql.split(";"):
-            statement = statement.strip()
-            if statement:
-                _con.execute(statement)
+        for statement in split_sql_statements(sql_path.read_text()):
+            _con.execute(statement)
         _migrate()
         _seed_taxonomy()
 
@@ -95,20 +115,45 @@ _DEFAULT_TAXONOMY = {
 }
 
 
+# (table, column, type) added to databases created before the column existed.
+# CREATE TABLE IF NOT EXISTS does nothing once a table exists, so a column added
+# to tables.sql never reaches a database that already has that table -- the file
+# and the live database silently disagree until something fails at runtime.
+# Every column added to an EXISTING table must also be listed here.
+MIGRATIONS = [
+    ("subscriptions", "merchant_name", "VARCHAR(255)"),
+    ("monthly_summaries", "total_invested", "DECIMAL(19,4)"),
+    ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
+]
+
+
+def _columns(con, table: str) -> set[str]:
+    return {r[0] for r in con.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+        [table],
+    ).fetchall()}
+
+
+def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
+    """Add any missing columns. Additive only -- nothing is dropped, renamed or
+    rewritten, so this is safe to run on every startup and safe to re-run.
+    Returns what it added, for logging."""
+    added = []
+    for table, column, column_type in migrations:
+        existing = _columns(con, table)
+        if not existing:
+            continue  # table isn't there yet, so CREATE TABLE will include it
+        if column not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+            added.append(f"{table}.{column}")
+    return added
+
+
 def _migrate() -> None:
     """Additive schema migrations — safe to run on every startup."""
-    cols = {r[0] for r in _con.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = 'subscriptions'"
-    ).fetchall()}
-    if "merchant_name" not in cols:
-        _con.execute("ALTER TABLE subscriptions ADD COLUMN merchant_name VARCHAR(255)")
-
-    for table in ("monthly_summaries", "weekly_summaries"):
-        cols = {r[0] for r in _con.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
-        ).fetchall()}
-        if "total_invested" not in cols:
-            _con.execute(f"ALTER TABLE {table} ADD COLUMN total_invested DECIMAL(19,4)")
+    added = _apply_migrations(_con, MIGRATIONS)
+    if added:
+        log.info(f"Applied schema migrations: {', '.join(added)}")
 
 
 def _seed_taxonomy() -> None:
