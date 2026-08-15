@@ -16,6 +16,12 @@ def _extract_field(data, match_field: str):
         return data.counterparty.get("name") if data.counterparty else None
     if match_field == "amount":
         return data.amount
+    if match_field == "scheme":
+        # Monzo's own classification of how the money moved, e.g.
+        # 'uk_retail_pot' for a transfer to or from a pot. Matching on this is
+        # exact by nature, unlike matching text that merely looks distinctive:
+        # 'pot_' as a substring also appears in HOME DEPOT_, JACKPOT_ and so on.
+        return getattr(data, "scheme", None)
     return None
 
 

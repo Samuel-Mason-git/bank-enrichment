@@ -19,6 +19,7 @@
                         <option value="description">Description</option>
                         <option value="counterparty_name">Counterparty name</option>
                         <option value="category">Category</option>
+                        <option value="scheme">Payment scheme</option>
                         <option value="amount">Amount (£)</option>
                     </select>
                 </div>
@@ -53,6 +54,7 @@
                         <option value="description">Description</option>
                         <option value="counterparty_name">Counterparty name</option>
                         <option value="category">Category</option>
+                        <option value="scheme">Payment scheme</option>
                         <option value="amount">Amount (£)</option>
                     </select>
                 </div>
@@ -110,6 +112,10 @@
                 <div class="form-group">
                     <label>Category</label>
                     <input id="test-category" name="category" value="{{ test_data.category if test_data else '' }}" placeholder="e.g. personal_care">
+                </div>
+                <div class="form-group">
+                    <label>Payment Scheme</label>
+                    <input id="test-scheme" name="scheme" value="{{ test_data.scheme if test_data else '' }}" placeholder="e.g. uk_retail_pot">
                 </div>
                 <div class="form-group">
                     <label>Amount (£)</label>
