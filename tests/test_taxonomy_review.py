@@ -5,7 +5,7 @@ import pytest
 
 import taxonomy_review as tr
 from taxonomy_review import (
-    build_prompt, filter_proposals, run_key,
+    build_prompt, filter_proposals, run_key, expand_evidence,
     MIN_CLUSTER_SIZE, MIN_CLUSTER_SHARE, MAX_PROPOSALS_PER_RUN,
 )
 
@@ -405,3 +405,131 @@ class TestFailedSyncDoesNotBurnTheMonth:
         assert db.execute(
             "SELECT status FROM taxonomy_proposals WHERE id = 1").fetchone()[0] == "pending"
         assert tr.already_reviewed("2026-08") is True
+
+
+class TestRunIsVisibleInTheLog:
+    """One API call per subcategory is by design, but with no logging of its own
+    the only trace was a burst of bare httpx lines from the SDK -- which reads
+    as a runaway loop rather than a bounded monthly job."""
+
+    def _stub(self, monkeypatch, proposals=()):
+        monkeypatch.setattr(tr, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(tr, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(tr, "full_taxonomy", lambda: TAXONOMY)
+        monkeypatch.setattr(tr, "previously_proposed_names", lambda: set())
+        monkeypatch.setattr(tr, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+        monkeypatch.setattr(tr, "reviewable_subcategories", lambda: [
+            {"parent": "Food & Drink", "subcategory": "Lunches Out", "size": 20},
+            {"parent": "Transport", "subcategory": "Public Transport", "size": 22},
+        ])
+        monkeypatch.setattr(tr, "transactions_in", lambda p, s: [
+            {"id": f"tx_{i}", "amount": -3.5, "merchant": "Tesco", "context": "x"}
+            for i in range(20)])
+        monkeypatch.setattr(tr, "review_subcategory",
+                            lambda c, p, s, r, t, **k: list(proposals) if s == "Lunches Out" else [])
+
+    def test_the_number_of_requests_is_announced_up_front(self, db, monkeypatch, caplog):
+        self._stub(monkeypatch)
+        with caplog.at_level("INFO"):
+            tr.run(date(2026, 8, 15))
+        assert "Reviewing 2 subcategories" in caplog.text
+        assert "one request each" in caplog.text
+
+    def test_each_subcategory_reports_its_own_result(self, db, monkeypatch, caplog):
+        self._stub(monkeypatch)
+        with caplog.at_level("INFO"):
+            tr.run(date(2026, 8, 15))
+        assert "[1/2] Lunches Out" in caplog.text
+        assert "[2/2] Public Transport" in caplog.text
+        assert caplog.text.count("nothing to propose") == 2
+
+    def test_a_proposal_is_named_in_the_log(self, db, monkeypatch, caplog):
+        self._stub(monkeypatch, [{
+            "action": "create", "target_sub": "Breakfast Out",
+            "target_parent": "Food & Drink", "parent_name": "Food & Drink",
+            "source_sub": "Lunches Out", "rationale": "Breakfasts.",
+            "evidence_ids": [f"tx_{i}" for i in range(8)], "evidence_count": 8}])
+        monkeypatch.setattr(tr, "sync_to_server", lambda proposals: None)
+        with caplog.at_level("INFO"):
+            tr.run(date(2026, 8, 15))
+        assert "create 'Breakfast Out' (8)" in caplog.text
+        assert "sent 1 proposal(s) to Telegram" in caplog.text
+
+    def test_a_quiet_month_says_so_and_says_when_it_will_look_again(self, db, monkeypatch, caplog):
+        self._stub(monkeypatch)
+        with caplog.at_level("INFO"):
+            tr.run(date(2026, 8, 15))
+        assert "nothing clear enough to propose" in caplog.text
+        assert "next review in 2026-09" in caplog.text
+
+    def test_the_second_run_in_a_month_says_why_it_did_nothing(self, db, monkeypatch, caplog):
+        self._stub(monkeypatch)
+        tr.run(date(2026, 8, 15))
+        with caplog.at_level("INFO"):
+            caplog.clear()
+            tr.run(date(2026, 8, 16))
+        assert "already run for 2026-08" in caplog.text
+        assert "Reviewing" not in caplog.text, "a skipped month must make no requests"
+
+
+class TestIdenticalTransactionsMoveTogether:
+    """Real failure: seven identical "Train tickets for work" at Trip.com, and
+    the model listed six of them. Applying the proposal left the seventh in the
+    old subcategory -- two indistinguishable transactions, different labels."""
+
+    def _rows(self):
+        rows = [{"id": f"work_{i}", "amount": -33.3, "merchant": "Trip.com",
+                 "context": "Train tickets for work"} for i in range(7)]
+        rows += [{"id": "tube_1", "amount": -2.8, "merchant": "Transport for London",
+                  "context": "Tube"},
+                 {"id": "fest_1", "amount": -40.0, "merchant": "Trip.com",
+                  "context": "Train tickets to festival"}]
+        return rows
+
+    def test_the_missed_duplicate_is_pulled_in(self):
+        rows = self._rows()
+        listed = [f"work_{i}" for i in range(6)]     # model missed work_6
+        assert sorted(expand_evidence(listed, rows)) == sorted(
+            [f"work_{i}" for i in range(7)])
+
+    def test_genuinely_different_transactions_are_not_pulled_in(self):
+        rows = self._rows()
+        expanded = expand_evidence([f"work_{i}" for i in range(6)], rows)
+        assert "tube_1" not in expanded
+        assert "fest_1" not in expanded, \
+            "same merchant but a different context is a different thing"
+
+    def test_matching_ignores_case_and_surrounding_whitespace(self):
+        rows = [{"id": "a", "merchant": "Trip.com", "context": "Train tickets for work"},
+                {"id": "b", "merchant": "trip.com ", "context": " TRAIN TICKETS FOR WORK"}]
+        assert sorted(expand_evidence(["a"], rows)) == ["a", "b"]
+
+    def test_rows_with_no_merchant_or_no_context_never_match_on_emptiness(self):
+        """Otherwise every sparse row in the subcategory would be swept in."""
+        rows = [{"id": "a", "merchant": None, "context": None},
+                {"id": "b", "merchant": None, "context": None},
+                {"id": "c", "merchant": "Trip.com", "context": None}]
+        assert expand_evidence(["a"], rows) == ["a"]
+        assert expand_evidence(["c"], rows) == ["c"]
+
+    def test_order_is_stable_and_ids_are_not_duplicated(self):
+        rows = self._rows()
+        expanded = expand_evidence(["work_0", "work_0", "work_1"], rows)
+        assert len(expanded) == len(set(expanded))
+        assert expanded[:2] == ["work_0", "work_1"]
+
+    def test_unknown_ids_are_preserved_for_the_guardrails_to_reject(self):
+        """expand_evidence must not quietly launder an id that is not in this
+        subcategory -- filter_proposals is what drops those."""
+        assert expand_evidence(["ghost"], self._rows()) == ["ghost"]
+
+    def test_expansion_happens_before_the_guardrails_see_the_count(self):
+        """A group of 5 listed plus 1 missed duplicate is 6, which clears the
+        size floor that 5 would have failed."""
+        rows = [{"id": f"work_{i}", "amount": -33.3, "merchant": "Trip.com",
+                 "context": "Train tickets for work"} for i in range(6)]
+        rows += [{"id": f"pad_{i}", "amount": -5.0, "merchant": "Other",
+                  "context": f"thing {i}"} for i in range(14)]
+        listed = [f"work_{i}" for i in range(5)]
+        assert len(listed) < MIN_CLUSTER_SIZE
+        assert len(expand_evidence(listed, rows)) == MIN_CLUSTER_SIZE
