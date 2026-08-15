@@ -123,6 +123,38 @@ def filter_proposals(
     return kept[:MAX_PROPOSALS_PER_RUN]
 
 
+def _identity(row: dict) -> tuple[str, str] | None:
+    """What makes two transactions indistinguishable to the user: the same payee
+    and the same thing written about it. None when either is missing, so sparse
+    rows never match each other on emptiness alone."""
+    merchant = (row.get("merchant") or "").strip().casefold()
+    context = (row.get("context") or "").strip().casefold()
+    return (merchant, context) if (merchant and context) else None
+
+
+def expand_evidence(evidence_ids: list[str], rows: list[dict]) -> list[str]:
+    """Pull in every transaction indistinguishable from one already in the
+    evidence.
+
+    The model writes out ids by hand and does not do it consistently. Seven
+    identical "Train tickets for work" at Trip.com produced six inside the
+    proposed group and one outside, so applying it left two identical
+    transactions in different subcategories -- a difference no user can be
+    shown a reason for, because there isn't one.
+
+    Expanding here rather than at apply time is deliberate: the card has to
+    state the true count, or "approving moves only the transactions listed on
+    that card" stops being true."""
+    by_id = {r["id"]: r for r in rows}
+    keys = {k for i in evidence_ids if (k := _identity(by_id.get(i) or {})) is not None}
+    expanded = dict.fromkeys(evidence_ids)
+    if keys:
+        for r in rows:
+            if _identity(r) in keys:
+                expanded[r["id"]] = None
+    return list(expanded)
+
+
 def build_prompt(parent: str, subcategory: str, rows: list[dict],
                  taxonomy: dict[str, list[str]] | None = None) -> str:
     lines = "\n".join(
@@ -275,6 +307,11 @@ def review_subcategory(client, parent: str, subcategory: str, rows: list[dict],
     except Exception as e:
         log.error(f"Taxonomy review failed for {parent}/{subcategory}: {e}")
         return []
+    # Before the guardrails, so size and share are judged on the set that would
+    # actually move rather than the subset the model happened to write down.
+    for p in proposals:
+        if isinstance(p, dict) and p.get("evidence_ids"):
+            p["evidence_ids"] = expand_evidence(p["evidence_ids"], rows)
     filtered = filter_proposals(
         proposals, source_size=len(rows), valid_ids={r["id"] for r in rows},
         taxonomy=taxonomy, source_parent=parent, source_sub=subcategory,
@@ -498,6 +535,8 @@ def run(today: date | None = None) -> list[dict]:
     if not server_supports_proposals():
         return []
 
+    run_start = time.time()
+    log.info(f"--- Taxonomy review started ({key}) ---")
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
     taxonomy = full_taxonomy()
     # Names already proposed (approved OR denied) are off the table, so a
@@ -506,12 +545,28 @@ def run(today: date | None = None) -> list[dict]:
     denied = previously_proposed_names()
     found: list[dict] = []
 
-    for sub in reviewable_subcategories():
+    candidates = reviewable_subcategories()
+    # One API call per subcategory, so say how many are coming -- otherwise the
+    # only sign of this stage in the log is a burst of bare httpx lines from the
+    # SDK, which looks like a runaway loop rather than a bounded monthly job.
+    log.info(
+        f"Reviewing {len(candidates)} subcategories with at least "
+        f"{MIN_SUBCATEGORY_SIZE} transactions (one request each)"
+    )
+    for i, sub in enumerate(candidates, 1):
         rows = transactions_in(sub["parent"], sub["subcategory"])
         if len(rows) < MIN_SUBCATEGORY_SIZE:
             continue
-        for p in review_subcategory(client, sub["parent"], sub["subcategory"],
-                                    rows, taxonomy, blocked_names=denied):
+        t0 = time.time()
+        proposals = review_subcategory(client, sub["parent"], sub["subcategory"],
+                                       rows, taxonomy, blocked_names=denied)
+        log.info(
+            f"  [{i}/{len(candidates)}] {sub['subcategory']} ({len(rows)} transactions, "
+            f"{time.time() - t0:.1f}s) — "
+            + (", ".join(f"{p['action']} '{p['target_sub']}' ({p['evidence_count']})"
+                         for p in proposals) if proposals else "nothing to propose")
+        )
+        for p in proposals:
             p["examples"] = [
                 r["context"] for r in rows
                 if r["id"] in p["evidence_ids"] and r["context"]
@@ -520,7 +575,11 @@ def run(today: date | None = None) -> list[dict]:
             denied.add(p["target_sub"].lower())
 
     if not found:
-        log.info("Taxonomy review found no clusters clear enough to propose")
+        log.info(
+            f"--- Taxonomy review complete in {time.time() - run_start:.1f}s "
+            f"— nothing clear enough to propose, next review in {key[:4]}-"
+            f"{int(key[5:]) % 12 + 1:02d} ---"
+        )
         _record_empty_run(key)
         return []
 
@@ -543,4 +602,8 @@ def run(today: date | None = None) -> list[dict]:
             f"so {key} is reviewed again on the next run", exc_info=True,
         )
         return []
+    log.info(
+        f"--- Taxonomy review complete in {time.time() - run_start:.1f}s "
+        f"— sent {len(stored)} proposal(s) to Telegram ---"
+    )
     return stored
