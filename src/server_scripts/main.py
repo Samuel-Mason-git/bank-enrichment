@@ -147,6 +147,11 @@ class MonzoInner(BaseModel):
     # Present only when the payment was refused (e.g. 'INSUFFICIENT_FUNDS').
     # Monzo still fires a webhook for these even though no money moved.
     decline_reason: Optional[str] = None
+    # Monzo's own payment scheme -- 'uk_retail_pot' for a pot transfer, and
+    # distinct values for card payments, direct debits and faster payments.
+    # A rule keyed on this cannot be fooled by a merchant whose name happens to
+    # contain the same characters as the pattern being matched.
+    scheme: Optional[str] = None
 
 class MonzoOuter(BaseModel):
     model_config = ConfigDict(extra='ignore')
@@ -590,6 +595,7 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
         "description": (form.get("description") or "").strip(),
         "counterparty_name": (form.get("counterparty_name") or "").strip(),
         "category": (form.get("category") or "").strip(),
+        "scheme": (form.get("scheme") or "").strip(),
         "amount": (form.get("amount") or "0").strip(),
     }
     try:
@@ -611,6 +617,7 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
             if field == "description": return test_data["description"] or None
             if field == "counterparty_name": return test_data["counterparty_name"] or None
             if field == "category": return test_data["category"] or None
+            if field == "scheme": return test_data["scheme"] or None
             if field == "amount": return amount_pence
             return None
 
