@@ -319,3 +319,89 @@ class TestPromptShowsTheTaxonomy:
                                      "merchant": None, "context": None}])
         assert "tx_a" in p
         assert "Your existing categories" not in p
+
+
+class TestServerNotYetDeployed:
+    """The local pipeline updates when the code is pulled, the server only on
+    deploy, so the two are routinely out of step. A review that cannot deliver
+    its result must cost nothing and must not consume the month."""
+
+    def test_review_is_skipped_when_the_server_has_no_endpoints(self, db, monkeypatch):
+        monkeypatch.setattr(tr, "CLAUDE_SECRET", "test-key")
+        calls = []
+        monkeypatch.setattr(tr, "server_supports_proposals", lambda: False)
+        monkeypatch.setattr(tr, "reviewable_subcategories",
+                            lambda: calls.append("queried") or [])
+        assert tr.run(date(2026, 8, 15)) == []
+        assert calls == [], "no LLM work may happen before the server is known to be ready"
+
+    def test_a_skipped_month_is_not_recorded_as_reviewed(self, db, monkeypatch):
+        """An undeployed server is temporary. Recording the run would mean the
+        month is silently skipped forever once the server catches up."""
+        monkeypatch.setattr(tr, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(tr, "server_supports_proposals", lambda: False)
+        tr.run(date(2026, 8, 15))
+        assert tr.already_reviewed("2026-08") is False
+
+    def test_404_is_reported_as_unsupported(self, monkeypatch):
+        class _Resp:
+            status_code, ok = 404, False
+        monkeypatch.setattr(tr.requests, "get", lambda *a, **k: _Resp())
+        assert tr.server_supports_proposals() is False
+
+    def test_an_unreachable_server_is_reported_as_unsupported(self, monkeypatch):
+        def _boom(*a, **k):
+            raise tr.requests.ConnectionError("no route to host")
+        monkeypatch.setattr(tr.requests, "get", _boom)
+        assert tr.server_supports_proposals() is False
+
+    def test_a_healthy_server_is_supported(self, monkeypatch):
+        class _Resp:
+            status_code, ok = 200, True
+        monkeypatch.setattr(tr.requests, "get", lambda *a, **k: _Resp())
+        assert tr.server_supports_proposals() is True
+
+
+class TestFailedSyncDoesNotBurnTheMonth:
+    def _stub_review(self, monkeypatch, proposal):
+        monkeypatch.setattr(tr, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(tr, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(tr, "full_taxonomy", lambda: TAXONOMY)
+        monkeypatch.setattr(tr, "previously_proposed_names", lambda: set())
+        monkeypatch.setattr(tr, "reviewable_subcategories",
+                            lambda: [{"parent": "Food & Drink", "subcategory": "Lunches Out",
+                                      "size": 20}])
+        monkeypatch.setattr(tr, "transactions_in", lambda p, s: [
+            {"id": f"tx_{i}", "amount": -3.5, "merchant": "Tesco", "context": "Breakfast"}
+            for i in range(20)])
+        monkeypatch.setattr(tr, "review_subcategory", lambda *a, **k: [proposal])
+        monkeypatch.setattr(tr, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+
+    def _proposal(self):
+        return {"action": "create", "target_sub": "Breakfast Out",
+                "target_parent": "Food & Drink", "parent_name": "Food & Drink",
+                "source_sub": "Lunches Out", "rationale": "Breakfasts, not lunches.",
+                "evidence_ids": [f"tx_{i}" for i in range(8)], "evidence_count": 8}
+
+    def test_a_failed_send_rolls_the_proposals_back(self, db, monkeypatch):
+        """store_proposals() is what marks the month as reviewed. Leaving the
+        rows behind after a failed send means the cards never arrive AND the
+        month is never retried -- the worst of both."""
+        self._stub_review(monkeypatch, self._proposal())
+        def _boom(proposals):
+            raise tr.requests.HTTPError("404 Not Found")
+        monkeypatch.setattr(tr, "sync_to_server", _boom)
+
+        assert tr.run(date(2026, 8, 15)) == []
+        assert db.execute("SELECT COUNT(*) FROM taxonomy_proposals").fetchone()[0] == 0
+        assert tr.already_reviewed("2026-08") is False, "the month must remain reviewable"
+
+    def test_a_successful_send_keeps_them_and_consumes_the_month(self, db, monkeypatch):
+        self._stub_review(monkeypatch, self._proposal())
+        monkeypatch.setattr(tr, "sync_to_server", lambda proposals: None)
+
+        sent = tr.run(date(2026, 8, 15))
+        assert len(sent) == 1
+        assert db.execute(
+            "SELECT status FROM taxonomy_proposals WHERE id = 1").fetchone()[0] == "pending"
+        assert tr.already_reviewed("2026-08") is True

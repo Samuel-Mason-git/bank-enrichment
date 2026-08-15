@@ -349,6 +349,27 @@ def sync_to_server(proposals: list[dict]) -> None:
     log.info(f"Synced {len(proposals)} taxonomy proposal(s) to the server")
 
 
+def server_supports_proposals() -> bool:
+    """Whether the server has been deployed with the taxonomy endpoints yet.
+
+    The local pipeline updates the moment the code is pulled, but the server
+    only updates on deploy, so the two are routinely out of step. Without this
+    check the review spends a paid API call per subcategory building proposals
+    that the sync then cannot deliver."""
+    try:
+        response = requests.get(
+            f"{SERVER_URL}/taxonomy-decisions",
+            headers={"X-API-Key": LOCAL_API_KEY}, timeout=30,
+        )
+    except Exception as e:
+        log.warning(f"Could not reach the server for taxonomy proposals: {e}")
+        return False
+    if response.status_code == 404:
+        log.info("Server has no taxonomy endpoints yet — skipping review until it is deployed")
+        return False
+    return response.ok
+
+
 def fetch_decisions() -> list[dict]:
     response = requests.get(
         f"{SERVER_URL}/taxonomy-decisions",
@@ -471,6 +492,11 @@ def run(today: date | None = None) -> list[dict]:
     if not CLAUDE_SECRET:
         log.error("CLAUDE_SECRET not set — skipping taxonomy review")
         return []
+    # Checked BEFORE any LLM work, and deliberately without recording the run:
+    # an undeployed server is a temporary condition, so the month must still be
+    # reviewable once it catches up.
+    if not server_supports_proposals():
+        return []
 
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
     taxonomy = full_taxonomy()
@@ -501,5 +527,20 @@ def run(today: date | None = None) -> list[dict]:
     found.sort(key=lambda p: p["evidence_count"], reverse=True)
     found = found[:MAX_PROPOSALS_PER_RUN]
     stored = store_proposals(found, key)
-    sync_to_server(stored)
+    try:
+        sync_to_server(stored)
+    except Exception:
+        # Storing marks the month as reviewed, so leaving these rows behind
+        # after a failed send would silently burn it: the user never sees the
+        # cards, and already_reviewed() stops the month being retried. Roll the
+        # rows back so the next run reviews again from scratch.
+        ids = [p["id"] for p in stored]
+        get_con().execute(
+            f"DELETE FROM taxonomy_proposals WHERE id IN ({', '.join('?' for _ in ids)})", ids
+        )
+        log.error(
+            f"Could not send {len(stored)} taxonomy proposal(s) — rolled them back "
+            f"so {key} is reviewed again on the next run", exc_info=True,
+        )
+        return []
     return stored
