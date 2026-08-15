@@ -706,6 +706,12 @@ pre.raw {
     align-items: end;
     margin-bottom: 14px;
 }
+/* The rule tester has more fields than the add/edit forms, and gains one
+   whenever a new matchable field is added. Wrapping columns keep every input
+   at a usable width instead of overflowing the fixed template above. */
+.form-grid-test {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
 .form-group { display: flex; flex-direction: column; gap: 5px; }
 .form-group label {
     font-size: 0.68rem;

@@ -96,7 +96,7 @@
             </div>
             <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;margin-bottom:8px;">Or fill in manually</div>
             {% endif %}
-            <div class="form-grid">
+            <div class="form-grid form-grid-test">
                 <div class="form-group">
                     <label>Merchant Name</label>
                     <input id="test-merchant" name="merchant_name" value="{{ test_data.merchant_name if test_data else '' }}" placeholder="e.g. PureGym">
@@ -214,6 +214,7 @@ function fillFromTransaction(id) {
     document.getElementById("test-description").value = tx.description;
     document.getElementById("test-counterparty").value = tx.counterparty_name;
     document.getElementById("test-category").value = tx.category;
+    document.getElementById("test-scheme").value = tx.scheme;
     document.getElementById("test-amount").value = tx.amount;
 }
 
