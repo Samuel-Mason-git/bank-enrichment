@@ -144,6 +144,9 @@ class MonzoInner(BaseModel):
     settled: Optional[str] = None
     merchant: Optional[dict] = None
     counterparty: Optional[dict] = None
+    # Present only when the payment was refused (e.g. 'INSUFFICIENT_FUNDS').
+    # Monzo still fires a webhook for these even though no money moved.
+    decline_reason: Optional[str] = None
 
 class MonzoOuter(BaseModel):
     model_config = ConfigDict(extra='ignore')
@@ -247,6 +250,32 @@ async def recieve_monzo(request: Request):
     except Exception as e:
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
+
+    # A declined payment moved no money, but Monzo fires a webhook for it just
+    # like a real one -- and the retry that succeeds arrives seconds later as a
+    # separate transaction. Left alone it asks for context, gets pulled into the
+    # local database, and counts as spend that never happened, sitting next to a
+    # duplicate of the payment that did.
+    #
+    # It is auto-skipped rather than dropped: the row is a true record of an
+    # attempt, it keeps the id in the dedup buffer, and skipped transactions are
+    # already excluded from every total and from classification.
+    if is_new and monzo_data.data.decline_reason:
+        try:
+            con.execute(
+                """UPDATE webhook_queue
+                   SET status = 'enriched', skipped = TRUE, user_context = ?, enriched_at = ?
+                   WHERE id = ?""",
+                [f"Declined ({monzo_data.data.decline_reason})",
+                 time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+            )
+            log.info(
+                f"Declined transaction auto-skipped: {transaction_id} "
+                f"({monzo_data.data.decline_reason}) — no notification sent"
+            )
+        except Exception as e:
+            log.error(f"Failed to auto-skip declined {transaction_id}: {e}", exc_info=True)
+        return {"status": "declined"}
 
     # Check rules for auto-enrichment / auto-skip
     rule_context, rule_skip = (None, False)
