@@ -727,6 +727,7 @@ def _get_test_transactions(con):
             "description": description,
             "counterparty_name": counterparty,
             "category": data.get("category") or "",
+            "scheme": data.get("scheme") or "",
             "amount": round(abs(amount_pence) / 100, 2),
         })
     return txns
