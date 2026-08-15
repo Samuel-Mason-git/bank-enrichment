@@ -1,9 +1,12 @@
 """Pure, Streamlit-free logic used by dashboard.py — kept separate so it can
 be unit tested directly without spinning up a Streamlit app or a database."""
 
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 
-FREQ_MONTHLY = {"weekly": 52 / 12, "fortnightly": 26 / 12, "monthly": 1, "annual": 1 / 12}
+FREQ_MONTHLY ={"weekly": 52 / 12, "fortnightly": 26 / 12, "monthly": 1, "annual": 1 / 12}
 
 ROLE_METRICS = {
     "Spend": ("spend",),
@@ -11,6 +14,59 @@ ROLE_METRICS = {
     "Invested": ("investment",),
     "Transferred / Excluded": ("transfer", "excluded"),
 }
+
+
+def _split_backup_name(path: Path) -> tuple[str, str]:
+    """Backup folders are named '<YYYYmmdd-HHMMSS>_<reason>'. Split on the FIRST
+    underscore only -- a reason built from a category name can contain its own
+    underscores, and the timestamp never does."""
+    stamp, _, reason = path.name.partition("_")
+    return stamp, reason
+
+
+def backup_label(path: Path) -> str:
+    """Human-readable time for a backup folder, falling back to the raw folder
+    name if it doesn't parse -- a hand-made or renamed folder in backups/ should
+    still be listed rather than crashing the Settings tab."""
+    stamp, _ = _split_backup_name(path)
+    try:
+        return datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return path.name
+
+
+def backup_reason(path: Path) -> str:
+    """What triggered the backup. The collision suffix ('-2' when two backups
+    land in the same second) is an implementation detail, not something the
+    reader needs, so it's trimmed off."""
+    _, reason = _split_backup_name(path)
+    if not reason:
+        return "—"
+    head, sep, tail = reason.rpartition("-")
+    return head if sep and tail.isdigit() else reason
+
+
+def format_bytes(size: int | None) -> str:
+    """Backup sizes span kilobytes (an empty taxonomy) to hundreds of megabytes
+    (years of transactions), so a fixed unit would be unreadable at one end or
+    the other."""
+    if not size:
+        return "—"
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def backup_coverage(manifest: dict) -> str:
+    """The date span the backup's transactions cover -- the quickest way to tell
+    whether a given backup predates the data you're trying to get back."""
+    earliest, latest = manifest.get("earliest"), manifest.get("latest")
+    if not earliest or not latest:
+        return "—"
+    return earliest if earliest == latest else f"{earliest} → {latest}"
 
 
 def role_breakdown(df: pd.DataFrame, roles: tuple, group_col: str, by_month: bool = False,

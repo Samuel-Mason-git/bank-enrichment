@@ -1,9 +1,12 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from dashboard_helpers import (
     FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
-    sanitize_classification_edit, role_breakdown,
+    sanitize_classification_edit, role_breakdown, merchant_display_name,
+    backup_label, backup_reason, backup_coverage, format_bytes,
 )
 
 
@@ -32,6 +35,38 @@ class TestPctDelta:
 
     def test_rounds_to_one_decimal(self):
         assert pct_delta(100, 97) == pytest.approx(3.1)
+
+
+class TestMerchantDisplayName:
+    def test_prefers_merchant_name(self):
+        df = pd.DataFrame({"merchant_name": ["Tesco"], "counterparty_name": ["TESCO PLC"]})
+        assert merchant_display_name(df).tolist() == ["Tesco"]
+
+    def test_falls_back_to_counterparty_when_merchant_null(self):
+        df = pd.DataFrame({"merchant_name": [None], "counterparty_name": ["Landlord"]})
+        assert merchant_display_name(df).tolist() == ["Landlord"]
+
+    def test_falls_back_to_counterparty_when_merchant_empty_string(self):
+        """Monzo sends merchant_name='' (not NULL) for many direct debits and
+        bank transfers -- fillna() alone leaves the empty string in place, which
+        silently drops those rows out of every merchant-based grouping."""
+        df = pd.DataFrame({"merchant_name": [""], "counterparty_name": ["Landlord"]})
+        assert merchant_display_name(df).tolist() == ["Landlord"]
+
+    def test_null_when_neither_is_present(self):
+        df = pd.DataFrame({"merchant_name": [""], "counterparty_name": [None]})
+        assert merchant_display_name(df).isna().tolist() == [True]
+
+    def test_works_without_counterparty_column(self):
+        """Some callers pass a slimmed-down frame with no counterparty_name."""
+        df = pd.DataFrame({"merchant_name": ["Tesco", ""]})
+        result = merchant_display_name(df)
+        assert result.tolist()[0] == "Tesco"
+        assert pd.isna(result.tolist()[1])
+
+    def test_empty_frame_does_not_raise(self):
+        df = pd.DataFrame({"merchant_name": [], "counterparty_name": []})
+        assert merchant_display_name(df).tolist() == []
 
 
 class TestDetectSubscriptions:
@@ -307,3 +342,65 @@ class TestSanitizeClassificationEdit:
 
     def test_both_empty_stays_empty(self):
         assert sanitize_classification_edit("", "") == (None, None)
+
+
+class TestBackupNameFormatting:
+    def test_label_is_a_readable_timestamp(self):
+        assert backup_label(Path("/b/20260813-214233_manual")) == "2026-08-13 21:42"
+
+    def test_label_falls_back_to_the_folder_name_when_unparseable(self):
+        """A hand-made or renamed folder in backups/ should still be listed
+        rather than taking down the Settings tab."""
+        assert backup_label(Path("/b/my-own-copy")) == "my-own-copy"
+
+    def test_reason_is_extracted(self):
+        assert backup_reason(Path("/b/20260813-214233_wipe-taxonomy")) == "wipe-taxonomy"
+
+    def test_reason_keeps_underscores_from_the_category_name(self):
+        """Only the first underscore separates stamp from reason -- a category
+        name may contain its own."""
+        assert backup_reason(Path("/b/20260813-214233_delete-parent-Bills_Utils")) == \
+            "delete-parent-Bills_Utils"
+
+    def test_same_second_collision_suffix_is_hidden(self):
+        assert backup_reason(Path("/b/20260813-214233_wipe-labels-2")) == "wipe-labels"
+
+    def test_trailing_digits_that_are_part_of_the_name_are_kept(self):
+        assert backup_reason(Path("/b/20260813-214233_manual")) == "manual"
+
+    def test_missing_reason_shows_a_dash(self):
+        assert backup_reason(Path("/b/20260813-214233")) == "—"
+
+
+class TestFormatBytes:
+    def test_bytes_have_no_decimal(self):
+        assert format_bytes(512) == "512 B"
+
+    def test_scales_to_kilobytes(self):
+        assert format_bytes(2048) == "2.0 KB"
+
+    def test_scales_to_megabytes(self):
+        assert format_bytes(5 * 1024 * 1024) == "5.0 MB"
+
+    def test_scales_to_gigabytes(self):
+        assert format_bytes(3 * 1024 ** 3) == "3.0 GB"
+
+    def test_zero_and_none_show_a_dash(self):
+        assert format_bytes(0) == "—"
+        assert format_bytes(None) == "—"
+
+
+class TestBackupCoverage:
+    def test_renders_a_range(self):
+        assert backup_coverage({"earliest": "2025-01-01", "latest": "2026-08-13"}) == \
+            "2025-01-01 → 2026-08-13"
+
+    def test_single_day_is_not_shown_as_a_range(self):
+        assert backup_coverage({"earliest": "2026-08-13", "latest": "2026-08-13"}) == "2026-08-13"
+
+    def test_empty_manifest_shows_a_dash(self):
+        """A backup taken before manifests existed still has to render."""
+        assert backup_coverage({}) == "—"
+
+    def test_backup_of_an_empty_database_shows_a_dash(self):
+        assert backup_coverage({"earliest": None, "latest": None}) == "—"

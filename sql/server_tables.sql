@@ -36,6 +36,29 @@ CREATE TABLE IF NOT EXISTS rules (
     auto_skip     BOOLEAN      DEFAULT FALSE
 );
 
+-- Taxonomy proposals pushed up from the local pipeline, awaiting an Approve or
+-- Deny tap in Telegram. The server never applies anything itself -- it only
+-- records the decision, which the local pipeline collects on its next run.
+-- local_id is the id in the LOCAL database, which is what decisions key on.
+CREATE TABLE IF NOT EXISTS taxonomy_proposals (
+    local_id       INTEGER      PRIMARY KEY,
+    parent_name    VARCHAR(255) NOT NULL,
+    source_sub     VARCHAR(255) NOT NULL,
+    action         VARCHAR(10)  NOT NULL DEFAULT 'create'
+        CHECK (action IN ('create', 'move')),
+    target_parent  VARCHAR(255) NOT NULL DEFAULT '',
+    proposed_sub   VARCHAR(255) NOT NULL,
+    rationale      TEXT         NOT NULL,
+    evidence_count INTEGER      NOT NULL DEFAULT 0,
+    examples       TEXT,
+    status         VARCHAR(20)  NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied', 'collected')),
+    sent_at        TIMESTAMP    NOT NULL,
+    decided_at     TIMESTAMP,
+    follow_up_count INTEGER     DEFAULT 0,
+    last_nudged_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS quick_categories (
     id            INTEGER      PRIMARY KEY,
     category      VARCHAR(255) NOT NULL,

@@ -201,6 +201,20 @@ class QuickCategoryEntry(BaseModel):
 class SyncQuickCategoriesRequest(BaseModel):
     entries: list[QuickCategoryEntry]
 
+class TaxonomyProposalEntry(BaseModel):
+    id: int                      # the id in the LOCAL database
+    parent_name: str
+    source_sub: str
+    action: str = "create"       # 'create' a new subcategory, or 'move' into one
+    target_parent: str = ""
+    proposed_sub: str
+    rationale: str
+    evidence_count: int = 0
+    examples: list[str] = []
+
+class SyncTaxonomyProposalsRequest(BaseModel):
+    proposals: list[TaxonomyProposalEntry]
+
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     body = await request.body()
@@ -321,6 +335,46 @@ async def recieve_telegram(request: Request):
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
             bot.send_message(chat_id, "⏭ Skipped.")
+
+        elif cq.data and cq.data.startswith("taxprop:"):
+            # The server only records the decision. Creating the category and
+            # moving transactions happens locally, on the next pipeline run,
+            # because the taxonomy and the transactions live in the local DB.
+            _, decision, local_id = cq.data.split(":", 2)
+            try:
+                con = get_con()
+                row = con.execute(
+                    "SELECT proposed_sub, status FROM taxonomy_proposals WHERE local_id = ?",
+                    [int(local_id)]
+                ).fetchone()
+                if not row:
+                    bot.send_message(chat_id, "That suggestion has expired.")
+                    return {"ok": True}
+                proposed_sub, current = row
+                if current != "pending":
+                    bot.send_message(chat_id, f"Already {current}: <b>{proposed_sub}</b>")
+                    return {"ok": True}
+                con.execute(
+                    "UPDATE taxonomy_proposals SET status = ?, decided_at = ? WHERE local_id = ?",
+                    ["approved" if decision == "approve" else "denied",
+                     time.strftime("%Y-%m-%d %H:%M:%S"), int(local_id)]
+                )
+            except Exception as e:
+                log.error(f"Failed to record taxonomy decision {local_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            if decision == "approve":
+                bot.send_message(
+                    chat_id,
+                    f"✅ Approved <b>{proposed_sub}</b>.\n\n"
+                    "It'll be created and the listed transactions moved on the next daily run."
+                )
+            else:
+                bot.send_message(
+                    chat_id,
+                    f"❌ Denied <b>{proposed_sub}</b>. Nothing changed, and it won't be suggested again."
+                )
+            log.info(f"Taxonomy proposal {local_id} ({proposed_sub}) {decision}d via Telegram")
 
         elif cq.data and cq.data.startswith("quickcat:"):
             _, transaction_id, quick_id = cq.data.split(":", 2)
@@ -857,6 +911,68 @@ async def sync_quick_categories(body: SyncQuickCategoriesRequest, api_key: str =
         )
     log.info(f"Synced {len(body.entries)} quick categories")
     return {"synced": len(body.entries)}
+
+
+@app.post('/sync-taxonomy-proposals')
+async def sync_taxonomy_proposals(body: SyncTaxonomyProposalsRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Store the month's proposals and send the cards. Existing undecided
+    proposals are cleared first: the local side only sends a batch once per
+    month, so anything still pending has been superseded by this run."""
+    await verify_api_key(api_key)
+    con = get_con()
+    con.execute("DELETE FROM taxonomy_proposals WHERE status = 'pending'")
+    stored = []
+    for p in body.proposals:
+        con.execute(
+            """INSERT INTO taxonomy_proposals
+               (local_id, parent_name, source_sub, action, target_parent,
+                proposed_sub, rationale, evidence_count, examples, status, sent_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+               ON CONFLICT (local_id) DO NOTHING""",
+            [p.id, p.parent_name, p.source_sub, p.action, p.target_parent,
+             p.proposed_sub, p.rationale, p.evidence_count,
+             json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        stored.append(p)
+
+    if stored:
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+        bot.send_taxonomy_intro(chat_id, len(stored))
+        for p in stored:
+            bot.send_taxonomy_proposal(chat_id, {
+                "local_id": p.id, "parent_name": p.parent_name,
+                "source_sub": p.source_sub, "action": p.action,
+                "target_parent": p.target_parent, "proposed_sub": p.proposed_sub,
+                "rationale": p.rationale, "evidence_count": p.evidence_count,
+                "examples": p.examples,
+            })
+    log.info(f"Received {len(stored)} taxonomy proposal(s) and sent cards")
+    return {"received": len(stored)}
+
+
+@app.get('/taxonomy-decisions')
+async def taxonomy_decisions(api_key: str = Security(API_KEY_HEADER)):
+    """Decisions the local pipeline hasn't collected yet. Marked 'collected'
+    only once the local side confirms via /taxonomy-decisions/collected, so a
+    failed local run doesn't lose an approval."""
+    await verify_api_key(api_key)
+    rows = get_con().execute(
+        """SELECT local_id, proposed_sub, status FROM taxonomy_proposals
+           WHERE status IN ('approved', 'denied') ORDER BY local_id"""
+    ).fetchall()
+    return {"decisions": [{"id": r[0], "proposed_sub": r[1], "status": r[2]} for r in rows]}
+
+
+@app.post('/taxonomy-decisions/collected')
+async def taxonomy_decisions_collected(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    con = get_con()
+    for local_id in body.ids:
+        con.execute(
+            "UPDATE taxonomy_proposals SET status = 'collected' WHERE local_id = ?",
+            [int(local_id)]
+        )
+    return {"collected": len(body.ids)}
 
 
 @app.post('/monthly-report')

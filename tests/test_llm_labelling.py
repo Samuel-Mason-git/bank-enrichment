@@ -1,8 +1,11 @@
+import json
 import pytest
 from unittest.mock import MagicMock
 
 from llm_labelling import (
     _format_transaction,
+    _payload_facts,
+    _warn_if_truncated,
     _extract_json,
     _pass0_prompt,
     _pass1_prompt,
@@ -201,3 +204,143 @@ class TestClassifySubcategories:
         client.messages.create.side_effect = Exception("timeout")
         result = classify_subcategories(client, [_txn()], "Food & Drink", [], [])
         assert result == {}
+
+
+def _payload_txn(merchant=None, currency="GBP", local_currency="GBP", local_amount=-500, **kw):
+    data = {"currency": currency, "local_currency": local_currency, "local_amount": local_amount}
+    if merchant is not None:
+        data["merchant"] = merchant
+    return {"id": "tx_p", "amount": -5.0, "raw_payload": json.dumps({"data": data}), **kw}
+
+
+class TestPayloadFacts:
+    def test_in_person_purchase_reports_where_the_user_was(self):
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": False, "atm": False,
+                      "address": {"city": "Malaga", "country": "ESP"}}))
+        assert "Purchased in person in: Malaga, ESP" in facts
+
+    def test_online_purchase_never_reports_a_location(self):
+        """The address on an online merchant is its registered office. Reporting
+        it would turn a subscription billed from San Francisco into a trip to
+        California -- the exact false positive this data is meant to prevent."""
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": True, "atm": False,
+                      "address": {"city": "San Francisco", "country": "USA"}}))
+        assert not any("San Francisco" in f or "USA" in f for f in facts)
+        assert any("online purchase" in f for f in facts)
+
+    def test_atm_withdrawal_is_labelled(self):
+        facts = _payload_facts(_payload_txn(
+            merchant={"atm": True, "online": False, "address": {"city": "Leeds", "country": "GBR"}}))
+        assert "Type: ATM cash withdrawal" in facts
+
+    def test_foreign_currency_is_reported_with_the_local_amount(self):
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": False, "atm": False, "address": {"city": "Nerja", "country": "ESP"}},
+            local_currency="EUR", local_amount=-1300))
+        assert "Charged in EUR (13.00 EUR)" in facts
+
+    def test_home_currency_is_not_mentioned(self):
+        """Saying 'charged in GBP' on every domestic transaction would be noise."""
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": False, "atm": False, "address": {"city": "Leeds", "country": "GBR"}}))
+        assert not any("Charged in" in f for f in facts)
+
+    def test_transaction_with_no_merchant_still_reports_currency(self):
+        """Direct debits and transfers have no merchant block at all."""
+        facts = _payload_facts(_payload_txn(local_currency="EUR", local_amount=-2000))
+        assert facts == ["Charged in EUR (20.00 EUR)"]
+
+    def test_missing_payload_yields_nothing(self):
+        assert _payload_facts({"id": "tx_1", "amount": -5.0}) == []
+
+    def test_unparseable_payload_yields_nothing_rather_than_raising(self):
+        """A bad payload must cost the prompt some detail, never abort a batch."""
+        assert _payload_facts({"raw_payload": "{not json"}) == []
+        assert _payload_facts({"raw_payload": 12345}) == []
+
+    def test_payload_without_a_data_block_yields_nothing(self):
+        assert _payload_facts({"raw_payload": json.dumps({"type": "transaction"})}) == []
+
+    def test_facts_reach_the_formatted_transaction(self):
+        line = _format_transaction(_payload_txn(
+            merchant={"online": False, "atm": False, "address": {"city": "Malaga", "country": "ESP"}},
+            local_currency="EUR", local_amount=-1300))
+        assert "Purchased in person in: Malaga, ESP" in line
+        assert "Charged in EUR" in line
+
+
+class TestTruncationWarning:
+    class _Resp:
+        def __init__(self, stop_reason):
+            self.stop_reason = stop_reason
+
+    def test_warns_when_the_response_was_cut_off(self, caplog):
+        """A truncated reply is indistinguishable from a malformed one once it
+        reaches _extract_json, but the fix is different -- so it has to be named."""
+        with caplog.at_level("ERROR"):
+            _warn_if_truncated(self._Resp("max_tokens"), "Pass 0", 15)
+        assert "truncated" in caplog.text
+        assert "15 transactions" in caplog.text
+
+    def test_silent_on_a_normal_response(self, caplog):
+        with caplog.at_level("ERROR"):
+            _warn_if_truncated(self._Resp("end_turn"), "Pass 0", 15)
+        assert caplog.text == ""
+
+    def test_tolerates_a_response_without_a_stop_reason(self, caplog):
+        with caplog.at_level("ERROR"):
+            _warn_if_truncated(object(), "Pass 0", 15)
+        assert caplog.text == ""
+
+
+class TestMerchantTags:
+    def test_tags_are_included_and_subordinated_to_the_context(self):
+        """The framing here is load-bearing, not cosmetic. Measured against real
+        transactions, a softer wording ("a hint not a category") let the tags
+        override the user outright: `Coffee` at McDonald's was classified
+        Takeaway and `Coffee` at Greggs became Snacks, because those merchants
+        are tagged that way. Telling the model to ignore the tags outright when
+        the context says what was bought removed every one of those regressions."""
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": False, "atm": False, "suggested_tags": "#food #takeaway",
+                      "address": {"city": "Leeds", "country": "GBR"}}))
+        tag_fact = next(f for f in facts if "#takeaway" in f)
+        assert "#food #takeaway" in tag_fact
+        assert "NOT what was bought" in tag_fact
+        assert "ignore entirely when the context says what it was" in tag_fact
+
+    def test_no_tag_line_when_the_merchant_has_none(self):
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": False, "atm": False,
+                      "address": {"city": "Leeds", "country": "GBR"}}))
+        assert not any("product range" in f for f in facts)
+
+    def test_tags_survive_on_online_purchases(self):
+        """Location is suppressed for online merchants, but what they sell is
+        still true and useful."""
+        facts = _payload_facts(_payload_txn(
+            merchant={"online": True, "atm": False, "suggested_tags": "#shopping",
+                      "address": {"city": "San Francisco", "country": "USA"}}))
+        assert any("#shopping" in f for f in facts)
+        assert not any("San Francisco" in f for f in facts)
+
+
+class TestCounterparty:
+    def test_counterparty_is_included(self):
+        """Direct debits carry the real payee here, not in merchant_name."""
+        line = _format_transaction({
+            "id": "tx_dd", "amount": -45.0, "merchant_name": None,
+            "counterparty_name": "OCTOPUS ENERGY", "description": "89GJTS7"})
+        assert "Counterparty: OCTOPUS ENERGY" in line
+
+    def test_omitted_when_absent(self):
+        line = _format_transaction({"id": "tx_1", "amount": -5.0, "merchant_name": "Tesco"})
+        assert "Counterparty" not in line
+
+    def test_shown_alongside_merchant_when_both_exist(self):
+        line = _format_transaction({
+            "id": "tx_1", "amount": -5.0, "merchant_name": "Tesco",
+            "counterparty_name": "TESCO STORES"})
+        assert "Merchant: Tesco" in line and "Counterparty: TESCO STORES" in line

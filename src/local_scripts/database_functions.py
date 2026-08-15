@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -512,6 +513,135 @@ def toggle_subscription(sub_id: int) -> None:
 
 def delete_subscription(sub_id: int) -> None:
     get_con().execute("DELETE FROM subscriptions WHERE id = ?", [sub_id])
+
+
+# ── Backups ───────────────────────────────────────────────────────────────────
+
+BACKUPS_KEPT = 10
+MANIFEST_NAME = "manifest.json"
+
+
+def backup_dir() -> Path:
+    """backups/ sits alongside the database file, so a backup travels with the
+    data it protects rather than living next to the code."""
+    return Path(DB_PATH).parent / "backups"
+
+
+def list_backups() -> list[Path]:
+    """Newest first. Names sort chronologically, so no stat() call is needed."""
+    root = backup_dir()
+    if not root.is_dir():
+        return []
+    return sorted((p for p in root.iterdir() if p.is_dir()), reverse=True)
+
+
+def backup_db(reason: str = "manual") -> Path:
+    """Snapshot the whole database into backups/<timestamp>_<reason>/ before
+    something irreversible happens, keeping the most recent BACKUPS_KEPT.
+
+    EXPORT DATABASE rather than copying the .db file: the file is open and may
+    have un-checkpointed changes sitting in its WAL, so a copy taken mid-session
+    is not guaranteed to be a consistent database. The export is a logical dump
+    (schema.sql + load.sql + one Parquet file per table) restorable with
+    IMPORT DATABASE, and it stays readable even if the .db format changes
+    between DuckDB versions."""
+    con = get_con()
+    # ':' is not a legal filename character on Windows, so this is a flattened
+    # timestamp rather than an ISO one.
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    safe_reason = "".join(c if c.isalnum() or c in "-_" else "-" for c in reason)[:40]
+    target = backup_dir() / f"{stamp}_{safe_reason}"
+    # Two destructive actions inside the same second would otherwise export into
+    # a directory that already holds another backup's files.
+    suffix = 1
+    while target.exists():
+        suffix += 1
+        target = backup_dir() / f"{stamp}_{safe_reason}-{suffix}"
+    target.mkdir(parents=True)
+    # DuckDB parses this path itself, so the quotes have to be escaped rather
+    # than passed as a bind parameter (EXPORT DATABASE takes no parameters).
+    con.execute(f"EXPORT DATABASE '{str(target).replace(chr(39), chr(39) * 2)}' (FORMAT PARQUET)")
+    _write_manifest(target, reason)
+    log.info(f"Backed up database to {target}")
+    _prune_backups()
+    return target
+
+
+def _write_manifest(target: Path, reason: str) -> None:
+    """Record what the backup actually contains, so the Settings tab can say
+    'this one holds 1,240 transactions covering 2025-01 to 2026-08' without
+    opening every Parquet file to count. Written after the export so the counts
+    describe exactly what was captured.
+
+    A manifest that fails to write must not fail the backup -- the exported
+    data is the thing that matters, and a missing manifest only costs the
+    listing some detail."""
+    con = get_con()
+    try:
+        row = con.execute("""
+            SELECT COUNT(*),
+                   COUNT(llm_category),
+                   MIN(created_at),
+                   MAX(created_at)
+            FROM transactions
+        """).fetchone()
+        manifest = {
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "reason": reason,
+            "transactions": row[0],
+            "classified": row[1],
+            "earliest": str(row[2])[:10] if row[2] else None,
+            "latest": str(row[3])[:10] if row[3] else None,
+            "parent_categories": con.execute("SELECT COUNT(*) FROM parent_categories").fetchone()[0],
+            "subcategories": con.execute("SELECT COUNT(*) FROM subcategories").fetchone()[0],
+            "subscriptions": con.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0],
+        }
+        (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+    except Exception as e:
+        log.warning(f"Could not write backup manifest for {target}: {e}")
+
+
+def read_backup_manifest(path: Path) -> dict:
+    """Empty dict for a backup taken before manifests existed, or a folder a
+    human dropped into backups/ by hand -- both should still list, just without
+    the detail."""
+    try:
+        return json.loads((path / MANIFEST_NAME).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def backup_size_bytes(path: Path) -> int:
+    """Total size of the export on disk. Walks the tree rather than listing one
+    level, since EXPORT DATABASE is free to nest its data files."""
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def delete_backup(path: Path | str) -> None:
+    """Delete one backup folder.
+
+    This ends in rmtree() on a path that arrives from a UI control, so the
+    target is resolved and checked to be a direct child of backups/ first --
+    anything else (a symlink out, a traversal, the database directory itself)
+    is refused rather than deleted."""
+    target = Path(path).resolve()
+    root = backup_dir().resolve()
+    if not target.is_dir() or target.parent != root:
+        raise ValueError(f"Refusing to delete {path}: not a backup folder inside {root}")
+    shutil.rmtree(target)
+    log.info(f"Deleted backup {target}")
+
+
+def _prune_backups() -> None:
+    """Keep only the newest BACKUPS_KEPT backups. Failing to delete an old one
+    must never take down the action that triggered the backup -- a stale backup
+    left on disk is harmless, a crashed wipe is not."""
+    for old in list_backups()[BACKUPS_KEPT:]:
+        try:
+            shutil.rmtree(old)
+            log.info(f"Pruned old backup {old}")
+        except OSError as e:
+            log.warning(f"Could not prune old backup {old}: {e}")
 
 
 def clear_db() -> None:
