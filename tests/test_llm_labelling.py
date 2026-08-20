@@ -128,8 +128,26 @@ class TestPass1Prompt:
 
     def test_denied_parent_names_are_listed_and_forbidden(self):
         prompt = _pass1_prompt([_txn()], [], denied_parent_names={"Tax"})
-        assert "already declined creating these category names" in prompt
+        assert "already declined creating these exact category names" in prompt
         assert "Tax" in prompt
+
+    def test_denial_does_not_nudge_toward_an_existing_category(self):
+        """Regression test: rejecting a proposed new name is not evidence an
+        existing category is the right answer -- the retry must judge the fit
+        on its own merits, not be pushed toward "existing" just because a new
+        idea was declined."""
+        prompt = _pass1_prompt([_txn()], [], denied_parent_names={"Tax"})
+        assert "NOT a signal to prefer an existing category" in prompt
+        assert "Prefer an existing category" not in prompt
+
+    def test_new_parent_guidance_is_neutral_not_penalising(self):
+        """Regression test: the old wording ("exhaust existing options first")
+        read as a soft penalty against ever proposing a new parent, which is
+        how a tax payment ended up nested under "Professional Services"
+        instead of getting its own "Tax" parent."""
+        prompt = _pass1_prompt([_txn()], [{"name": "Professional Services", "transaction_count": 3}])
+        assert "NOT a worse answer than a stretch-fit" in prompt
+        assert "exhaust existing options first" not in prompt
 
 
 class TestPass2Prompt:
@@ -157,8 +175,13 @@ class TestPass2Prompt:
 
     def test_denied_sub_names_are_listed_and_forbidden(self):
         prompt = _pass2_prompt([_txn()], "Food & Drink", [], ["Food & Drink"], denied_sub_names={"Self Assessment"})
-        assert "already declined creating these subcategory names" in prompt
+        assert "already declined creating these exact subcategory names" in prompt
         assert "Self Assessment" in prompt
+
+    def test_denial_does_not_nudge_toward_an_existing_subcategory(self):
+        prompt = _pass2_prompt([_txn()], "Food & Drink", [], ["Food & Drink"], denied_sub_names={"Self Assessment"})
+        assert "NOT a signal to prefer an existing subcategory" in prompt
+        assert "Prefer an existing subcategory" not in prompt
 
 
 class TestMatchExisting:
@@ -359,9 +382,10 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
     got silently filed under an existing, unrelated category because nothing
     stopped Pass 1/2 from treating "close enough" as good enough. Now a
     genuinely new (parent, subcategory) pair is held for a Telegram decision
-    instead of being created on the spot."""
+    -- offering up to a few candidate placements -- instead of being created
+    on the spot."""
 
-    def _stub_llm(self, monkeypatch, parent_by_id, subcategory_by_id):
+    def _stub_llm(self, monkeypatch, parent_by_id, subcategory_by_id, alternatives=None):
         monkeypatch.setattr(ll, "match_existing", lambda client, txns, subs: {})
         monkeypatch.setattr(
             ll, "classify_parents",
@@ -374,6 +398,10 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
             lambda client, txns, parent_name, subs, all_parent_names, denied_sub_names=None: {
                 t["id"]: subcategory_by_id[t["id"]] for t in txns
             },
+        )
+        monkeypatch.setattr(
+            ll, "propose_alternatives",
+            lambda client, groups, parents, subcategories: (alternatives or {}),
         )
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
 
@@ -392,6 +420,11 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
             """INSERT INTO transactions (id, amount, currency, description, user_context, skipped)
                VALUES ('txn_tax', -3000.0, 'GBP', 'HMRC', 'Self assessment tax payment', FALSE)"""
         )
+
+    def _options(self, db, proposal_id):
+        import json
+        row = db.execute("SELECT options FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
+        return json.loads(row[0])
 
     def test_a_new_category_is_held_not_created(self, db, monkeypatch):
         self._seed(db)
@@ -419,11 +452,13 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         assert db.execute("SELECT COUNT(*) FROM parent_categories WHERE name = 'Tax'").fetchone()[0] == 0, \
             "the new category must not exist until approved"
 
-        proposal = db.execute(
-            "SELECT parent_name, parent_is_new, subcategory_name, status FROM category_proposals WHERE id = ?",
-            [tax[2]],
-        ).fetchone()
-        assert proposal == ("Tax", True, "Self Assessment", "pending")
+        status = db.execute("SELECT status FROM category_proposals WHERE id = ?", [tax[2]]).fetchone()[0]
+        assert status == "pending"
+        options = self._options(db, tax[2])
+        assert options == [{
+            "parent_name": "Tax", "subcategory_name": "Self Assessment",
+            "parent_is_new": True, "rationale": "Best fit based on the transaction details.",
+        }]
         assert synced == [tax[2]]
 
     def test_a_new_subcategory_under_an_existing_parent_is_also_held(self, db, monkeypatch):
@@ -444,10 +479,68 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
             "SELECT llm_category, pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
         ).fetchone()
         assert tax[0] is None and tax[1] is not None
-        proposal = db.execute(
-            "SELECT parent_name, parent_is_new, subcategory_name FROM category_proposals WHERE id = ?", [tax[1]]
-        ).fetchone()
-        assert proposal == ("Bills & Utilities", False, "Council Tax")
+        options = self._options(db, tax[1])
+        assert options == [{
+            "parent_name": "Bills & Utilities", "subcategory_name": "Council Tax",
+            "parent_is_new": False, "rationale": "Best fit based on the transaction details.",
+        }]
+
+    def test_alternatives_are_added_after_the_primary_pick(self, db, monkeypatch):
+        """The whole point of the multi-option card: a stretch-fit into an
+        existing parent and a genuinely new parent can both be offered, so the
+        user decides instead of the classifier committing to one guess."""
+        self._seed(db)
+        self._stub_llm(
+            monkeypatch,
+            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
+            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
+            alternatives={0: [
+                {"parent_name": "Bills & Utilities", "subcategory_name": "Council Tax", "rationale": "Stretch-fit into an existing bucket."},
+            ]},
+        )
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
+
+        ll.run()
+
+        tax_lock = db.execute(
+            "SELECT pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
+        ).fetchone()[0]
+        options = self._options(db, tax_lock)
+        assert len(options) == 2
+        assert options[0]["parent_name"] == "Tax"
+        assert options[1] == {
+            "parent_name": "Bills & Utilities", "subcategory_name": "Council Tax",
+            # Bills & Utilities already exists in the seeded taxonomy, so this
+            # must be computed from the actual taxonomy, not trusted blindly.
+            "parent_is_new": False, "rationale": "Stretch-fit into an existing bucket.",
+        }
+
+    def test_alternatives_are_capped_at_max_options_and_deduped(self, db, monkeypatch):
+        self._seed(db)
+        self._stub_llm(
+            monkeypatch,
+            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
+            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
+            alternatives={0: [
+                {"parent_name": "Tax", "subcategory_name": "Self Assessment", "rationale": "Duplicate of the primary -- must be dropped."},
+                {"parent_name": "Bills & Utilities", "subcategory_name": "Council Tax", "rationale": "A real alternative."},
+                {"parent_name": "Miscellany", "subcategory_name": "One-offs", "rationale": "A second real alternative."},
+                {"parent_name": "Government", "subcategory_name": "Other Payments", "rationale": "A third real alternative -- past MAX_OPTIONS, must be dropped."},
+            ]},
+        )
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
+
+        ll.run()
+
+        tax_lock = db.execute(
+            "SELECT pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
+        ).fetchone()[0]
+        options = self._options(db, tax_lock)
+        assert len(options) == ll.MAX_OPTIONS
+        names = [(o["parent_name"], o["subcategory_name"]) for o in options]
+        assert names == [("Tax", "Self Assessment"), ("Bills & Utilities", "Council Tax"), ("Miscellany", "One-offs")]
 
     def test_server_not_yet_deployed_falls_back_to_immediate_creation(self, db, monkeypatch):
         """If the gate can't be enforced, the old behaviour must still work
@@ -469,10 +562,11 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0
 
     def test_a_denied_name_is_forbidden_on_the_retry_and_a_different_one_is_accepted(self, db, monkeypatch):
+        import json
         self._seed(db)
         db.execute(
-            """INSERT INTO category_proposals (id, parent_name, parent_is_new, subcategory_name, status, proposed_at)
-               VALUES (1, 'Tax', TRUE, 'Self Assessment', 'denied', NOW())"""
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+            [json.dumps([{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}])],
         )
         seen_denied_parents = []
 
@@ -488,6 +582,7 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
                 t["id"]: ("Electricity" if t["id"] == "txn_bill" else "One-off Payments") for t in txns
             },
         )
+        monkeypatch.setattr(ll, "propose_alternatives", lambda client, groups, parents, subcategories: {})
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
         monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
@@ -495,10 +590,11 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         ll.run()
 
         assert seen_denied_parents == [{"tax"}]
-        proposal = db.execute(
-            "SELECT parent_name, subcategory_name FROM category_proposals WHERE status = 'pending'"
+        row = db.execute(
+            "SELECT options FROM category_proposals WHERE status = 'pending'"
         ).fetchone()
-        assert proposal == ("Miscellaneous", "One-off Payments"), \
+        options = json.loads(row[0])
+        assert [(o["parent_name"], o["subcategory_name"]) for o in options] == [("Miscellaneous", "One-off Payments")], \
             "a different new name must still be proposed, not silently forced into an existing category"
 
 

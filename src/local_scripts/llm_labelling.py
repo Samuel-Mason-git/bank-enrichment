@@ -27,6 +27,11 @@ BATCH_SIZE = 15
 # full batch of 15 needs roughly 600-700 tokens; this leaves real headroom
 # for longer category names and larger batches.
 MAX_TOKENS = 4096
+# Cap on candidate placements offered per novel category proposal (the primary
+# pick plus up to this many alternatives) -- enough room for "new parent",
+# "stretch-fit into an existing one", and one more idea, without turning the
+# Telegram card into an unreadable wall of buttons.
+MAX_OPTIONS = 3
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "llm_classifier.log") if DB_PATH else "llm_classifier.log"
 
@@ -169,8 +174,10 @@ def _pass1_prompt(transactions: list[dict], parents: list[dict], denied_parent_n
     if denied_parent_names:
         names = ", ".join(sorted(denied_parent_names))
         denied_block = (
-            f"\nThe user already declined creating these category names — do not propose them again. "
-            f"Prefer an existing category if one genuinely fits, or a different new name if it truly doesn't: {names}\n"
+            f"\nThe user already declined creating these exact category names — do not propose them again. "
+            f"This is NOT a signal to prefer an existing category over a new one — rejecting an idea says nothing "
+            f"about whether an existing category is the right answer either. Judge the fit on its own merits and "
+            f"propose whatever genuinely fits best, new or existing, other than these: {names}\n"
         )
 
     txn_lines = "\n".join(
@@ -187,7 +194,7 @@ Instructions:
 - A holiday/travel category applies when the transaction is part of a trip away. Treat an in-person purchase in a foreign country as holiday spend unless the context says otherwise (a work trip, a relocation, someone living abroad) — the "Purchased in person in" line is reliable evidence of where the user actually was. An online purchase is NOT evidence of travel no matter which country the merchant is registered in, so never infer a trip from one. A flight, hotel, or Airbnb bought at home with no context does not automatically qualify, but context saying "holiday in Spain" or "weekend trip to Amsterdam" does. Regular commuting, local travel, and day-to-day transport belong in Transport.
 - Use the human context field as the primary signal — it tells you what the transaction actually was.
 - Prefer precision over speed: if a transaction could reasonably fit two categories, pick the one that best reflects its true purpose based on all available information.
-- You may create a new parent category if none of the existing ones are a good fit, but exhaust existing options first.
+- A transaction with a distinct, one-off purpose — a payment to a tax authority or other government body, a one-time legal or medical event, anything that doesn't genuinely belong to what an existing category already represents — deserves its own new parent category. A new parent is NOT a worse answer than a stretch-fit into a loosely-related existing one. Only prefer an existing parent when the transaction is a genuine match for what it already represents, not merely adjacent to it.
 - Output ONLY the raw JSON array. No analysis, no reasoning, no markdown. Just the JSON.
 - Example: [{{"id": "tx_abc", "category": "Eating Out"}}, ...]
 
@@ -210,8 +217,9 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
     if denied_sub_names:
         names = ", ".join(sorted(denied_sub_names))
         denied_block = (
-            f"\nThe user already declined creating these subcategory names — do not propose them again. "
-            f"Prefer an existing subcategory if one genuinely fits, or a different new name if it truly doesn't: {names}\n"
+            f"\nThe user already declined creating these exact subcategory names — do not propose them again. "
+            f"This is NOT a signal to prefer an existing subcategory over a new one — judge the fit on its own "
+            f"merits and propose whatever genuinely fits best, new or existing, other than these: {names}\n"
         )
 
     forbidden = ", ".join(f'"{n}"' for n in all_parent_names)
@@ -235,6 +243,44 @@ Instructions:
 
 Transactions:
 {txn_lines}"""
+
+
+def _pass3_prompt(groups: list[dict], parents: list[dict], subcategories: list[dict]) -> str:
+    subs_by_parent: dict[str, list[str]] = {}
+    for s in subcategories:
+        subs_by_parent.setdefault(s["parent_name"], []).append(s["name"])
+    taxonomy_lines = [
+        f"  {p['name']}: {', '.join(sorted(subs_by_parent.get(p['name'], []))) or '(no subcategories yet)'}"
+        for p in parents
+    ]
+    taxonomy_block = "\n".join(taxonomy_lines) or "  (no categories exist yet)"
+
+    group_blocks = []
+    for g in groups:
+        first_choice = (
+            f'{"NEW parent" if g["primary_is_new_parent"] else "existing parent"} "{g["primary_parent"]}" '
+            f'> new subcategory "{g["primary_sub"]}"'
+        )
+        examples = "\n".join(f"    - {e}" for e in g["examples"]) or "    (no examples)"
+        group_blocks.append(
+            f'Group {g["index"]}:\n  First choice: {first_choice}\n  Example transactions:\n{examples}'
+        )
+    groups_block = "\n\n".join(group_blocks)
+
+    return f"""You previously gave a first-choice category placement to some transactions that didn't cleanly fit anything in the existing taxonomy. Your job now is to suggest, for each group below, up to 2 genuinely DIFFERENT alternative placements the user could pick instead of the first choice.
+
+Existing taxonomy:
+{taxonomy_block}
+
+{groups_block}
+
+Instructions:
+- An alternative must be a real, distinct idea — not a reworded version of the first choice, and not a trivial rename of it.
+- Returning no alternatives for a group is correct and expected when the first choice is clearly the only sensible placement. Do not invent one just to fill space.
+- An alternative may reuse an existing parent/subcategory from the taxonomy above (a stretch-fit you weren't confident enough to match automatically), or propose a different new category entirely.
+- Give each alternative a one-sentence rationale a person can read on their phone and immediately understand.
+- Respond ONLY with valid JSON: an array of {{"group": <index>, "alternatives": [{{"parent_name": ..., "subcategory_name": ..., "rationale": ...}}, ...]}}. Use an empty "alternatives" list when there is nothing genuinely different to offer.
+- Output ONLY the raw JSON array. No analysis, no markdown."""
 
 
 # ── LLM calls ─────────────────────────────────────────────────────────────────
@@ -330,6 +376,30 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
         return {r["id"]: r["subcategory"] for r in results}
     except Exception as e:
         log.error(f"Pass 2 LLM error for '{parent_name}': {e}")
+        return {}
+
+
+def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parents: list[dict], subcategories: list[dict]) -> dict[int, list[dict]]:
+    """Returns {group_index: [{"parent_name", "subcategory_name", "rationale"}, ...]} --
+    empty for a group the model found nothing genuinely different to offer."""
+    if not groups:
+        return {}
+    prompt = _pass3_prompt(groups, parents, subcategories)
+    log.info(f"Pass 3: proposing alternatives for {len(groups)} novel group(s)")
+    log.debug(f"Pass 3 prompt:\n{prompt}")
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        _warn_if_truncated(response, "Pass 3", len(groups))
+        raw = response.content[0].text.strip()
+        log.debug(f"Pass 3 response:\n{raw}")
+        results = _extract_json(raw)
+        return {r["group"]: r.get("alternatives") or [] for r in results}
+    except Exception as e:
+        log.error(f"Pass 3 LLM error: {e}")
         return {}
 
 
@@ -482,13 +552,57 @@ def run():
             total_classified += 1
             log.info(f"  [P1+2] {txn_id} -> {p_name} / {s_name or '—'}")
 
-        for (p_name, s_name), txn_ids in novel_groups.items():
-            proposal_id, is_new = category_proposals.register_group(
-                p_name, novel_group_is_new_parent[(p_name, s_name)], s_name, txn_ids
-            )
-            if is_new:
-                new_proposal_ids.append(proposal_id)
-            log.info(f"  [HOLD] {len(txn_ids)} transaction(s) awaiting approval for '{p_name} / {s_name}'")
+        # ── Pass 3: propose a few alternative placements for each novel group ──
+        if novel_groups:
+            group_keys = list(novel_groups.keys())
+            batch_by_id = {t["id"]: t for t in batch}
+            alt_groups = [
+                {
+                    "index": i,
+                    "primary_parent": p_name,
+                    "primary_sub": s_name,
+                    "primary_is_new_parent": novel_group_is_new_parent[(p_name, s_name)],
+                    "examples": [
+                        _format_transaction(batch_by_id[tid]) for tid in novel_groups[(p_name, s_name)][:3]
+                    ],
+                }
+                for i, (p_name, s_name) in enumerate(group_keys)
+            ]
+            t0 = time.time()
+            alternatives_by_index = propose_alternatives(client, alt_groups, parents, subcategories)
+            log.info(f"Pass 3 complete ({time.time() - t0:.2f}s)")
+
+            for i, (p_name, s_name) in enumerate(group_keys):
+                txn_ids = novel_groups[(p_name, s_name)]
+                options = [{
+                    "parent_name": p_name,
+                    "subcategory_name": s_name,
+                    "parent_is_new": novel_group_is_new_parent[(p_name, s_name)],
+                    "rationale": "Best fit based on the transaction details.",
+                }]
+                seen = {(p_name.strip().lower(), s_name.strip().lower())}
+                for alt in alternatives_by_index.get(i, []):
+                    alt_p, alt_s = alt.get("parent_name"), alt.get("subcategory_name")
+                    if not alt_p or not alt_s or len(options) >= MAX_OPTIONS:
+                        continue
+                    key = (alt_p.strip().lower(), alt_s.strip().lower())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    options.append({
+                        "parent_name": alt_p,
+                        "subcategory_name": alt_s,
+                        "parent_is_new": alt_p.strip().lower() not in existing_parent_names,
+                        "rationale": alt.get("rationale") or "An alternative placement.",
+                    })
+
+                proposal_id, is_new = category_proposals.register_group(options, txn_ids)
+                if is_new:
+                    new_proposal_ids.append(proposal_id)
+                log.info(
+                    f"  [HOLD] {len(txn_ids)} transaction(s) awaiting approval — "
+                    f"{len(options)} option(s), primary '{p_name} / {s_name}'"
+                )
 
     if new_proposal_ids:
         try:

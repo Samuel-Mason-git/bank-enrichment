@@ -150,11 +150,41 @@ def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
     return added
 
 
+def _migrate_category_proposals_to_multi_option(con) -> None:
+    """One-off exception to "additive only": category_proposals moved from a
+    single (parent, subcategory) guess per row to a JSON `options` list of a
+    few candidates. Unlike every other table here, this one has no real
+    financial data and (checked below) no undecided proposal to lose -- it's
+    just today's design still settling -- so a guarded drop and recreate is
+    safe where it would never be for transactions or subscriptions.
+
+    Guarded on the old shape still being present (idempotent -- a no-op on
+    every run after the first) and on there being no 'pending' row (refuses
+    to touch a proposal someone hasn't answered yet, rather than losing it)."""
+    if "parent_name" not in _columns(con, "category_proposals"):
+        return  # already migrated, or a fresh DB that got the new shape from tables.sql directly
+    pending = con.execute("SELECT COUNT(*) FROM category_proposals WHERE status = 'pending'").fetchone()[0]
+    if pending:
+        log.warning(
+            f"category_proposals still has {pending} pending proposal(s) in the old shape -- "
+            "skipping the multi-option migration until they're resolved"
+        )
+        return
+    con.execute("DROP TABLE category_proposals")
+    sql_path = Path(__file__).parent.parent.parent / "sql" / "tables.sql"
+    for statement in split_sql_statements(sql_path.read_text()):
+        if "CREATE TABLE IF NOT EXISTS category_proposals" in statement:
+            con.execute(statement)
+            break
+    log.info("Recreated category_proposals with the multi-option shape")
+
+
 def _migrate() -> None:
     """Additive schema migrations — safe to run on every startup."""
     added = _apply_migrations(_con, MIGRATIONS)
     if added:
         log.info(f"Applied schema migrations: {', '.join(added)}")
+    _migrate_category_proposals_to_multi_option(_con)
 
 
 def _seed_taxonomy() -> None:
@@ -283,26 +313,37 @@ def get_top_subcategories(limit: int = 10) -> list[dict]:
 
 
 def get_top_merchant_subcategories(merchant_limit: int = 50, per_merchant_limit: int = 3) -> list[dict]:
-    """Top subcategories per merchant, for the `merchant_limit` most-transacted merchants."""
+    """Top subcategories per merchant, for the `merchant_limit` most-transacted
+    merchants -- these feed the per-merchant Telegram quick-tap buttons.
+
+    Grouped by merchant_name falling back to counterparty_name (direct debits
+    and bank transfers -- rent, utility bills, HMRC-style payments -- almost
+    never populate merchant_name at all), or every one of those recurring
+    payments would be shut out of quick-tap suggestions entirely and always
+    fall back to the generic top-5."""
     return _rows(
         """WITH merchant_totals AS (
-               SELECT merchant_name, COUNT(*) AS total
+               SELECT COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) AS merchant_name, COUNT(*) AS total
                FROM transactions
-               WHERE merchant_name IS NOT NULL
+               WHERE COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) IS NOT NULL
                  AND llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
-               GROUP BY merchant_name
+               GROUP BY 1
                ORDER BY total DESC
                LIMIT ?
            )
-           SELECT t.merchant_name, t.llm_category AS category, t.llm_subcategory AS subcategory,
+           SELECT COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, '')) AS merchant_name,
+                  t.llm_category AS category, t.llm_subcategory AS subcategory,
                   COUNT(*) AS transaction_count,
-                  ROW_NUMBER() OVER (PARTITION BY t.merchant_name ORDER BY COUNT(*) DESC) AS rank
+                  ROW_NUMBER() OVER (
+                      PARTITION BY COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
+                      ORDER BY COUNT(*) DESC
+                  ) AS rank
            FROM transactions t
-           JOIN merchant_totals mt ON mt.merchant_name = t.merchant_name
+           JOIN merchant_totals mt ON mt.merchant_name = COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
            WHERE t.llm_category IS NOT NULL AND t.llm_subcategory IS NOT NULL
-           GROUP BY t.merchant_name, t.llm_category, t.llm_subcategory
+           GROUP BY 1, t.llm_category, t.llm_subcategory
            QUALIFY rank <= ?
-           ORDER BY t.merchant_name, rank""",
+           ORDER BY merchant_name, rank""",
         [merchant_limit, per_merchant_limit]
     )
 

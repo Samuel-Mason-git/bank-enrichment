@@ -485,6 +485,62 @@ class TestGetTopMerchantSubcategories:
         write_to_db([_txn(merchant="Tesco")])
         assert get_top_merchant_subcategories() == []
 
+    def _counterparty_txn(self, id="tx_dd", counterparty="Octopus Energy"):
+        """A direct debit: no merchant block at all, only a counterparty --
+        the shape _txn() can't produce since it always sends merchant."""
+        return {
+            "id": id,
+            "payload": {"data": {
+                "amount": -8000, "currency": "GBP", "description": "89GJTS7",
+                "category": "bills", "counterparty": {"name": counterparty},
+                "is_load": False, "created": "2026-01-15T10:00:00", "settled": "2026-01-15T10:00:00",
+            }},
+            "user_context": "Electricity bill", "skipped": False,
+            "received_at": "2026-01-15T10:00:00", "enriched_at": "2026-01-15T10:00:01",
+        }
+
+    def test_falls_back_to_counterparty_when_merchant_is_absent(self, db):
+        """Regression test: direct debits and bank transfers -- rent, utility
+        bills, HMRC-style payments -- almost never populate merchant_name, only
+        counterparty_name. Grouping by merchant_name alone shut every one of
+        these recurring payments out of quick-tap suggestions entirely."""
+        write_to_db([self._counterparty_txn(f"tx_{i}") for i in range(3)])
+        for i in range(3):
+            update_classification(f"tx_{i}", "Bills & Utilities", "Electricity", None, "m")
+        rows = get_top_merchant_subcategories()
+        assert len(rows) == 1
+        assert rows[0]["merchant_name"] == "Octopus Energy"
+        assert rows[0]["subcategory"] == "Electricity"
+        assert rows[0]["transaction_count"] == 3
+
+    def test_merchant_name_is_preferred_over_counterparty_when_both_exist(self, db):
+        write_to_db([_txn("tx_card", merchant="Tesco")])
+        update_classification("tx_card", "Food & Drink", "Groceries", None, "m")
+        rows = get_top_merchant_subcategories()
+        assert rows[0]["merchant_name"] == "Tesco"
+
+    def test_a_transaction_with_neither_merchant_nor_counterparty_is_ignored(self, db):
+        """counterparty_name is stored as '' rather than NULL when Monzo sends
+        no counterparty block -- an empty string must not itself count as a
+        real payee identity."""
+        write_to_db([_txn("tx_001", merchant=None)])
+        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
+        assert get_top_merchant_subcategories() == []
+
+    def test_a_card_payment_and_a_direct_debit_with_the_same_name_pool_together(self, db):
+        """The point of falling back to counterparty_name at all: a card swipe
+        at 'Tesco' and a direct debit whose counterparty is also 'Tesco' are
+        the same real-world payee, so they should count as one merchant with
+        two transactions, not be split across a merchant-only and a
+        counterparty-only bucket that never combine."""
+        write_to_db([_txn("tx_card", merchant="Tesco"), self._counterparty_txn("tx_dd", counterparty="Tesco")])
+        update_classification("tx_card", "Food & Drink", "Groceries", None, "m")
+        update_classification("tx_dd", "Food & Drink", "Groceries", None, "m")
+        rows = get_top_merchant_subcategories()
+        assert len(rows) == 1
+        assert rows[0]["merchant_name"] == "Tesco"
+        assert rows[0]["transaction_count"] == 2
+
 
 class TestApplyQuickTapClassifications:
     def test_classifies_exact_match(self, db):
