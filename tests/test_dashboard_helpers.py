@@ -343,6 +343,18 @@ class TestSanitizeClassificationEdit:
     def test_both_empty_stays_empty(self):
         assert sanitize_classification_edit("", "") == (None, None)
 
+    def test_a_blanked_category_arriving_as_nan_is_treated_as_empty(self):
+        """Regression test: a blanked SelectboxColumn cell round-trips through
+        st.data_editor as float NaN, not "" or None. `not nan` is False in
+        Python (NaN is truthy), so a plain falsiness check let it through to
+        upsert_parent(nan) -- which DuckDB rejected trying to compare a
+        float-typed parameter against the VARCHAR category name column,
+        crashing the "clear this transaction's label" save entirely."""
+        assert sanitize_classification_edit(float("nan"), float("nan")) == (None, None)
+
+    def test_a_blanked_subcategory_arriving_as_nan_is_treated_as_empty(self):
+        assert sanitize_classification_edit("Food & Drink", float("nan")) == ("Food & Drink", None)
+
 
 class TestBackupNameFormatting:
     def test_label_is_a_readable_timestamp(self):

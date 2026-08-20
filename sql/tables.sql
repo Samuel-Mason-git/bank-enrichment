@@ -108,15 +108,18 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
 -- transactions that are ALREADY classified via a WHERE-match on their current
 -- category), the transactions here are unclassified and their membership is
 -- tracked directly by the FK, so applying an approval is a plain id UPDATE.
+--
+-- options holds up to a few candidate placements rather than a single one --
+-- [{"parent_name","subcategory_name","parent_is_new","rationale"}, ...] -- so
+-- an uncertain transaction can offer "new parent" alongside "stretch-fit into
+-- an existing one" and let the user pick, instead of the classifier having to
+-- commit to one guess.
 CREATE TABLE IF NOT EXISTS category_proposals (
     id                INTEGER PRIMARY KEY,
-    parent_name       VARCHAR NOT NULL,
-    -- True when parent_name itself doesn't exist yet (a whole new home) --
-    -- false when only subcategory_name is new under an existing parent.
-    parent_is_new     BOOLEAN NOT NULL,
-    subcategory_name  VARCHAR NOT NULL,
+    options           JSON    NOT NULL,
     status            VARCHAR NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
+        CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
+    selected_option   INTEGER,   -- index into options, set once a choice is made
     proposed_at       TIMESTAMP NOT NULL,
     decided_at        TIMESTAMP,
     applied_at        TIMESTAMP

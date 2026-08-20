@@ -223,11 +223,15 @@ class TaxonomyProposalEntry(BaseModel):
 class SyncTaxonomyProposalsRequest(BaseModel):
     proposals: list[TaxonomyProposalEntry]
 
+class CategoryOption(BaseModel):
+    parent_name: str
+    subcategory_name: str
+    parent_is_new: bool
+    rationale: str
+
 class CategoryProposalEntry(BaseModel):
     id: int                      # the id in the LOCAL database
-    parent_name: str
-    parent_is_new: bool
-    subcategory_name: str
+    options: list[CategoryOption]
     txn_count: int = 0
     examples: list[str] = []
 
@@ -313,7 +317,11 @@ async def recieve_monzo(request: Request):
 
     # Send Telegram Message
     if is_new and not rule_context and not rule_skip and bot:
-        merchant_name = monzo_data.data.merchant.get('name') if monzo_data.data.merchant else None
+        # Direct debits and bank transfers rarely populate merchant, only
+        # counterparty -- without this fallback, quick-tap suggestions for a
+        # recurring bill (rent, HMRC, utilities) never surface, and every one
+        # of those falls back to the generic top-5 instead of its own history.
+        merchant_name = (monzo_data.data.merchant or {}).get('name') or (monzo_data.data.counterparty or {}).get('name')
         try:
             quick_categories = get_quick_categories(merchant_name)
         except Exception as e:
@@ -422,45 +430,57 @@ async def recieve_telegram(request: Request):
             log.info(f"Taxonomy proposal {local_id} ({proposed_sub}) {decision}d via Telegram")
 
         elif cq.data and cq.data.startswith("catprop:"):
-            # Same split as taxprop: the server only records the decision --
-            # creating the category and classifying the waiting transaction(s)
-            # happens locally on the next pipeline run.
-            _, decision, local_id = cq.data.split(":", 2)
+            # catprop:select:<local_id>:<option_index> or catprop:denyall:<local_id>.
+            # The server only records the decision -- creating the category and
+            # classifying the waiting transaction(s) happens locally on the next run.
+            parts = cq.data.split(":")
+            action = parts[1]
+            local_id = int(parts[2])
+            option_index = int(parts[3]) if action == "select" else None
             try:
                 con = get_con()
                 row = con.execute(
-                    "SELECT subcategory_name, status FROM category_proposals WHERE local_id = ?",
-                    [int(local_id)]
+                    "SELECT options, status FROM category_proposals WHERE local_id = ?",
+                    [local_id]
                 ).fetchone()
                 if not row:
                     bot.send_message(chat_id, "That suggestion has expired.")
                     return {"ok": True}
-                subcategory_name, current = row
+                options, current = json.loads(row[0]), row[1]
                 if current != "pending":
-                    bot.send_message(chat_id, f"Already {current}: <b>{subcategory_name}</b>")
+                    bot.send_message(chat_id, f"Already {current}.")
                     return {"ok": True}
-                con.execute(
-                    "UPDATE category_proposals SET status = ?, decided_at = ? WHERE local_id = ?",
-                    ["approved" if decision == "approve" else "denied",
-                     time.strftime("%Y-%m-%d %H:%M:%S"), int(local_id)]
-                )
+                if action == "select":
+                    con.execute(
+                        "UPDATE category_proposals SET status = 'selected', selected_option = ?, decided_at = ? WHERE local_id = ?",
+                        [option_index, time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                    )
+                else:
+                    con.execute(
+                        "UPDATE category_proposals SET status = 'denied', decided_at = ? WHERE local_id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                    )
             except Exception as e:
                 log.error(f"Failed to record category decision {local_id}: {e}", exc_info=True)
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
-            if decision == "approve":
+            if action == "select":
+                chosen = options[option_index]
                 bot.send_message(
                     chat_id,
-                    f"✅ Approved <b>{subcategory_name}</b>.\n\n"
+                    f"✅ Selected <b>{chosen['parent_name']} › {chosen['subcategory_name']}</b>.\n\n"
                     "It'll be created and the waiting transaction(s) classified on the next run."
                 )
             else:
                 bot.send_message(
                     chat_id,
-                    f"❌ Denied <b>{subcategory_name}</b>. Those transaction(s) will be reclassified into an "
-                    "existing category on the next run instead."
+                    "❌ None of these. Those transaction(s) will be reconsidered on the next run with "
+                    "these ideas ruled out."
                 )
-            log.info(f"Category proposal {local_id} ({subcategory_name}) {decision}d via Telegram")
+            log.info(
+                f"Category proposal {local_id} {action}"
+                + (f" (option {option_index})" if action == "select" else "") + " via Telegram"
+            )
 
         elif cq.data and cq.data.startswith("quickcat:"):
             _, transaction_id, quick_id = cq.data.split(":", 2)
@@ -1075,10 +1095,10 @@ async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: s
     for p in body.proposals:
         con.execute(
             """INSERT INTO category_proposals
-               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+               (local_id, options, txn_count, examples, status, sent_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)
                ON CONFLICT (local_id) DO NOTHING""",
-            [p.id, p.parent_name, p.parent_is_new, p.subcategory_name, p.txn_count,
+            [p.id, json.dumps([o.model_dump() for o in p.options]), p.txn_count,
              json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
         )
         stored.append(p)
@@ -1087,8 +1107,8 @@ async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: s
         chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
         for p in stored:
             bot.send_category_proposal(chat_id, {
-                "local_id": p.id, "parent_name": p.parent_name, "parent_is_new": p.parent_is_new,
-                "subcategory_name": p.subcategory_name, "txn_count": p.txn_count, "examples": p.examples,
+                "local_id": p.id, "options": [o.model_dump() for o in p.options],
+                "txn_count": p.txn_count, "examples": p.examples,
             })
     log.info(f"Received {len(stored)} category proposal(s) and sent cards")
     return {"received": len(stored)}
@@ -1101,10 +1121,10 @@ async def category_decisions(api_key: str = Security(API_KEY_HEADER)):
     failed local run doesn't lose an approval."""
     await verify_api_key(api_key)
     rows = get_con().execute(
-        """SELECT local_id, subcategory_name, status FROM category_proposals
-           WHERE status IN ('approved', 'denied') ORDER BY local_id"""
+        """SELECT local_id, status, selected_option FROM category_proposals
+           WHERE status IN ('selected', 'denied') ORDER BY local_id"""
     ).fetchall()
-    return {"decisions": [{"id": r[0], "subcategory_name": r[1], "status": r[2]} for r in rows]}
+    return {"decisions": [{"id": r[0], "status": r[1], "selected_option": r[2]} for r in rows]}
 
 
 @app.post('/category-decisions/collected')

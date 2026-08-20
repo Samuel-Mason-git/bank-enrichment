@@ -5,8 +5,10 @@ or subcategory name that doesn't exist yet, but a large one-off transaction
 getting silently filed under the nearest existing name is exactly how a tax
 payment ended up under "Professional Services". So a genuinely new name is no
 longer created on the spot: the triggering transaction(s) are locked
-(transactions.pending_category_proposal_id) and a Telegram card asks for an
-Approve/Deny before anything is created.
+(transactions.pending_category_proposal_id) and a Telegram card offers up to
+a few candidate placements -- a new parent, a stretch-fit into an existing
+one, maybe a different existing subcategory -- and asks the user to pick one,
+or none.
 
 This is deliberately a separate table and module from taxonomy_review.py's
 monthly proposals, not a reuse of it: that table models reshaping transactions
@@ -15,6 +17,7 @@ size guardrails that would be wrong for a single unusual payment). Here the
 transactions are unclassified, membership is tracked directly by the FK above,
 and there is no minimum size -- one transaction is reason enough to ask.
 """
+import json
 import logging
 import os
 import time
@@ -35,55 +38,69 @@ log = logging.getLogger(__name__)
 
 # ── Denial memory (threaded into the classifier prompts) ───────────────────────
 
+def _denied_options() -> list[dict]:
+    """Every option that appeared on a denied card -- not just whichever one
+    the user might have been looking at. Denying the card rejects the whole
+    set, so re-proposing any one of them is re-asking a question already
+    answered."""
+    rows = get_con().execute("SELECT options FROM category_proposals WHERE status = 'denied'").fetchall()
+    options = []
+    for (options_json,) in rows:
+        options.extend(json.loads(options_json))
+    return options
+
+
 def denied_parent_names() -> set[str]:
-    """Parent names the user has already declined -- Pass 1 must not propose
-    these again and should prefer an existing category instead."""
-    return {
-        r[0].lower() for r in get_con().execute(
-            "SELECT parent_name FROM category_proposals WHERE status = 'denied' AND parent_is_new"
-        ).fetchall()
-    }
+    """Parent names the user has already declined creating -- Pass 1 must not
+    propose these again. Deliberately NOT biased toward reusing an existing
+    category instead: rejecting a set of proposed placements is evidence that
+    none of the existing categories were the answer either, so the retry gets
+    no nudge either way beyond "not these exact names again"."""
+    return {o["parent_name"].lower() for o in _denied_options() if o.get("parent_is_new")}
 
 
 def denied_sub_names() -> set[str]:
     """Subcategory names the user has already declined, regardless of parent --
     global like taxonomy_review's blocklist, since re-asking under a different
     parent is still re-asking the same declined idea."""
-    return {
-        r[0].lower() for r in get_con().execute(
-            "SELECT subcategory_name FROM category_proposals WHERE status = 'denied'"
-        ).fetchall()
-    }
+    return {o["subcategory_name"].lower() for o in _denied_options()}
 
 
 # ── Registration (called from llm_labelling.run() per novel group per batch) ──
 
-def register_group(parent_name: str, parent_is_new: bool, subcategory_name: str, txn_ids: list[str]) -> tuple[int, bool]:
-    """Attach txn_ids to a proposal for this (parent, subcategory) pair --
-    merging into a still-pending one from an earlier batch/run if there is
-    one, else creating it. Returns (proposal_id, was_newly_created)."""
+def _option_key(options: list[dict]) -> frozenset:
+    return frozenset((o["parent_name"].strip().lower(), o["subcategory_name"].strip().lower()) for o in options)
+
+
+def register_group(options: list[dict], txn_ids: list[str]) -> tuple[int, bool]:
+    """Attach txn_ids to a proposal offering exactly this set of candidate
+    options -- merging into a still-pending proposal from an earlier
+    batch/run with the identical option set if there is one, else creating a
+    new one. Returns (proposal_id, was_newly_created)."""
     con = get_con()
-    row = con.execute(
-        """SELECT id FROM category_proposals
-           WHERE status = 'pending' AND lower(parent_name) = lower(?) AND lower(subcategory_name) = lower(?)""",
-        [parent_name, subcategory_name],
-    ).fetchone()
-    if row:
-        proposal_id, is_new = row[0], False
-    else:
-        proposal_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals").fetchone()[0]
-        con.execute(
-            """INSERT INTO category_proposals (id, parent_name, parent_is_new, subcategory_name, status, proposed_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
-            [proposal_id, parent_name, parent_is_new, subcategory_name, time.strftime("%Y-%m-%d %H:%M:%S")],
-        )
-        is_new = True
+    key = _option_key(options)
+    for pid, options_json in con.execute(
+        "SELECT id, options FROM category_proposals WHERE status = 'pending'"
+    ).fetchall():
+        if _option_key(json.loads(options_json)) == key:
+            _lock(con, pid, txn_ids)
+            return pid, False
+
+    proposal_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals").fetchone()[0]
+    con.execute(
+        "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (?, ?, 'pending', ?)",
+        [proposal_id, json.dumps(options), time.strftime("%Y-%m-%d %H:%M:%S")],
+    )
+    _lock(con, proposal_id, txn_ids)
+    return proposal_id, True
+
+
+def _lock(con, proposal_id: int, txn_ids: list[str]) -> None:
     placeholders = ", ".join("?" for _ in txn_ids)
     con.execute(
         f"UPDATE transactions SET pending_category_proposal_id = ? WHERE id IN ({placeholders})",
         [proposal_id, *txn_ids],
     )
-    return proposal_id, is_new
 
 
 # ── Sync ─────────────────────────────────────────────────────────────────────
@@ -109,20 +126,18 @@ def server_supports_proposals() -> bool:
 
 def sync_new_proposals(proposal_ids: list[int]) -> None:
     """Push newly-created proposals to the server, which owns Telegram. Only
-    names, counts and a few example contexts cross the wire -- never full
-    transaction data, the same restraint taxonomy_review's sync uses."""
+    the option names/rationales, counts and a few example contexts cross the
+    wire -- never full transaction data, the same restraint taxonomy_review's
+    sync uses."""
     if not proposal_ids:
         return
     con = get_con()
     proposals = []
     for pid in proposal_ids:
-        row = con.execute(
-            "SELECT parent_name, parent_is_new, subcategory_name FROM category_proposals WHERE id = ?",
-            [pid],
-        ).fetchone()
+        row = con.execute("SELECT options FROM category_proposals WHERE id = ?", [pid]).fetchone()
         if not row:
             continue
-        parent_name, parent_is_new, subcategory_name = row
+        options = json.loads(row[0])
         txns = con.execute(
             "SELECT user_context, merchant_name, counterparty_name FROM transactions WHERE pending_category_proposal_id = ?",
             [pid],
@@ -132,10 +147,7 @@ def sync_new_proposals(proposal_ids: list[int]) -> None:
             example = user_context or merchant_name or counterparty_name
             if example and len(examples) < 4:
                 examples.append(example)
-        proposals.append({
-            "id": pid, "parent_name": parent_name, "parent_is_new": bool(parent_is_new),
-            "subcategory_name": subcategory_name, "txn_count": len(txns), "examples": examples,
-        })
+        proposals.append({"id": pid, "options": options, "txn_count": len(txns), "examples": examples})
     if not proposals:
         return
     response = requests.post(
@@ -167,20 +179,25 @@ def confirm_collected(ids: list[int]) -> None:
     ).raise_for_status()
 
 
-def apply_approved(proposal_id: int) -> int:
-    """Create the category and classify exactly the transactions still waiting
-    on it. Re-checks llm_category IS NULL: update_classification() clears the
-    lock the moment anything else classifies a waiting transaction (a manual
-    dashboard edit, a quick-tap match), so this never overwrites that."""
+def apply_selected(proposal_id: int, option_index: int) -> int:
+    """Create the chosen option's category and classify exactly the
+    transactions still waiting on it. Re-checks llm_category IS NULL:
+    update_classification() clears the lock the moment anything else
+    classifies a waiting transaction (a manual dashboard edit, a quick-tap
+    match), so this never overwrites that."""
     from database_functions import upsert_parent, upsert_subcategory
 
     con = get_con()
-    row = con.execute(
-        "SELECT parent_name, subcategory_name FROM category_proposals WHERE id = ?", [proposal_id]
-    ).fetchone()
+    row = con.execute("SELECT options FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
     if not row:
         return 0
-    parent_name, subcategory_name = row
+    options = json.loads(row[0])
+    if option_index is None or not (0 <= option_index < len(options)):
+        log.error(f"Category proposal {proposal_id}: option index {option_index} out of range for {len(options)} option(s)")
+        return 0
+    chosen = options[option_index]
+    parent_name, subcategory_name = chosen["parent_name"], chosen["subcategory_name"]
+
     pending_ids = [r[0] for r in con.execute(
         "SELECT id FROM transactions WHERE pending_category_proposal_id = ? AND llm_category IS NULL",
         [proposal_id],
@@ -202,10 +219,12 @@ def apply_approved(proposal_id: int) -> int:
     return len(pending_ids)
 
 
-def deny(proposal_id: int) -> int:
+def deny_all(proposal_id: int) -> int:
     """Unlock the waiting transactions without creating anything. They fall
     back into get_unclassified() on the next run and are reclassified with
-    this name now forbidden in the prompt."""
+    every option's name now forbidden in the prompt -- with no push toward an
+    existing category, since rejecting every offered option is evidence none
+    of them (existing or new) is the right answer."""
     con = get_con()
     ids = [r[0] for r in con.execute(
         "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
@@ -230,9 +249,9 @@ def collect_decisions() -> int:
 
     applied = 0
     handled: list[int] = []
-    if any(d["status"] == "approved" for d in decisions):
+    if any(d["status"] == "selected" for d in decisions):
         from database_functions import backup_db
-        backup_db("category-proposal-approved")
+        backup_db("category-proposal-selected")
 
     for d in decisions:
         row = con.execute("SELECT status FROM category_proposals WHERE id = ?", [d["id"]]).fetchone()
@@ -240,15 +259,18 @@ def collect_decisions() -> int:
             handled.append(d["id"])
             continue
         try:
-            if d["status"] == "approved":
-                apply_approved(d["id"])
+            if d["status"] == "selected":
+                apply_selected(d["id"], d.get("selected_option"))
                 con.execute(
-                    "UPDATE category_proposals SET status = 'applied', decided_at = ?, applied_at = ? WHERE id = ?",
-                    [time.strftime("%Y-%m-%d %H:%M:%S"), time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]],
+                    """UPDATE category_proposals
+                       SET status = 'applied', selected_option = ?, decided_at = ?, applied_at = ?
+                       WHERE id = ?""",
+                    [d.get("selected_option"), time.strftime("%Y-%m-%d %H:%M:%S"),
+                     time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]],
                 )
                 applied += 1
             else:
-                deny(d["id"])
+                deny_all(d["id"])
                 con.execute(
                     "UPDATE category_proposals SET status = 'denied', decided_at = ? WHERE id = ?",
                     [time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]],

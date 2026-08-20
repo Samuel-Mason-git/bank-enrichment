@@ -1,8 +1,9 @@
 """End-to-end tests for the real-time category-proposal round trip.
 
-local holds new (parent, subcategory) pairs -> server stores + sends cards ->
-user taps -> server records -> local collects and applies. Server routes are
-called directly with get_con patched to the in-memory fixture, matching
+local holds new (parent, subcategory) candidate options -> server stores +
+sends a card with one button per option -> user taps select/deny-all ->
+server records -> local collects and applies. Server routes are called
+directly with get_con patched to the in-memory fixture, matching
 test_taxonomy_flow.py's approach for the older, monthly proposal flow.
 """
 import asyncio
@@ -19,10 +20,13 @@ async def _ok_api_key(api_key):
     return True
 
 
-def _proposal_entry(local_id=1, parent="Tax", parent_is_new=True, sub="Self Assessment", count=1):
+def _option(parent="Tax", sub="Self Assessment", is_new=True, rationale="Best fit."):
+    return main.CategoryOption(parent_name=parent, subcategory_name=sub, parent_is_new=is_new, rationale=rationale)
+
+
+def _proposal_entry(local_id=1, options=None, count=1):
     return main.CategoryProposalEntry(
-        id=local_id, parent_name=parent, parent_is_new=parent_is_new,
-        subcategory_name=sub, txn_count=count, examples=["HMRC self assessment"],
+        id=local_id, options=options or [_option()], txn_count=count, examples=["HMRC self assessment"],
     )
 
 
@@ -47,7 +51,8 @@ class TestServerReceivesProposals:
     def test_stores_and_sends_one_card_per_proposal(self, server_con):
         bot = MagicMock()
         body = main.SyncCategoryProposalsRequest(
-            proposals=[_proposal_entry(1, "Tax"), _proposal_entry(2, "Gifts", sub="Wedding Gifts")])
+            proposals=[_proposal_entry(1, [_option("Tax", "Self Assessment")]),
+                       _proposal_entry(2, [_option("Gifts", "Wedding Gifts")])])
         with patch.object(main, "get_con", return_value=server_con), \
              patch.object(main, "bot", bot), \
              patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
@@ -59,6 +64,20 @@ class TestServerReceivesProposals:
         rows = server_con.execute(
             "SELECT local_id, status FROM category_proposals ORDER BY local_id").fetchall()
         assert rows == [(1, "pending"), (2, "pending")]
+
+    def test_multiple_options_are_stored_and_passed_to_the_card(self, server_con):
+        bot = MagicMock()
+        options = [_option("Tax", "Self Assessment"), _option("Professional Services", "Tax Payments", is_new=False)]
+        body = main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, options)])
+        with patch.object(main, "get_con", return_value=server_con), \
+             patch.object(main, "bot", bot), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+             patch.object(main, "verify_api_key", new=_ok_api_key):
+            _run(main.sync_category_proposals(body, api_key="k"))
+
+        sent = bot.send_category_proposal.call_args[0][1]
+        assert len(sent["options"]) == 2
+        assert sent["options"][1]["subcategory_name"] == "Tax Payments"
 
     def test_no_cards_are_sent_when_there_is_nothing_to_propose(self, server_con):
         bot = MagicMock()
@@ -81,12 +100,10 @@ class TestServerReceivesProposals:
              patch.dict("os.environ", env), \
              patch.object(main, "verify_api_key", new=_ok_api_key):
             _run(main.sync_category_proposals(
-                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, "Tax")]), "k"))
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, [_option("Tax", "Self Assessment")])]), "k"))
             _run(main.sync_category_proposals(
-                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(2, "Gifts", sub="Wedding Gifts")]), "k"))
-        names = {r[0] for r in server_con.execute(
-            "SELECT parent_name FROM category_proposals").fetchall()}
-        assert names == {"Tax", "Gifts"}
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(2, [_option("Gifts", "Wedding Gifts")])]), "k"))
+        assert server_con.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 2
 
     def test_resyncing_the_same_local_id_does_not_duplicate(self, server_con):
         bot = MagicMock()
@@ -95,18 +112,23 @@ class TestServerReceivesProposals:
              patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
              patch.object(main, "verify_api_key", new=_ok_api_key):
             _run(main.sync_category_proposals(
-                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, "Tax")]), "k"))
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1)]), "k"))
             _run(main.sync_category_proposals(
-                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, "Tax")]), "k"))
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1)]), "k"))
         assert server_con.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 1
 
 
-class TestApproveDenyCallbacks:
-    def _seed(self, con, status="pending"):
+class TestSelectDenyCallbacks:
+    def _seed(self, con, status="pending", options=None):
+        import json
         con.execute(
-            """INSERT INTO category_proposals
-               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
-               VALUES (1, 'Tax', TRUE, 'Self Assessment', 1, '[]', ?, NOW())""", [status])
+            """INSERT INTO category_proposals (local_id, options, txn_count, examples, status, sent_at)
+               VALUES (1, ?, 1, '[]', ?, NOW())""",
+            [json.dumps(options or [
+                {"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"},
+                {"parent_name": "Professional Services", "subcategory_name": "Tax Payments", "parent_is_new": False, "rationale": "y"},
+            ]), status],
+        )
 
     def _tap(self, server_con, data):
         bot = MagicMock()
@@ -117,58 +139,56 @@ class TestApproveDenyCallbacks:
             _run(main.recieve_telegram(req))
         return bot
 
-    def test_approve_records_the_decision(self, server_con):
+    def test_selecting_an_option_records_the_decision_and_index(self, server_con):
         self._seed(server_con)
-        bot = self._tap(server_con, "catprop:approve:1")
-        status = server_con.execute(
-            "SELECT status FROM category_proposals WHERE local_id = 1").fetchone()[0]
-        assert status == "approved"
-        assert "Approved" in bot.send_message.call_args[0][1]
+        bot = self._tap(server_con, "catprop:select:1:1")
+        row = server_con.execute(
+            "SELECT status, selected_option FROM category_proposals WHERE local_id = 1").fetchone()
+        assert row == ("selected", 1)
+        assert "Tax Payments" in bot.send_message.call_args[0][1]
 
-    def test_deny_records_the_decision(self, server_con):
+    def test_deny_all_records_the_decision(self, server_con):
         self._seed(server_con)
-        bot = self._tap(server_con, "catprop:deny:1")
-        status = server_con.execute(
-            "SELECT status FROM category_proposals WHERE local_id = 1").fetchone()[0]
-        assert status == "denied"
-        assert "Denied" in bot.send_message.call_args[0][1]
+        bot = self._tap(server_con, "catprop:denyall:1")
+        row = server_con.execute(
+            "SELECT status, selected_option FROM category_proposals WHERE local_id = 1").fetchone()
+        assert row == ("denied", None)
+        assert "None of these" in bot.send_message.call_args[0][1]
 
     def test_the_server_never_applies_anything_itself(self, server_con):
         self._seed(server_con)
-        self._tap(server_con, "catprop:approve:1")
+        self._tap(server_con, "catprop:select:1:0")
         tables = {r[0] for r in server_con.execute("SHOW TABLES").fetchall()}
         assert "subcategories" not in tables and "transactions" not in tables
 
     def test_a_second_tap_is_rejected_rather_than_reapplied(self, server_con):
-        self._seed(server_con, status="approved")
-        bot = self._tap(server_con, "catprop:deny:1")
-        status = server_con.execute(
-            "SELECT status FROM category_proposals WHERE local_id = 1").fetchone()[0]
-        assert status == "approved"
-        assert "Already approved" in bot.send_message.call_args[0][1]
+        self._seed(server_con, status="selected")
+        bot = self._tap(server_con, "catprop:denyall:1")
+        row = server_con.execute(
+            "SELECT status FROM category_proposals WHERE local_id = 1").fetchone()
+        assert row[0] == "selected"
+        assert "Already selected" in bot.send_message.call_args[0][1]
 
     def test_a_tap_on_an_unknown_proposal_is_handled(self, server_con):
-        bot = self._tap(server_con, "catprop:approve:999")
+        bot = self._tap(server_con, "catprop:select:999:0")
         assert "expired" in bot.send_message.call_args[0][1]
 
     def test_taxprop_and_catprop_callbacks_do_not_cross_wires(self, server_con):
         """Both prefixes are handled by the same webhook -- a catprop tap must
         never touch the (differently-shaped) taxonomy_proposals table."""
-        server_con.execute(
-            """CREATE TABLE IF NOT EXISTS taxonomy_proposals_probe AS
-               SELECT 1""")  # sanity that server_con has the full schema already
         self._seed(server_con)
-        self._tap(server_con, "catprop:approve:1")
-        # taxonomy_proposals exists (full schema) but must remain untouched/empty
+        self._tap(server_con, "catprop:select:1:0")
         assert server_con.execute("SELECT COUNT(*) FROM taxonomy_proposals").fetchone()[0] == 0
 
 
 class TestCollectedEndpoint:
     def test_marks_rows_collected(self, server_con):
+        import json
         server_con.execute(
-            """INSERT INTO category_proposals
-               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
-               VALUES (1, 'Tax', TRUE, 'Self Assessment', 1, '[]', 'approved', NOW())""")
+            """INSERT INTO category_proposals (local_id, options, txn_count, examples, status, selected_option, sent_at)
+               VALUES (1, ?, 1, '[]', 'selected', 0, NOW())""",
+            [json.dumps([{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}])],
+        )
         with patch.object(main, "get_con", return_value=server_con), \
              patch.object(main, "verify_api_key", new=_ok_api_key):
             result = _run(main.category_decisions_collected(main.MarkProcessedRequest(ids=["1"]), api_key="k"))
@@ -176,16 +196,16 @@ class TestCollectedEndpoint:
         assert server_con.execute(
             "SELECT status FROM category_proposals WHERE local_id = 1").fetchone()[0] == "collected"
 
-    def test_decisions_endpoint_only_returns_settled_rows(self, server_con):
+    def test_decisions_endpoint_only_returns_settled_rows_and_includes_selected_option(self, server_con):
+        import json
+        opts = json.dumps([{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}])
         server_con.execute(
-            """INSERT INTO category_proposals
-               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
-               VALUES (1, 'Tax', TRUE, 'Self Assessment', 1, '[]', 'pending', NOW())""")
+            "INSERT INTO category_proposals (local_id, options, txn_count, examples, status, sent_at) VALUES (1, ?, 1, '[]', 'pending', NOW())",
+            [opts])
         server_con.execute(
-            """INSERT INTO category_proposals
-               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
-               VALUES (2, 'Gifts', TRUE, 'Wedding Gifts', 1, '[]', 'approved', NOW())""")
+            "INSERT INTO category_proposals (local_id, options, txn_count, examples, status, selected_option, sent_at) VALUES (2, ?, 1, '[]', 'selected', 1, NOW())",
+            [opts])
         with patch.object(main, "get_con", return_value=server_con), \
              patch.object(main, "verify_api_key", new=_ok_api_key):
             result = _run(main.category_decisions(api_key="k"))
-        assert [d["id"] for d in result["decisions"]] == [2]
+        assert result["decisions"] == [{"id": 2, "status": "selected", "selected_option": 1}]

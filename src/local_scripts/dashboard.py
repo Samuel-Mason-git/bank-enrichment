@@ -202,6 +202,10 @@ if search:
     mask = (
         filtered["description"].str.contains(search, case=False, na=False, regex=False)
         | filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
+        # Direct debits and bank transfers -- rent, utility bills, HMRC-style
+        # payments -- populate counterparty_name instead of merchant_name, so
+        # without this a search for "Octopus Energy" or "HMRC" finds nothing.
+        | filtered["counterparty_name"].str.contains(search, case=False, na=False, regex=False)
         | filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     filtered = filtered[mask]
@@ -248,6 +252,7 @@ if search:
     _mask = (
         prev_filtered["description"].str.contains(search, case=False, na=False, regex=False)
         | prev_filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
+        | prev_filtered["counterparty_name"].str.contains(search, case=False, na=False, regex=False)
         | prev_filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
     )
     prev_filtered = prev_filtered[_mask]
@@ -800,22 +805,31 @@ with tab_txns:
     if not filtered.empty:
         st.caption("Just for fun — not part of your financial totals elsewhere in the app.")
         fun_color = "rgba(127, 140, 141, 0.16)"
-        merchant_counts = filtered["merchant_name"].dropna().value_counts()
+        # merchant_name alone misses every direct debit/bank transfer (rent,
+        # utility bills, HMRC-style payments), which populate counterparty_name
+        # instead -- these cards would otherwise silently exclude them.
+        fun_merchant = merchant_display_name(filtered)
+        merchant_counts = fun_merchant.dropna().value_counts()
         biggest_idx = filtered["amount"].abs().idxmax()
         biggest_row = filtered.loc[biggest_idx]
+        biggest_merchant = fun_merchant.loc[biggest_idx]
+        # pd.notna(), not a plain truthiness check: a missing merchant/payee
+        # here is NaN, not "" or None, and `nan or x` is True in Python (NaN
+        # is truthy) -- the same trap that broke clearing a transaction's
+        # category in the Reclassify editor.
+        biggest_label = biggest_merchant if pd.notna(biggest_merchant) else (biggest_row["description"] or "Unknown")
         day_counts = filtered["created_at"].dt.day_name().value_counts()
 
         fun_cards = [
             ("Transactions", str(len(filtered)),
              "Total transactions in the selected range and filters."),
-            ("Unique Merchants", str(filtered["merchant_name"].nunique()),
-             "Distinct merchant names seen in the selected range."),
+            ("Unique Merchants", str(fun_merchant.nunique()),
+             "Distinct merchant/payee names seen in the selected range."),
             ("Most Frequent Merchant",
              merchant_counts.index[0] if not merchant_counts.empty else "—",
              f"Appears {merchant_counts.iloc[0]} times." if not merchant_counts.empty else "No merchant data."),
             ("Biggest Transaction", f"£{abs(biggest_row['amount']):.2f}",
-             f"{biggest_row['merchant_name'] or biggest_row['description'] or 'Unknown'} "
-             f"on {biggest_row['created_at'].date()}."),
+             f"{biggest_label} on {biggest_row['created_at'].date()}."),
             ("Avg Transaction Size", f"£{filtered['amount'].abs().mean():.2f}",
              "Mean absolute amount across every transaction in range."),
             ("Busiest Day", day_counts.index[0] if not day_counts.empty else "—",
@@ -1117,6 +1131,10 @@ with tab_drill:
         st.subheader("Transactions")
         display_cat = cat_df[["created_at", "amount", "merchant_name", "description",
                                "user_context", "llm_subcategory"]].copy()
+        # merchant_name is blank for direct debits/bank transfers, which
+        # populate counterparty_name instead -- without the fallback this
+        # column reads empty for every bill paid that way.
+        display_cat["merchant_name"] = merchant_display_name(cat_df)
         display_cat.columns = ["Date", "Amount", "Merchant", "Description", "Context", "Subcategory"]
         st.dataframe(
             display_cat, width="stretch", hide_index=True,
@@ -1840,7 +1858,7 @@ with tab_settings:
                 st.divider()
 
                 txns = _query("""
-                    SELECT id, description, merchant_name, amount, created_at, user_context
+                    SELECT id, description, merchant_name, counterparty_name, amount, created_at, user_context
                     FROM transactions
                     WHERE llm_subcategory = ? AND llm_category = ?
                     ORDER BY created_at DESC
@@ -1850,6 +1868,11 @@ with tab_settings:
                     txns_df = pd.DataFrame(txns)
                     txns_df["amount"] = txns_df["amount"].apply(lambda x: f"£{abs(float(x)):.2f}")
                     txns_df["created_at"] = pd.to_datetime(txns_df["created_at"]).dt.strftime("%Y-%m-%d")
+                    # merchant_name is blank for direct debits/bank transfers,
+                    # which populate counterparty_name instead -- a subcategory
+                    # dominated by bills would otherwise show an empty Merchant
+                    # column for nearly every row here.
+                    txns_df["merchant_name"] = merchant_display_name(txns_df)
                     txns_df = txns_df.rename(columns={
                         "created_at": "Date", "merchant_name": "Merchant",
                         "description": "Description", "amount": "Amount", "user_context": "Context",

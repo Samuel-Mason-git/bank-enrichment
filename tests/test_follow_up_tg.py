@@ -19,6 +19,21 @@ def _payload_json(txn_id="tx_001", merchant_name="Tesco", amount_pence=-500):
     })
 
 
+def _direct_debit_payload_json(txn_id="tx_001", counterparty_name="Octopus Energy", amount_pence=-8000):
+    """A direct debit: no merchant block at all, only a counterparty."""
+    return json.dumps({
+        "data": {
+            "id": txn_id,
+            "amount": amount_pence,
+            "currency": "GBP",
+            "description": "89GJTS7",
+            "category": "bills",
+            "created": "2026-01-15T10:00:00Z",
+            "counterparty": {"name": counterparty_name},
+        }
+    })
+
+
 def _ago(seconds: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - seconds))
 
@@ -66,6 +81,17 @@ class TestRunRequesterMissedSend:
         _, kwargs = bot.send_card.call_args
         assert kwargs["quick_categories"] == []
 
+    def test_missed_send_looks_up_quick_categories_by_counterparty_when_merchant_is_absent(self, server_con, monkeypatch):
+        """Regression test: a direct debit/bank transfer never populates
+        merchant, only counterparty -- without the fallback, recovering a
+        missed initial send for a recurring bill always used the generic
+        top-5 instead of that payee's own quick-tap history."""
+        _insert_queue_row(server_con, "tx_001", _direct_debit_payload_json(), received_at=_ago(86_400 * 2))
+        mock_get = MagicMock(return_value=[])
+        monkeypatch.setattr("follow_up_tg.get_quick_categories", mock_get)
+        run_requester(MagicMock())
+        mock_get.assert_called_once_with("Octopus Energy")
+
 
 class TestRunRequesterFollowUps:
     def test_sends_first_follow_up(self, server_con):
@@ -80,6 +106,16 @@ class TestRunRequesterFollowUps:
         assert kwargs["follow_up"] == 1
         row = server_con.execute("SELECT request_count FROM webhook_queue WHERE id = ?", ["tx_001"]).fetchone()
         assert row[0] == 2
+
+    def test_follow_up_looks_up_quick_categories_by_counterparty_when_merchant_is_absent(self, server_con, monkeypatch):
+        _insert_queue_row(
+            server_con, "tx_001", _direct_debit_payload_json(), received_at=_ago(86_400 * 3),
+            status="pending", request_count=1, last_requested_at=_ago(3_700)
+        )
+        mock_get = MagicMock(return_value=[])
+        monkeypatch.setattr("follow_up_tg.get_quick_categories", mock_get)
+        run_requester(MagicMock())
+        mock_get.assert_called_once_with("Octopus Energy")
 
     def test_does_not_send_before_delay_elapsed(self, server_con):
         _insert_queue_row(

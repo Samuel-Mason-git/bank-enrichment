@@ -454,6 +454,35 @@ def test_exclude_counterparty_only_payee_removes_its_transactions(tmp_path):
     assert _txn_count(at) == "1 transactions"
 
 
+def test_search_matches_counterparty_only_payees(tmp_path):
+    """Regression test: the sidebar search box checked description, user_context
+    and merchant_name, but not counterparty_name -- so searching for a direct
+    debit's payee (a bill, rent, an HMRC-style payment) found nothing at all,
+    even though the same term matches via database_functions.search()."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    assert _txn_count(at) == "2 transactions"
+    at.sidebar.text_input[0].set_value("Landlord").run()
+    assert not at.exception
+    assert _txn_count(at) == "1 transactions"
+
+
+def test_biggest_transaction_card_shows_counterparty_not_unknown(tmp_path):
+    """Regression test: the "fun facts" cards used raw merchant_name, so the
+    £500 rent direct debit (bigger than the £9.99 Tesco card payment) showed
+    up as "Unknown" instead of "Landlord" -- and before the NaN-safe rewrite,
+    `merchant_display_name()` returning NaN for a missing payee would have
+    made `nan or description` skip the description fallback too (NaN is
+    truthy in Python), the same trap that broke clearing a transaction's
+    category in the Reclassify editor."""
+    _seed_two_merchants(tmp_path)
+    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    txns_tab = at.tabs[2]
+    assert not at.exception
+    assert _has_card(txns_tab, "Biggest Transaction", "Landlord")
+    assert _has_card(txns_tab, "Unique Merchants", "2")
+
+
 def test_exclude_by_id_accepts_newline_and_comma_separated_ids(tmp_path):
     """IDs get pasted in from a CSV or copied one-per-line off the table, so
     both separators (and stray whitespace) have to parse the same way."""

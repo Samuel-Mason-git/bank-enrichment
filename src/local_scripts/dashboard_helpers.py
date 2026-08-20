@@ -175,10 +175,18 @@ def sanitize_classification_edit(new_category: str | None, new_subcategory: str 
     """A subcategory can't exist without a parent category — if the category
     is cleared, the subcategory must be cleared too, otherwise the saved
     label would be invisible to every category-based view (Overview,
-    Category Drill-Down), which all group/filter by category first."""
-    if not new_category:
+    Category Drill-Down), which all group/filter by category first.
+
+    A blanked SelectboxColumn cell round-trips through st.data_editor as a
+    float NaN, not "" or None -- and `not float('nan')` is False in Python
+    (NaN is truthy), so a plain falsiness check lets it straight through to
+    upsert_parent(nan), which DuckDB rejects when it tries to compare that
+    float-typed parameter against the VARCHAR name column. pd.isna() catches
+    NaN and None alike; the truthiness check still catches "" alongside it."""
+    if pd.isna(new_category) or not new_category:
         return None, None
-    return new_category, (new_subcategory or None)
+    subcategory = None if pd.isna(new_subcategory) or not new_subcategory else new_subcategory
+    return new_category, subcategory
 
 
 def should_deactivate_subscription(sub: dict, df: pd.DataFrame, cutoff: pd.Timestamp) -> bool:
