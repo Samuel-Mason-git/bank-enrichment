@@ -148,8 +148,21 @@ class TestPass1Prompt:
         how a tax payment ended up nested under "Professional Services"
         instead of getting its own "Tax" parent."""
         prompt = _pass1_prompt([_txn()], [{"name": "Professional Services", "transaction_count": 3}])
-        assert "NOT a worse answer than a stretch-fit" in prompt
+        assert "NOT a worse answer than that stretch-fit" in prompt
         assert "exhaust existing options first" not in prompt
+
+    def test_new_parent_guidance_names_no_specific_domain(self):
+        """Regression test: the first version of this guidance illustrated the
+        principle with "a payment to a tax authority" as its example -- which,
+        for a transaction that IS a tax authority payment, primes the model
+        toward that exact answer instead of letting it reason there
+        independently. The guidance must state the principle without naming
+        any concrete category domain."""
+        prompt = _pass1_prompt([_txn()], [{"name": "Professional Services", "transaction_count": 3}])
+        assert "tax" not in prompt.lower()
+        assert "government" not in prompt.lower()
+        assert "legal" not in prompt.lower()
+        assert "medical" not in prompt.lower()
 
 
 class TestPass2Prompt:
