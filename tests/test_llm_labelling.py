@@ -2,6 +2,8 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+import llm_labelling as ll
+import category_proposals as cp
 from llm_labelling import (
     _format_transaction,
     _payload_facts,
@@ -120,6 +122,15 @@ class TestPass1Prompt:
         prompt = _pass1_prompt([_txn()], [])
         assert "tx_001" in prompt
 
+    def test_no_denied_names_adds_no_block(self):
+        prompt = _pass1_prompt([_txn()], [])
+        assert "already declined" not in prompt
+
+    def test_denied_parent_names_are_listed_and_forbidden(self):
+        prompt = _pass1_prompt([_txn()], [], denied_parent_names={"Tax"})
+        assert "already declined creating these category names" in prompt
+        assert "Tax" in prompt
+
 
 class TestPass2Prompt:
     def test_includes_parent_name(self):
@@ -139,6 +150,15 @@ class TestPass2Prompt:
     def test_no_existing_subs_mentions_creating(self):
         prompt = _pass2_prompt([_txn()], "Food & Drink", [], ["Food & Drink"])
         assert "No subcategories" in prompt
+
+    def test_no_denied_names_adds_no_block(self):
+        prompt = _pass2_prompt([_txn()], "Food & Drink", [], ["Food & Drink"])
+        assert "already declined" not in prompt
+
+    def test_denied_sub_names_are_listed_and_forbidden(self):
+        prompt = _pass2_prompt([_txn()], "Food & Drink", [], ["Food & Drink"], denied_sub_names={"Self Assessment"})
+        assert "already declined creating these subcategory names" in prompt
+        assert "Self Assessment" in prompt
 
 
 class TestMatchExisting:
@@ -188,6 +208,13 @@ class TestClassifyParents:
         client.messages.create.side_effect = Exception("timeout")
         result = classify_parents(client, [_txn()], [])
         assert result == {}
+
+    def test_denied_parent_names_reach_the_prompt(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(text='[]')]
+        classify_parents(client, [_txn()], [], denied_parent_names={"Tax"})
+        sent_prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "Tax" in sent_prompt and "already declined" in sent_prompt
 
 
 class TestClassifySubcategories:
@@ -325,6 +352,154 @@ class TestMerchantTags:
                       "address": {"city": "San Francisco", "country": "USA"}}))
         assert any("#shopping" in f for f in facts)
         assert not any("San Francisco" in f for f in facts)
+
+
+class TestNoveltyGateHoldsNewCategoriesForApproval:
+    """The bug this feature fixes: a large one-off transaction (a tax payment)
+    got silently filed under an existing, unrelated category because nothing
+    stopped Pass 1/2 from treating "close enough" as good enough. Now a
+    genuinely new (parent, subcategory) pair is held for a Telegram decision
+    instead of being created on the spot."""
+
+    def _stub_llm(self, monkeypatch, parent_by_id, subcategory_by_id):
+        monkeypatch.setattr(ll, "match_existing", lambda client, txns, subs: {})
+        monkeypatch.setattr(
+            ll, "classify_parents",
+            lambda client, txns, parents, denied_parent_names=None: {
+                t["id"]: parent_by_id[t["id"]] for t in txns
+            },
+        )
+        monkeypatch.setattr(
+            ll, "classify_subcategories",
+            lambda client, txns, parent_name, subs, all_parent_names, denied_sub_names=None: {
+                t["id"]: subcategory_by_id[t["id"]] for t in txns
+            },
+        )
+        monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+
+    def _seed(self, db, parent="Bills & Utilities", sub="Electricity"):
+        parent_id = db.execute(
+            "INSERT INTO parent_categories (id, name, created_at) VALUES (1, ?, NOW()) RETURNING id", [parent]
+        ).fetchone()[0]
+        db.execute(
+            "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (1, ?, ?, NOW())", [sub, parent_id]
+        )
+        db.execute(
+            """INSERT INTO transactions (id, amount, currency, description, user_context, skipped)
+               VALUES ('txn_bill', -80.0, 'GBP', 'Octopus Energy', 'Electricity bill', FALSE)"""
+        )
+        db.execute(
+            """INSERT INTO transactions (id, amount, currency, description, user_context, skipped)
+               VALUES ('txn_tax', -3000.0, 'GBP', 'HMRC', 'Self assessment tax payment', FALSE)"""
+        )
+
+    def test_a_new_category_is_held_not_created(self, db, monkeypatch):
+        self._seed(db)
+        self._stub_llm(
+            monkeypatch,
+            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
+            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
+        )
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
+        synced = []
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: synced.extend(ids))
+
+        ll.run()
+
+        bill = db.execute(
+            "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = 'txn_bill'"
+        ).fetchone()
+        tax = db.execute(
+            "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
+        ).fetchone()
+
+        assert bill == ("Bills & Utilities", "Electricity", None)
+        assert tax[0] is None and tax[1] is None and tax[2] is not None, \
+            "the tax payment must stay unclassified and locked, not be filed anywhere"
+        assert db.execute("SELECT COUNT(*) FROM parent_categories WHERE name = 'Tax'").fetchone()[0] == 0, \
+            "the new category must not exist until approved"
+
+        proposal = db.execute(
+            "SELECT parent_name, parent_is_new, subcategory_name, status FROM category_proposals WHERE id = ?",
+            [tax[2]],
+        ).fetchone()
+        assert proposal == ("Tax", True, "Self Assessment", "pending")
+        assert synced == [tax[2]]
+
+    def test_a_new_subcategory_under_an_existing_parent_is_also_held(self, db, monkeypatch):
+        """Novelty at the subcategory level alone must be caught too -- not
+        just a brand new parent."""
+        self._seed(db)
+        self._stub_llm(
+            monkeypatch,
+            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Bills & Utilities"},
+            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Council Tax"},
+        )
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
+
+        ll.run()
+
+        tax = db.execute(
+            "SELECT llm_category, pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
+        ).fetchone()
+        assert tax[0] is None and tax[1] is not None
+        proposal = db.execute(
+            "SELECT parent_name, parent_is_new, subcategory_name FROM category_proposals WHERE id = ?", [tax[1]]
+        ).fetchone()
+        assert proposal == ("Bills & Utilities", False, "Council Tax")
+
+    def test_server_not_yet_deployed_falls_back_to_immediate_creation(self, db, monkeypatch):
+        """If the gate can't be enforced, the old behaviour must still work
+        rather than stranding a transaction locked with no card ever sent."""
+        self._seed(db)
+        self._stub_llm(
+            monkeypatch,
+            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
+            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
+        )
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: False)
+
+        ll.run()
+
+        tax = db.execute(
+            "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
+        ).fetchone()
+        assert tax == ("Tax", "Self Assessment", None)
+        assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0
+
+    def test_a_denied_name_is_forbidden_on_the_retry_and_a_different_one_is_accepted(self, db, monkeypatch):
+        self._seed(db)
+        db.execute(
+            """INSERT INTO category_proposals (id, parent_name, parent_is_new, subcategory_name, status, proposed_at)
+               VALUES (1, 'Tax', TRUE, 'Self Assessment', 'denied', NOW())"""
+        )
+        seen_denied_parents = []
+
+        def fake_classify_parents(client, txns, parents, denied_parent_names=None):
+            seen_denied_parents.append(denied_parent_names)
+            return {t["id"]: ("Bills & Utilities" if t["id"] == "txn_bill" else "Miscellaneous") for t in txns}
+
+        monkeypatch.setattr(ll, "match_existing", lambda client, txns, subs: {})
+        monkeypatch.setattr(ll, "classify_parents", fake_classify_parents)
+        monkeypatch.setattr(
+            ll, "classify_subcategories",
+            lambda client, txns, parent_name, subs, all_parent_names, denied_sub_names=None: {
+                t["id"]: ("Electricity" if t["id"] == "txn_bill" else "One-off Payments") for t in txns
+            },
+        )
+        monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
+
+        ll.run()
+
+        assert seen_denied_parents == [{"tax"}]
+        proposal = db.execute(
+            "SELECT parent_name, subcategory_name FROM category_proposals WHERE status = 'pending'"
+        ).fetchone()
+        assert proposal == ("Miscellaneous", "One-off Payments"), \
+            "a different new name must still be proposed, not silently forced into an existing category"
 
 
 class TestCounterparty:

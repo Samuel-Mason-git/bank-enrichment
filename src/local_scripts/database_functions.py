@@ -124,6 +124,7 @@ MIGRATIONS = [
     ("subscriptions", "merchant_name", "VARCHAR(255)"),
     ("monthly_summaries", "total_invested", "DECIMAL(19,4)"),
     ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
+    ("transactions", "pending_category_proposal_id", "INTEGER"),
 ]
 
 
@@ -208,10 +209,14 @@ def get_transaction(transaction_id: str) -> dict | None:
 
 
 def get_unclassified() -> list[dict]:
+    # Transactions locked behind a pending category-creation proposal are
+    # excluded until a Telegram decision comes back -- otherwise every run
+    # would re-submit them to the LLM and risk a duplicate proposal/card.
     return _rows(
         """SELECT * FROM transactions
            WHERE (llm_category IS NULL OR llm_subcategory IS NULL)
            AND skipped = FALSE
+           AND pending_category_proposal_id IS NULL
            ORDER BY created_at DESC"""
     )
 
@@ -710,10 +715,13 @@ def update_classification(
     confidence: float | None,
     model: str,
 ) -> None:
+    # Clearing pending_category_proposal_id here too: a transaction that has
+    # just been classified -- by any path -- is never still waiting on a
+    # category decision, so a proposal approved later must not overwrite it.
     get_con().execute(
         """UPDATE transactions
            SET llm_category = ?, llm_subcategory = ?, llm_confidence = ?,
-               llm_model = ?, classified_at = ?
+               llm_model = ?, classified_at = ?, pending_category_proposal_id = NULL
            WHERE id = ?""",
         [category, subcategory, confidence, model,
          time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
