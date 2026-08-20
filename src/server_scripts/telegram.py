@@ -132,6 +132,45 @@ class TelegramBot:
             ]]},
         })
 
+    def send_category_proposal(self, chat_id: int, proposal: dict):
+        """Sent when Pass 1/2/3 of the real-time classifier can't cleanly place
+        a transaction. Offers up to a few candidate placements as individual
+        buttons -- a new parent, a stretch-fit into an existing one, maybe a
+        different existing subcategory -- so the user picks instead of the
+        classifier having to commit to one guess. Unlike the monthly review
+        this can fire on a single transaction -- there's no cluster-size
+        minimum. Until answered, the transaction(s) below stay unclassified
+        rather than being filed under the nearest existing name."""
+        examples = proposal.get("examples") or []
+        options = proposal["options"]
+        n = proposal["txn_count"]
+        plural = "s" if n != 1 else ""
+        numbers = ["1️⃣", "2️⃣", "3️⃣"]
+
+        lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
+        lines += [f"  • {e}" for e in examples[:4]]
+        lines += ["", "Pick whichever fits, or deny them all:"]
+
+        buttons = []
+        for i, opt in enumerate(options):
+            num = numbers[i] if i < len(numbers) else f"{i + 1}."
+            icon = "🆕" if opt["parent_is_new"] else "📁"
+            label = f"{opt['parent_name']} › {opt['subcategory_name']}"
+            lines.append(f"\n{num} {icon} <b>{label}</b>\n{opt['rationale']}")
+            buttons.append([{
+                "text": f"{num} {label}",
+                "callback_data": f"catprop:select:{proposal['local_id']}:{i}",
+            }])
+        buttons.append([{"text": "❌ None of these", "callback_data": f"catprop:denyall:{proposal['local_id']}"}])
+        lines += ["", "Until you decide, these stay unclassified."]
+
+        return self._post("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": buttons},
+        })
+
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']

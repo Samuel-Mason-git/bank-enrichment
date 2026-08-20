@@ -13,6 +13,7 @@ from database_functions import (
     get_parents, get_subcategories,
     upsert_parent, upsert_subcategory,
 )
+import category_proposals
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -26,6 +27,11 @@ BATCH_SIZE = 15
 # full batch of 15 needs roughly 600-700 tokens; this leaves real headroom
 # for longer category names and larger batches.
 MAX_TOKENS = 4096
+# Cap on candidate placements offered per novel category proposal (the primary
+# pick plus up to this many alternatives) -- enough room for "new parent",
+# "stretch-fit into an existing one", and one more idea, without turning the
+# Telegram card into an unreadable wall of buttons.
+MAX_OPTIONS = 3
 
 LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "llm_classifier.log") if DB_PATH else "llm_classifier.log"
 
@@ -155,7 +161,7 @@ Transactions:
 {txn_lines}"""
 
 
-def _pass1_prompt(transactions: list[dict], parents: list[dict]) -> str:
+def _pass1_prompt(transactions: list[dict], parents: list[dict], denied_parent_names: set[str] | None = None) -> str:
     existing = ""
     if parents:
         existing = "Existing parent categories (reuse these where they fit):\n"
@@ -164,13 +170,23 @@ def _pass1_prompt(transactions: list[dict], parents: list[dict]) -> str:
     else:
         existing = "No parent categories exist yet — you will create them all.\n"
 
+    denied_block = ""
+    if denied_parent_names:
+        names = ", ".join(sorted(denied_parent_names))
+        denied_block = (
+            f"\nThe user already declined creating these exact category names — do not propose them again. "
+            f"This is NOT a signal to prefer an existing category over a new one — rejecting an idea says nothing "
+            f"about whether an existing category is the right answer either. Judge the fit on its own merits and "
+            f"propose whatever genuinely fits best, new or existing, other than these: {names}\n"
+        )
+
     txn_lines = "\n".join(
         f"{i+1}. {_format_transaction(t)}" for i, t in enumerate(transactions)
     )
 
     return f"""You are classifying personal bank transactions into parent categories for a budgeting system.
 
-{existing}
+{existing}{denied_block}
 Instructions:
 - Assign each transaction to the single most appropriate parent category.
 - Reuse existing categories wherever they genuinely fit — only create a new one if no existing category is a good match.
@@ -178,7 +194,7 @@ Instructions:
 - A holiday/travel category applies when the transaction is part of a trip away. Treat an in-person purchase in a foreign country as holiday spend unless the context says otherwise (a work trip, a relocation, someone living abroad) — the "Purchased in person in" line is reliable evidence of where the user actually was. An online purchase is NOT evidence of travel no matter which country the merchant is registered in, so never infer a trip from one. A flight, hotel, or Airbnb bought at home with no context does not automatically qualify, but context saying "holiday in Spain" or "weekend trip to Amsterdam" does. Regular commuting, local travel, and day-to-day transport belong in Transport.
 - Use the human context field as the primary signal — it tells you what the transaction actually was.
 - Prefer precision over speed: if a transaction could reasonably fit two categories, pick the one that best reflects its true purpose based on all available information.
-- You may create a new parent category if none of the existing ones are a good fit, but exhaust existing options first.
+- A transaction with a distinct, one-off purpose — a payment to a tax authority or other government body, a one-time legal or medical event, anything that doesn't genuinely belong to what an existing category already represents — deserves its own new parent category. A new parent is NOT a worse answer than a stretch-fit into a loosely-related existing one. Only prefer an existing parent when the transaction is a genuine match for what it already represents, not merely adjacent to it.
 - Output ONLY the raw JSON array. No analysis, no reasoning, no markdown. Just the JSON.
 - Example: [{{"id": "tx_abc", "category": "Eating Out"}}, ...]
 
@@ -186,7 +202,7 @@ Transactions:
 {txn_lines}"""
 
 
-def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: list[dict], all_parent_names: list[str]) -> str:
+def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: list[dict], all_parent_names: list[str], denied_sub_names: set[str] | None = None) -> str:
     existing_subs = [s for s in subcategories if s["parent_name"] == parent_name]
 
     existing = ""
@@ -197,6 +213,15 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
     else:
         existing = f"No subcategories under '{parent_name}' yet — you will create them.\n"
 
+    denied_block = ""
+    if denied_sub_names:
+        names = ", ".join(sorted(denied_sub_names))
+        denied_block = (
+            f"\nThe user already declined creating these exact subcategory names — do not propose them again. "
+            f"This is NOT a signal to prefer an existing subcategory over a new one — judge the fit on its own "
+            f"merits and propose whatever genuinely fits best, new or existing, other than these: {names}\n"
+        )
+
     forbidden = ", ".join(f'"{n}"' for n in all_parent_names)
 
     txn_lines = "\n".join(
@@ -205,7 +230,7 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
 
     return f"""You are assigning subcategories to bank transactions already classified under the parent category "{parent_name}".
 
-{existing}
+{existing}{denied_block}
 Instructions:
 - Assign each transaction to the single most appropriate subcategory within "{parent_name}".
 - Reuse existing subcategories wherever they genuinely fit — only create a new one when no existing subcategory accurately describes this transaction.
@@ -218,6 +243,44 @@ Instructions:
 
 Transactions:
 {txn_lines}"""
+
+
+def _pass3_prompt(groups: list[dict], parents: list[dict], subcategories: list[dict]) -> str:
+    subs_by_parent: dict[str, list[str]] = {}
+    for s in subcategories:
+        subs_by_parent.setdefault(s["parent_name"], []).append(s["name"])
+    taxonomy_lines = [
+        f"  {p['name']}: {', '.join(sorted(subs_by_parent.get(p['name'], []))) or '(no subcategories yet)'}"
+        for p in parents
+    ]
+    taxonomy_block = "\n".join(taxonomy_lines) or "  (no categories exist yet)"
+
+    group_blocks = []
+    for g in groups:
+        first_choice = (
+            f'{"NEW parent" if g["primary_is_new_parent"] else "existing parent"} "{g["primary_parent"]}" '
+            f'> new subcategory "{g["primary_sub"]}"'
+        )
+        examples = "\n".join(f"    - {e}" for e in g["examples"]) or "    (no examples)"
+        group_blocks.append(
+            f'Group {g["index"]}:\n  First choice: {first_choice}\n  Example transactions:\n{examples}'
+        )
+    groups_block = "\n\n".join(group_blocks)
+
+    return f"""You previously gave a first-choice category placement to some transactions that didn't cleanly fit anything in the existing taxonomy. Your job now is to suggest, for each group below, up to 2 genuinely DIFFERENT alternative placements the user could pick instead of the first choice.
+
+Existing taxonomy:
+{taxonomy_block}
+
+{groups_block}
+
+Instructions:
+- An alternative must be a real, distinct idea — not a reworded version of the first choice, and not a trivial rename of it.
+- Returning no alternatives for a group is correct and expected when the first choice is clearly the only sensible placement. Do not invent one just to fill space.
+- An alternative may reuse an existing parent/subcategory from the taxonomy above (a stretch-fit you weren't confident enough to match automatically), or propose a different new category entirely.
+- Give each alternative a one-sentence rationale a person can read on their phone and immediately understand.
+- Respond ONLY with valid JSON: an array of {{"group": <index>, "alternatives": [{{"parent_name": ..., "subcategory_name": ..., "rationale": ...}}, ...]}}. Use an empty "alternatives" list when there is nothing genuinely different to offer.
+- Output ONLY the raw JSON array. No analysis, no markdown."""
 
 
 # ── LLM calls ─────────────────────────────────────────────────────────────────
@@ -270,9 +333,9 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
         return {}
 
 
-def classify_parents(client: anthropic.Anthropic, transactions: list[dict], parents: list[dict]) -> dict[str, str]:
+def classify_parents(client: anthropic.Anthropic, transactions: list[dict], parents: list[dict], denied_parent_names: set[str] | None = None) -> dict[str, str]:
     """Returns {transaction_id: parent_category_name}"""
-    prompt = _pass1_prompt(transactions, parents)
+    prompt = _pass1_prompt(transactions, parents, denied_parent_names)
     log.info("Pass 1: classifying parent categories")
     # Prompts and responses carry your context sentences, so they sit at debug
     # level rather than being printed unconditionally -- the scheduled task
@@ -295,9 +358,9 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
         return {}
 
 
-def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict], parent_name: str, subcategories: list[dict], all_parent_names: list[str]) -> dict[str, str]:
+def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict], parent_name: str, subcategories: list[dict], all_parent_names: list[str], denied_sub_names: set[str] | None = None) -> dict[str, str]:
     """Returns {transaction_id: subcategory_name}"""
-    prompt = _pass2_prompt(transactions, parent_name, subcategories, all_parent_names)
+    prompt = _pass2_prompt(transactions, parent_name, subcategories, all_parent_names, denied_sub_names)
     log.info(f"Pass 2: assigning subcategories under '{parent_name}'")
     log.debug(f"Pass 2 prompt ({parent_name}):\n{prompt}")
     try:
@@ -313,6 +376,30 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
         return {r["id"]: r["subcategory"] for r in results}
     except Exception as e:
         log.error(f"Pass 2 LLM error for '{parent_name}': {e}")
+        return {}
+
+
+def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parents: list[dict], subcategories: list[dict]) -> dict[int, list[dict]]:
+    """Returns {group_index: [{"parent_name", "subcategory_name", "rationale"}, ...]} --
+    empty for a group the model found nothing genuinely different to offer."""
+    if not groups:
+        return {}
+    prompt = _pass3_prompt(groups, parents, subcategories)
+    log.info(f"Pass 3: proposing alternatives for {len(groups)} novel group(s)")
+    log.debug(f"Pass 3 prompt:\n{prompt}")
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        _warn_if_truncated(response, "Pass 3", len(groups))
+        raw = response.content[0].text.strip()
+        log.debug(f"Pass 3 response:\n{raw}")
+        results = _extract_json(raw)
+        return {r["group"]: r.get("alternatives") or [] for r in results}
+    except Exception as e:
+        log.error(f"Pass 3 LLM error: {e}")
         return {}
 
 
@@ -342,6 +429,19 @@ def run():
 
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
 
+    # Whether the server has the category-proposal endpoints deployed yet. If
+    # not, fall back to creating new categories immediately (today's
+    # behaviour) rather than locking transactions behind a card nobody can
+    # ever see. Checked once per run, not per batch -- it's an HTTP round trip.
+    gate_novel = category_proposals.server_supports_proposals()
+    denied_parents = category_proposals.denied_parent_names() if gate_novel else set()
+    denied_subs = category_proposals.denied_sub_names() if gate_novel else set()
+    if gate_novel:
+        log.info("Category-proposal gate active — new parent/subcategory names will be held for Telegram approval")
+    else:
+        log.info("Category-proposal endpoints unavailable — creating new categories immediately")
+    new_proposal_ids: list[int] = []
+
     total_classified = 0
     batches = [unclassified[i:i + BATCH_SIZE] for i in range(0, len(unclassified), BATCH_SIZE)]
     log.info(f"Processing {len(unclassified)} transactions in {len(batches)} batch(es) of up to {BATCH_SIZE}")
@@ -352,6 +452,7 @@ def run():
         # Refresh taxonomy before each batch so new categories from prior batches are visible
         parents = get_parents()
         subcategories = get_subcategories()
+        existing_parent_names = {p["name"].strip().lower() for p in parents}
 
         # ── Pass 0: match against existing taxonomy ────────────────────────────
         t0 = time.time()
@@ -363,13 +464,22 @@ def run():
         parent_map: dict[str, str] = {}
         if unmatched:
             t0 = time.time()
-            parent_map = classify_parents(client, unmatched, parents)
+            parent_map = classify_parents(client, unmatched, parents, denied_parents)
             log.info(f"Pass 1 complete ({time.time() - t0:.2f}s) — {len(parent_map)}/{len(unmatched)} assigned")
 
-        # Upsert any new parent categories
+        # A name Pass 1 assigned that wasn't in the taxonomy at the start of
+        # this batch -- held for approval rather than created outright.
+        novel_parent_txn_ids = {
+            tid for tid, name in parent_map.items()
+            if gate_novel and name.strip().lower() not in existing_parent_names
+        }
+
+        # Upsert parent categories that already exist -- novel ones are not
+        # created here, only proposed once Pass 2 has a subcategory for them.
         parent_id_map: dict[str, int] = {}
         for name in set(parent_map.values()):
-            parent_id_map[name] = upsert_parent(name)
+            if not gate_novel or name.strip().lower() in existing_parent_names:
+                parent_id_map[name] = upsert_parent(name)
         for match in existing_map.values():
             name = match["category"]
             if name not in parent_id_map:
@@ -377,9 +487,15 @@ def run():
 
         # ── Pass 2: subcategories (unmatched only) ─────────────────────────────
         sub_map: dict[str, str] = {}
+        existing_subs_by_parent: dict[str, set[str]] = {}
         if unmatched and parent_map:
             subcategories = get_subcategories()
-            all_parent_names = list(parent_id_map.keys())
+            for s in subcategories:
+                existing_subs_by_parent.setdefault(s["parent_name"].strip().lower(), set()).add(s["name"].strip().lower())
+
+            # Includes this batch's novel parent names too, so a subcategory
+            # can't collide with a parent that hasn't been created yet either.
+            all_parent_names = list({p["name"] for p in parents} | set(parent_map.values()))
 
             by_parent: dict[str, list[dict]] = {}
             for t in unmatched:
@@ -389,15 +505,9 @@ def run():
 
             for p_name, txns in by_parent.items():
                 t0 = time.time()
-                result = classify_subcategories(client, txns, p_name, subcategories, all_parent_names)
+                result = classify_subcategories(client, txns, p_name, subcategories, all_parent_names, denied_subs)
                 sub_map.update(result)
                 log.info(f"Pass 2 '{p_name}' ({time.time() - t0:.2f}s) — {len(result)}/{len(txns)} assigned")
-
-            # Upsert new subcategories
-            for txn_id, sub_name in sub_map.items():
-                p_name = parent_map.get(txn_id)
-                if p_name:
-                    upsert_subcategory(sub_name, parent_id_map[p_name])
 
         # Upsert subcategories from Pass 0 matches (ensure they exist in taxonomy)
         for match in existing_map.values():
@@ -405,29 +515,100 @@ def run():
             if p_id:
                 upsert_subcategory(match["subcategory"], p_id)
 
-        # ── Write classifications back ─────────────────────────────────────────
+        # ── Write classifications back, or hold new (parent, subcategory)
+        # pairs for Telegram approval instead of creating them outright ──────
+        novel_groups: dict[tuple[str, str], list[str]] = {}
+        novel_group_is_new_parent: dict[tuple[str, str], bool] = {}
+
         for t in batch:
             txn_id = t["id"]
             if txn_id in existing_map:
                 p_name = existing_map[txn_id]["category"]
                 s_name = existing_map[txn_id]["subcategory"]
-            else:
-                p_name = parent_map.get(txn_id)
-                s_name = sub_map.get(txn_id)
-
-            if p_name:
-                update_classification(
-                    transaction_id=txn_id,
-                    category=p_name,
-                    subcategory=s_name,
-                    confidence=None,
-                    model=MODEL,
-                )
+                update_classification(txn_id, p_name, s_name, None, MODEL)
                 total_classified += 1
-                source = "P0" if txn_id in existing_map else "P1+2"
-                log.info(f"  [{source}] {txn_id} -> {p_name} / {s_name or '—'}")
-            else:
+                log.info(f"  [P0] {txn_id} -> {p_name} / {s_name}")
+                continue
+
+            p_name = parent_map.get(txn_id)
+            s_name = sub_map.get(txn_id)
+            if not p_name:
                 log.warning(f"  No classification for {txn_id} — skipping")
+                continue
+
+            parent_is_novel = txn_id in novel_parent_txn_ids
+            sub_is_novel = bool(s_name) and s_name.strip().lower() not in existing_subs_by_parent.get(p_name.strip().lower(), set())
+            if gate_novel and (parent_is_novel or sub_is_novel):
+                if not s_name:
+                    log.warning(f"  {txn_id} needs a new category but Pass 2 assigned no subcategory — retrying next run")
+                    continue
+                key = (p_name, s_name)
+                novel_groups.setdefault(key, []).append(txn_id)
+                novel_group_is_new_parent[key] = parent_is_novel
+                continue
+
+            upsert_subcategory(s_name, parent_id_map[p_name])
+            update_classification(txn_id, p_name, s_name, None, MODEL)
+            total_classified += 1
+            log.info(f"  [P1+2] {txn_id} -> {p_name} / {s_name or '—'}")
+
+        # ── Pass 3: propose a few alternative placements for each novel group ──
+        if novel_groups:
+            group_keys = list(novel_groups.keys())
+            batch_by_id = {t["id"]: t for t in batch}
+            alt_groups = [
+                {
+                    "index": i,
+                    "primary_parent": p_name,
+                    "primary_sub": s_name,
+                    "primary_is_new_parent": novel_group_is_new_parent[(p_name, s_name)],
+                    "examples": [
+                        _format_transaction(batch_by_id[tid]) for tid in novel_groups[(p_name, s_name)][:3]
+                    ],
+                }
+                for i, (p_name, s_name) in enumerate(group_keys)
+            ]
+            t0 = time.time()
+            alternatives_by_index = propose_alternatives(client, alt_groups, parents, subcategories)
+            log.info(f"Pass 3 complete ({time.time() - t0:.2f}s)")
+
+            for i, (p_name, s_name) in enumerate(group_keys):
+                txn_ids = novel_groups[(p_name, s_name)]
+                options = [{
+                    "parent_name": p_name,
+                    "subcategory_name": s_name,
+                    "parent_is_new": novel_group_is_new_parent[(p_name, s_name)],
+                    "rationale": "Best fit based on the transaction details.",
+                }]
+                seen = {(p_name.strip().lower(), s_name.strip().lower())}
+                for alt in alternatives_by_index.get(i, []):
+                    alt_p, alt_s = alt.get("parent_name"), alt.get("subcategory_name")
+                    if not alt_p or not alt_s or len(options) >= MAX_OPTIONS:
+                        continue
+                    key = (alt_p.strip().lower(), alt_s.strip().lower())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    options.append({
+                        "parent_name": alt_p,
+                        "subcategory_name": alt_s,
+                        "parent_is_new": alt_p.strip().lower() not in existing_parent_names,
+                        "rationale": alt.get("rationale") or "An alternative placement.",
+                    })
+
+                proposal_id, is_new = category_proposals.register_group(options, txn_ids)
+                if is_new:
+                    new_proposal_ids.append(proposal_id)
+                log.info(
+                    f"  [HOLD] {len(txn_ids)} transaction(s) awaiting approval — "
+                    f"{len(options)} option(s), primary '{p_name} / {s_name}'"
+                )
+
+    if new_proposal_ids:
+        try:
+            category_proposals.sync_new_proposals(new_proposal_ids)
+        except Exception as e:
+            log.error(f"Failed to sync category proposal(s) to the server: {e}", exc_info=True)
 
     log.info(f"--- Run complete: {total_classified}/{len(unclassified)} classified in {time.time() - run_start:.2f}s ---")
 

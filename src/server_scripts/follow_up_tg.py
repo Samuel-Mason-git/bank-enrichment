@@ -39,7 +39,11 @@ def run_requester(bot) -> None:
         transaction_id, payload_str = row[0], row[1]
         try:
             data = json.loads(payload_str)
-            merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
+            # Falls back to counterparty for direct debits/bank transfers, which
+            # rarely populate merchant -- otherwise recurring bills never get a
+            # merchant-specific quick-tap suggestion, only the generic top-5.
+            txn_data = data.get('data') or {}
+            merchant_name = (txn_data.get('merchant') or {}).get('name') or (txn_data.get('counterparty') or {}).get('name')
             try:
                 quick_categories = get_quick_categories(merchant_name)
             except Exception as e:
@@ -84,7 +88,11 @@ def run_requester(bot) -> None:
             else:
                 try:
                     data = json.loads(payload_str)
-                    merchant_name = ((data.get('data') or {}).get('merchant') or {}).get('name')
+                    # Falls back to counterparty for direct debits/bank transfers, which
+                    # rarely populate merchant -- otherwise recurring bills never get a
+                    # merchant-specific quick-tap suggestion, only the generic top-5.
+                    txn_data = data.get('data') or {}
+                    merchant_name = (txn_data.get('merchant') or {}).get('name') or (txn_data.get('counterparty') or {}).get('name')
                     try:
                         quick_categories = get_quick_categories(merchant_name)
                     except Exception as e:

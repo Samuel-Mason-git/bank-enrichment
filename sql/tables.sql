@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     llm_subcategory VARCHAR(255),
     llm_confidence DECIMAL(5,4),
     llm_model VARCHAR(255),
-    classified_at TIMESTAMP
+    classified_at TIMESTAMP,
+    -- Set while a Pass 1/2 category-creation proposal is awaiting a Telegram
+    -- decision -- excludes the transaction from future batches until decided.
+    pending_category_proposal_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS monthly_summaries (
@@ -95,6 +98,31 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
     decided_at     TIMESTAMP,
     applied_at     TIMESTAMP,
     run_key        VARCHAR NOT NULL   -- e.g. '2026-08', so one review per month
+);
+
+-- Real-time category-creation proposals: when Pass 1/2 of the classifier wants
+-- to create a parent or subcategory name that doesn't exist yet, the name is
+-- NOT created immediately -- it is proposed here and the triggering
+-- transaction(s) are locked (transactions.pending_category_proposal_id) until
+-- a Telegram decision comes back. Unlike taxonomy_proposals (which reshapes
+-- transactions that are ALREADY classified via a WHERE-match on their current
+-- category), the transactions here are unclassified and their membership is
+-- tracked directly by the FK, so applying an approval is a plain id UPDATE.
+--
+-- options holds up to a few candidate placements rather than a single one --
+-- [{"parent_name","subcategory_name","parent_is_new","rationale"}, ...] -- so
+-- an uncertain transaction can offer "new parent" alongside "stretch-fit into
+-- an existing one" and let the user pick, instead of the classifier having to
+-- commit to one guess.
+CREATE TABLE IF NOT EXISTS category_proposals (
+    id                INTEGER PRIMARY KEY,
+    options           JSON    NOT NULL,
+    status            VARCHAR NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
+    selected_option   INTEGER,   -- index into options, set once a choice is made
+    proposed_at       TIMESTAMP NOT NULL,
+    decided_at        TIMESTAMP,
+    applied_at        TIMESTAMP
 );
 
 -- User-set Income/Spend/Investment/Transfer/Excluded role per category.

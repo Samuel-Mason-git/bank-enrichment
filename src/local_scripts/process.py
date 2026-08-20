@@ -14,6 +14,7 @@ from llm_labelling import run as run_classifier
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
+from category_proposals import collect_decisions as collect_category_decisions
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -130,6 +131,16 @@ if __name__ == "__main__":
             log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
     except Exception as e:
         log.error(f"Quick-tap classification failed: {e}", exc_info=True)
+
+    # Category-creation decisions first, so a transaction unlocked by a denial
+    # (or classified by an approval) is settled before this run's classifier
+    # batches touch it again.
+    try:
+        applied = collect_category_decisions()
+        if applied:
+            log.info(f"Applied {applied} approved category proposal(s)")
+    except Exception as e:
+        log.error(f"Collecting category decisions failed: {e}", exc_info=True)
 
     try:
         run_classifier()

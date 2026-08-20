@@ -47,8 +47,8 @@ context sentences tell it exactly what each transaction was.
 6. Enrichment stored alongside the raw transaction in the queue
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
 8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
-9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time
-10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month.
+9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time — a genuinely new category is never created silently; it's proposed with a Telegram approval card first (see [New Category Approval](#new-category-approval) below)
+10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
 
 ## Server Dashboard
@@ -149,21 +149,30 @@ Both summaries catch up automatically if the script was inactive — a summary i
 
 ## LLM Classification
 
-A three-pass classification system runs locally against your DuckDB database:
+A multi-pass classification system runs locally against your DuckDB database:
 
 **Pass 0 — Match existing taxonomy:** Claude first checks whether each transaction 
 confidently matches an already-existing subcategory. If it does, the transaction is 
-classified immediately and Passes 1 and 2 are skipped. This keeps the taxonomy 
+classified immediately and the remaining passes are skipped. This keeps the taxonomy 
 consistent over time — a transaction classified as "Tobacco & Nicotine" once will 
 always land there on future runs.
 
 **Pass 1 — Parent category:** For transactions that didn't match in Pass 0, Claude 
 assigns a broad parent category. It thinks carefully about overlapping categories 
 and picks the most accurate fit — for example, "Holidays" is only used when the 
-context explicitly mentions a holiday trip, not just any travel spend.
+context explicitly mentions a holiday trip, not just any travel spend. A transaction 
+with a genuinely distinct, one-off purpose (a payment to a tax authority, a one-time 
+legal or medical event) is treated as deserving its own new parent, not squeezed into 
+a loosely-related existing one just because it seems adjacent.
 
 **Pass 2 — Subcategory:** Within each parent, Claude assigns a specific subcategory, 
 creating new ones only when none of the existing ones are an accurate fit.
+
+**Pass 3 — Alternatives:** Only for transactions that didn't cleanly match anything 
+existing, Claude is asked for up to 2 more genuinely distinct placements alongside 
+its first choice — a stretch-fit into an existing category it wasn't confident enough 
+to auto-match, or a different new-category idea — each with a one-line rationale. See 
+[New Category Approval](#new-category-approval) for what happens with these.
 
 A default taxonomy is seeded on first run — 13 parent categories and ~70 subcategories 
 covering most common personal spending:
@@ -210,6 +219,29 @@ This is why most of the dashboard shows two versions of the same figures:
   regardless of category.
 - **Actual** — the same figures computed from each category's Role instead, so refunds,
   transfers, and investment movements are correctly excluded or reclassified.
+
+### New Category Approval
+
+A category is never created silently. When Pass 1/2/3 can't cleanly place a transaction 
+under anything that already exists, the transaction is held (it stays unclassified rather 
+than being filed under the nearest existing name) and a Telegram card offers up to 3 
+candidate placements — each shown as its own button, e.g. "🆕 Tax › Self Assessment" 
+alongside "📁 Professional Services › Tax Payments" — with a one-line rationale for each. 
+Tap the one that fits and it's created and applied on the next run; tap **❌ None of these** 
+and the transaction is released back for reclassification, with every declined name now 
+off the table (and no bias toward forcing it into an existing category — a rejection is 
+evidence none of the offered ideas were right, existing or new). There is no minimum size; 
+a single unusual transaction is reason enough to ask.
+
+### Monthly Taxonomy Review
+
+Once a month, the pipeline separately reviews subcategories with at least 8 transactions, 
+looking for a coherent cluster inside one that the subcategory name actively misdescribes 
+(the kind of pattern that only becomes obvious once several transactions have accumulated — 
+Pass 0-3 above only ever see one batch at a time). Proposals are held to a stricter bar 
+than real-time proposals — a cluster must be a real, sizeable share of its parent, not 
+a rename or a one-off — and go out as their own Telegram cards, capped at 2 per month. 
+Nothing changes until you approve one.
 
 ## Local Dashboard
 
@@ -279,7 +311,9 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   └── server_db.py       # Server-side database functions
 │   └── local_scripts/         # Runs on your local machine
 │       ├── process.py         # Pull, classify, and send summaries — one task does all
-│       ├── llm_labelling.py   # LLM classification (Claude)
+│       ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
+│       ├── category_proposals.py  # Real-time new-category approval (holds + syncs Telegram cards)
+│       ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
 │       ├── database_functions.py  # Shared DuckDB library — includes a CLI (run the file directly) to print stats/transactions

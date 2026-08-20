@@ -124,6 +124,7 @@ MIGRATIONS = [
     ("subscriptions", "merchant_name", "VARCHAR(255)"),
     ("monthly_summaries", "total_invested", "DECIMAL(19,4)"),
     ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
+    ("transactions", "pending_category_proposal_id", "INTEGER"),
 ]
 
 
@@ -208,10 +209,14 @@ def get_transaction(transaction_id: str) -> dict | None:
 
 
 def get_unclassified() -> list[dict]:
+    # Transactions locked behind a pending category-creation proposal are
+    # excluded until a Telegram decision comes back -- otherwise every run
+    # would re-submit them to the LLM and risk a duplicate proposal/card.
     return _rows(
         """SELECT * FROM transactions
            WHERE (llm_category IS NULL OR llm_subcategory IS NULL)
            AND skipped = FALSE
+           AND pending_category_proposal_id IS NULL
            ORDER BY created_at DESC"""
     )
 
@@ -278,26 +283,37 @@ def get_top_subcategories(limit: int = 10) -> list[dict]:
 
 
 def get_top_merchant_subcategories(merchant_limit: int = 50, per_merchant_limit: int = 3) -> list[dict]:
-    """Top subcategories per merchant, for the `merchant_limit` most-transacted merchants."""
+    """Top subcategories per merchant, for the `merchant_limit` most-transacted
+    merchants -- these feed the per-merchant Telegram quick-tap buttons.
+
+    Grouped by merchant_name falling back to counterparty_name (direct debits
+    and bank transfers -- rent, utility bills, HMRC-style payments -- almost
+    never populate merchant_name at all), or every one of those recurring
+    payments would be shut out of quick-tap suggestions entirely and always
+    fall back to the generic top-5."""
     return _rows(
         """WITH merchant_totals AS (
-               SELECT merchant_name, COUNT(*) AS total
+               SELECT COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) AS merchant_name, COUNT(*) AS total
                FROM transactions
-               WHERE merchant_name IS NOT NULL
+               WHERE COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) IS NOT NULL
                  AND llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
-               GROUP BY merchant_name
+               GROUP BY 1
                ORDER BY total DESC
                LIMIT ?
            )
-           SELECT t.merchant_name, t.llm_category AS category, t.llm_subcategory AS subcategory,
+           SELECT COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, '')) AS merchant_name,
+                  t.llm_category AS category, t.llm_subcategory AS subcategory,
                   COUNT(*) AS transaction_count,
-                  ROW_NUMBER() OVER (PARTITION BY t.merchant_name ORDER BY COUNT(*) DESC) AS rank
+                  ROW_NUMBER() OVER (
+                      PARTITION BY COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
+                      ORDER BY COUNT(*) DESC
+                  ) AS rank
            FROM transactions t
-           JOIN merchant_totals mt ON mt.merchant_name = t.merchant_name
+           JOIN merchant_totals mt ON mt.merchant_name = COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
            WHERE t.llm_category IS NOT NULL AND t.llm_subcategory IS NOT NULL
-           GROUP BY t.merchant_name, t.llm_category, t.llm_subcategory
+           GROUP BY 1, t.llm_category, t.llm_subcategory
            QUALIFY rank <= ?
-           ORDER BY t.merchant_name, rank""",
+           ORDER BY merchant_name, rank""",
         [merchant_limit, per_merchant_limit]
     )
 
@@ -710,10 +726,13 @@ def update_classification(
     confidence: float | None,
     model: str,
 ) -> None:
+    # Clearing pending_category_proposal_id here too: a transaction that has
+    # just been classified -- by any path -- is never still waiting on a
+    # category decision, so a proposal approved later must not overwrite it.
     get_con().execute(
         """UPDATE transactions
            SET llm_category = ?, llm_subcategory = ?, llm_confidence = ?,
-               llm_model = ?, classified_at = ?
+               llm_model = ?, classified_at = ?, pending_category_proposal_id = NULL
            WHERE id = ?""",
         [category, subcategory, confidence, model,
          time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
