@@ -69,33 +69,6 @@ def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
     return added
 
 
-def _migrate_category_proposals_to_multi_option(con, sql_path: str) -> None:
-    """Twin of the same one-off migration in local_scripts/database_functions.py
-    -- see that copy for the full rationale. category_proposals holds no real
-    financial data, so a guarded drop-and-recreate is safe here in a way it
-    never would be for webhook_queue or rules."""
-    existing = {r[0] for r in con.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = 'category_proposals'"
-    ).fetchall()}
-    if "parent_name" not in existing:
-        return
-    pending = con.execute("SELECT COUNT(*) FROM category_proposals WHERE status = 'pending'").fetchone()[0]
-    if pending:
-        log.warning(
-            f"category_proposals still has {pending} pending proposal(s) in the old shape -- "
-            "skipping the multi-option migration until they're resolved"
-        )
-        return
-    con.execute("DROP TABLE category_proposals")
-    with open(sql_path, "r") as f:
-        sql = f.read()
-    for statement in split_sql_statements(sql):
-        if "CREATE TABLE IF NOT EXISTS category_proposals" in statement:
-            con.execute(statement)
-            break
-    log.info("Recreated category_proposals with the multi-option shape")
-
-
 def init_db() -> None:
     global _con
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -108,7 +81,6 @@ def init_db() -> None:
     added = _apply_migrations(_con, MIGRATIONS)
     if added:
         log.info(f"Applied schema migrations: {', '.join(added)}")
-    _migrate_category_proposals_to_multi_option(_con, sql_path)
 
 
 def get_quick_categories(merchant_name: str | None) -> list[dict]:
