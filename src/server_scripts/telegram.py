@@ -132,6 +132,32 @@ class TelegramBot:
             ]]},
         })
 
+    def send_category_proposal(self, chat_id: int, proposal: dict):
+        """Sent when Pass 1/2 of the real-time classifier wants to create a
+        category that doesn't exist yet. Unlike the monthly review this can
+        fire on a single transaction -- there's no cluster-size minimum, only
+        this approval. Until answered, the transaction(s) below stay
+        unclassified rather than being filed under the nearest existing name."""
+        examples = proposal.get("examples") or []
+        n = proposal["txn_count"]
+        plural = "s" if n != 1 else ""
+        if proposal.get("parent_is_new"):
+            heading = f"🆕 New category: <b>{proposal['parent_name']}</b> › <b>{proposal['subcategory_name']}</b>"
+        else:
+            heading = f"🏷 New subcategory: <b>{proposal['subcategory_name']}</b> (in {proposal['parent_name']})"
+        lines = [heading, "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
+        lines += [f"  • {e}" for e in examples[:4]]
+        lines += ["", "Until you decide, these stay unclassified."]
+        return self._post("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"catprop:approve:{proposal['local_id']}"},
+                {"text": "❌ Deny", "callback_data": f"catprop:deny:{proposal['local_id']}"},
+            ]]},
+        })
+
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']

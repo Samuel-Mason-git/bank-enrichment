@@ -223,6 +223,17 @@ class TaxonomyProposalEntry(BaseModel):
 class SyncTaxonomyProposalsRequest(BaseModel):
     proposals: list[TaxonomyProposalEntry]
 
+class CategoryProposalEntry(BaseModel):
+    id: int                      # the id in the LOCAL database
+    parent_name: str
+    parent_is_new: bool
+    subcategory_name: str
+    txn_count: int = 0
+    examples: list[str] = []
+
+class SyncCategoryProposalsRequest(BaseModel):
+    proposals: list[CategoryProposalEntry]
+
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     body = await request.body()
@@ -409,6 +420,47 @@ async def recieve_telegram(request: Request):
                     f"❌ Denied <b>{proposed_sub}</b>. Nothing changed, and it won't be suggested again."
                 )
             log.info(f"Taxonomy proposal {local_id} ({proposed_sub}) {decision}d via Telegram")
+
+        elif cq.data and cq.data.startswith("catprop:"):
+            # Same split as taxprop: the server only records the decision --
+            # creating the category and classifying the waiting transaction(s)
+            # happens locally on the next pipeline run.
+            _, decision, local_id = cq.data.split(":", 2)
+            try:
+                con = get_con()
+                row = con.execute(
+                    "SELECT subcategory_name, status FROM category_proposals WHERE local_id = ?",
+                    [int(local_id)]
+                ).fetchone()
+                if not row:
+                    bot.send_message(chat_id, "That suggestion has expired.")
+                    return {"ok": True}
+                subcategory_name, current = row
+                if current != "pending":
+                    bot.send_message(chat_id, f"Already {current}: <b>{subcategory_name}</b>")
+                    return {"ok": True}
+                con.execute(
+                    "UPDATE category_proposals SET status = ?, decided_at = ? WHERE local_id = ?",
+                    ["approved" if decision == "approve" else "denied",
+                     time.strftime("%Y-%m-%d %H:%M:%S"), int(local_id)]
+                )
+            except Exception as e:
+                log.error(f"Failed to record category decision {local_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            if decision == "approve":
+                bot.send_message(
+                    chat_id,
+                    f"✅ Approved <b>{subcategory_name}</b>.\n\n"
+                    "It'll be created and the waiting transaction(s) classified on the next run."
+                )
+            else:
+                bot.send_message(
+                    chat_id,
+                    f"❌ Denied <b>{subcategory_name}</b>. Those transaction(s) will be reclassified into an "
+                    "existing category on the next run instead."
+                )
+            log.info(f"Category proposal {local_id} ({subcategory_name}) {decision}d via Telegram")
 
         elif cq.data and cq.data.startswith("quickcat:"):
             _, transaction_id, quick_id = cq.data.split(":", 2)
@@ -1007,6 +1059,61 @@ async def taxonomy_decisions_collected(body: MarkProcessedRequest, api_key: str 
     for local_id in body.ids:
         con.execute(
             "UPDATE taxonomy_proposals SET status = 'collected' WHERE local_id = ?",
+            [int(local_id)]
+        )
+    return {"collected": len(body.ids)}
+
+
+@app.post('/sync-category-proposals')
+async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Store newly created real-time category proposals and send their cards.
+    Unlike /sync-taxonomy-proposals, nothing pending is cleared first -- these
+    arrive continuously (several pipeline runs a day), not one batch a month."""
+    await verify_api_key(api_key)
+    con = get_con()
+    stored = []
+    for p in body.proposals:
+        con.execute(
+            """INSERT INTO category_proposals
+               (local_id, parent_name, parent_is_new, subcategory_name, txn_count, examples, status, sent_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+               ON CONFLICT (local_id) DO NOTHING""",
+            [p.id, p.parent_name, p.parent_is_new, p.subcategory_name, p.txn_count,
+             json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        stored.append(p)
+
+    if stored:
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+        for p in stored:
+            bot.send_category_proposal(chat_id, {
+                "local_id": p.id, "parent_name": p.parent_name, "parent_is_new": p.parent_is_new,
+                "subcategory_name": p.subcategory_name, "txn_count": p.txn_count, "examples": p.examples,
+            })
+    log.info(f"Received {len(stored)} category proposal(s) and sent cards")
+    return {"received": len(stored)}
+
+
+@app.get('/category-decisions')
+async def category_decisions(api_key: str = Security(API_KEY_HEADER)):
+    """Decisions the local pipeline hasn't collected yet. Marked 'collected'
+    only once the local side confirms via /category-decisions/collected, so a
+    failed local run doesn't lose an approval."""
+    await verify_api_key(api_key)
+    rows = get_con().execute(
+        """SELECT local_id, subcategory_name, status FROM category_proposals
+           WHERE status IN ('approved', 'denied') ORDER BY local_id"""
+    ).fetchall()
+    return {"decisions": [{"id": r[0], "subcategory_name": r[1], "status": r[2]} for r in rows]}
+
+
+@app.post('/category-decisions/collected')
+async def category_decisions_collected(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
+    await verify_api_key(api_key)
+    con = get_con()
+    for local_id in body.ids:
+        con.execute(
+            "UPDATE category_proposals SET status = 'collected' WHERE local_id = ?",
             [int(local_id)]
         )
     return {"collected": len(body.ids)}

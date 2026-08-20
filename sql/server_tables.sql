@@ -59,6 +59,22 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
     last_nudged_at TIMESTAMP
 );
 
+-- Real-time category-creation proposals, mirroring the local table by
+-- local_id. The server only records the Telegram decision -- creating the
+-- category and classifying the waiting transactions happens locally.
+CREATE TABLE IF NOT EXISTS category_proposals (
+    local_id          INTEGER      PRIMARY KEY,
+    parent_name       VARCHAR(255) NOT NULL,
+    parent_is_new     BOOLEAN      NOT NULL DEFAULT TRUE,
+    subcategory_name  VARCHAR(255) NOT NULL,
+    txn_count         INTEGER      NOT NULL DEFAULT 0,
+    examples          TEXT,
+    status            VARCHAR(20)  NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied', 'collected')),
+    sent_at           TIMESTAMP    NOT NULL,
+    decided_at        TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS quick_categories (
     id            INTEGER      PRIMARY KEY,
     category      VARCHAR(255) NOT NULL,
