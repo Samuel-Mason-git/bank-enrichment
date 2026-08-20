@@ -117,6 +117,36 @@ class TestServerReceivesProposals:
                 main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1)]), "k"))
         assert server_con.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 1
 
+    def test_a_local_id_collision_with_a_stale_row_sends_no_phantom_card(self, server_con):
+        """Regression test: local ids only ever increase in normal operation,
+        but a local database restored from a backup older than the server's
+        state (or, as actually happened once, a manual row deletion) can
+        reissue an id the server already has history for. INSERT ... ON
+        CONFLICT DO NOTHING used to silently no-op while still sending a card
+        built from the NEW content -- a card that didn't match what was
+        actually stored, so tapping it just replied "Already <old status>."
+        The stale row's own content must also be left completely untouched."""
+        bot = MagicMock()
+        with patch.object(main, "get_con", return_value=server_con), \
+             patch.object(main, "bot", bot), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+             patch.object(main, "verify_api_key", new=_ok_api_key):
+            # An old, long-resolved proposal still sitting in server history.
+            _run(main.sync_category_proposals(
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, [_option("Old", "Idea")])]), "k"))
+            server_con.execute("UPDATE category_proposals SET status = 'collected' WHERE local_id = 1")
+            bot.reset_mock()
+
+            # A brand new proposal reuses the same id.
+            _run(main.sync_category_proposals(
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, [_option("New", "Idea")])]), "k"))
+
+        bot.send_category_proposal.assert_not_called()
+        row = server_con.execute(
+            "SELECT options, status FROM category_proposals WHERE local_id = 1").fetchone()
+        assert "Old" in row[0] and "New" not in row[0]
+        assert row[1] == "collected"
+
 
 class TestSelectDenyCallbacks:
     def _seed(self, con, status="pending", options=None):
