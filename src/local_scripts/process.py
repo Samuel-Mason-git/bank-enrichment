@@ -10,7 +10,7 @@ from database_functions import (
     init_db, write_to_db, get_top_subcategories, get_top_merchant_subcategories,
     apply_quick_tap_classifications,
 )
-from llm_labelling import run as run_classifier
+from llm_labelling import run as run_classifier, regenerate_category_proposals
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
@@ -141,6 +141,18 @@ if __name__ == "__main__":
             log.info(f"Applied {applied} approved category proposal(s)")
     except Exception as e:
         log.error(f"Collecting category decisions failed: {e}", exc_info=True)
+
+    # After decisions, before the classifier: a "Try again" tap leaves its
+    # transactions locked to the (now-denied) old proposal on purpose, so this
+    # has to run before run_classifier() would otherwise leave them alone
+    # (they're not in get_unclassified() while locked) and after
+    # collect_category_decisions() has recorded the tap.
+    try:
+        regenerated = regenerate_category_proposals()
+        if regenerated:
+            log.info(f"Regenerated {regenerated} category proposal(s)")
+    except Exception as e:
+        log.error(f"Regenerating category proposals failed: {e}", exc_info=True)
 
     try:
         run_classifier()

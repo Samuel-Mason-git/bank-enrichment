@@ -120,6 +120,12 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     status            VARCHAR NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
     selected_option   INTEGER,   -- index into options, set once a choice is made
+    -- Set when "denied" came from tapping Try Again rather than None of these.
+    -- Those specific options are avoided in the regenerated set but are NOT
+    -- added to the permanent denied-name blocklist -- asking for a different
+    -- idea isn't a verdict that these were wrong, just that something else is
+    -- wanted right now.
+    regenerate_requested BOOLEAN DEFAULT FALSE,
     proposed_at       TIMESTAMP NOT NULL,
     decided_at        TIMESTAMP,
     applied_at        TIMESTAMP

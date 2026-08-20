@@ -21,10 +21,9 @@ def get_con() -> duckdb.DuckDBPyConnection:
 # there, so a column added to server_tables.sql never reaches the running
 # server -- the deploy appears to succeed and the app then fails at runtime,
 # against live webhooks. Every column added to an EXISTING table goes here.
-#
-# Deliberately empty: no such column has been added yet. The mechanism is here
-# so the next one cannot be forgotten.
-MIGRATIONS: list[tuple[str, str, str]] = []
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("category_proposals", "regenerate_requested", "BOOLEAN DEFAULT FALSE"),
+]
 
 
 def split_sql_statements(sql: str) -> list[str]:

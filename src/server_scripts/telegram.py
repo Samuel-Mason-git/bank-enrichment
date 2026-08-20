@@ -149,7 +149,7 @@ class TelegramBot:
 
         lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
         lines += [f"  • {e}" for e in examples[:4]]
-        lines += ["", "Pick whichever fits, or deny them all:"]
+        lines += ["", "Pick whichever fits, ask for different options, or deny them all:"]
 
         buttons = []
         for i, opt in enumerate(options):
@@ -161,7 +161,8 @@ class TelegramBot:
                 "text": f"{num} {label}",
                 "callback_data": f"catprop:select:{proposal['local_id']}:{i}",
             }])
-        buttons.append([{"text": "❌ None of these", "callback_data": f"catprop:denyall:{proposal['local_id']}"}])
+        buttons.append([{"text": "🔄 None of these — try again", "callback_data": f"catprop:regenerate:{proposal['local_id']}"}])
+        buttons.append([{"text": "❌ Give up — leave unclassified", "callback_data": f"catprop:denyall:{proposal['local_id']}"}])
         lines += ["", "Until you decide, these stay unclassified."]
 
         return self._post("sendMessage", {

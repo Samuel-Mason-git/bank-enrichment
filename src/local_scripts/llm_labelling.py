@@ -283,6 +283,41 @@ Instructions:
 - Output ONLY the raw JSON array. No analysis, no markdown."""
 
 
+def _pass_regenerate_prompt(previous_options: list[dict], examples: list[str], parents: list[dict], subcategories: list[dict]) -> str:
+    subs_by_parent: dict[str, list[str]] = {}
+    for s in subcategories:
+        subs_by_parent.setdefault(s["parent_name"], []).append(s["name"])
+    taxonomy_lines = [
+        f"  {p['name']}: {', '.join(sorted(subs_by_parent.get(p['name'], []))) or '(no subcategories yet)'}"
+        for p in parents
+    ]
+    taxonomy_block = "\n".join(taxonomy_lines) or "  (no categories exist yet)"
+
+    previous_lines = "\n".join(
+        f'  - {o["parent_name"]} › {o["subcategory_name"]}' for o in previous_options
+    )
+    examples_block = "\n".join(f"  - {e}" for e in examples) or "  (no examples)"
+
+    return f"""You previously proposed the placements below for a group of transactions, and the user asked to see different options instead of any of these.
+
+Previously proposed (the user did not want any of these — do not repeat them, and do not just reword one):
+{previous_lines}
+
+Example transactions in this group:
+{examples_block}
+
+Existing taxonomy:
+{taxonomy_block}
+
+Instructions:
+- Propose up to {MAX_OPTIONS} genuinely new candidate placements, each meaningfully different from every one listed above and from each other.
+- Think about what the previous set got wrong as a whole — were they all stretch-fits into existing categories when something new is actually warranted, or all new-category ideas when something existing genuinely fits? Try a different angle, not just different wording.
+- Each option may reuse an existing parent/subcategory from the taxonomy above, or propose a new one.
+- Give each option a one-sentence rationale a person can read on their phone and immediately understand.
+- Respond ONLY with valid JSON: an array of {{"parent_name": ..., "subcategory_name": ..., "rationale": ...}}. Return an empty array only if you genuinely cannot think of anything different to propose.
+- Output ONLY the raw JSON array. No analysis, no markdown."""
+
+
 # ── LLM calls ─────────────────────────────────────────────────────────────────
 
 def _extract_json(raw: str) -> list:
@@ -401,6 +436,98 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
     except Exception as e:
         log.error(f"Pass 3 LLM error: {e}")
         return {}
+
+
+def propose_regenerated_options(client: anthropic.Anthropic, previous_options: list[dict], examples: list[str], parents: list[dict], subcategories: list[dict]) -> list[dict]:
+    """Returns up to MAX_OPTIONS fresh candidate options for a "Try again" tap,
+    each carrying parent_is_new computed from the current taxonomy (never
+    trusted from the model) and excluding anything matching a previously
+    shown (parent, subcategory) pair."""
+    prompt = _pass_regenerate_prompt(previous_options, examples, parents, subcategories)
+    log.info("Regenerating category options")
+    log.debug(f"Regenerate prompt:\n{prompt}")
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        _warn_if_truncated(response, "Regenerate", 1)
+        raw = response.content[0].text.strip()
+        log.debug(f"Regenerate response:\n{raw}")
+        results = _extract_json(raw)
+    except Exception as e:
+        log.error(f"Regenerate LLM error: {e}")
+        return []
+
+    existing_parent_names = {p["name"].strip().lower() for p in parents}
+    seen = {(o["parent_name"].strip().lower(), o["subcategory_name"].strip().lower()) for o in previous_options}
+    options = []
+    for r in results:
+        p_name, s_name = r.get("parent_name"), r.get("subcategory_name")
+        if not p_name or not s_name or len(options) >= MAX_OPTIONS:
+            continue
+        key = (p_name.strip().lower(), s_name.strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append({
+            "parent_name": p_name,
+            "subcategory_name": s_name,
+            "parent_is_new": p_name.strip().lower() not in existing_parent_names,
+            "rationale": r.get("rationale") or "An alternative placement.",
+        })
+    return options
+
+
+# ── Regenerate ────────────────────────────────────────────────────────────────
+
+def regenerate_category_proposals() -> int:
+    """For every proposal answered with "Try again", ask Claude for a fresh
+    set of options that avoid repeating what was already shown, and hand the
+    waiting transactions to a brand-new proposal. Returns how many were
+    regenerated.
+
+    Deliberately its own pass rather than folded into run(): it acts on a
+    small, specific set of already-locked transactions identified by
+    category_proposals.pending_regenerations(), not on whatever
+    get_unclassified() happens to return."""
+    pending = category_proposals.pending_regenerations()
+    if not pending:
+        return 0
+    if not CLAUDE_SECRET:
+        log.error("CLAUDE_SECRET not set -- cannot regenerate category proposals")
+        return 0
+
+    client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
+    parents = get_parents()
+    subcategories = get_subcategories()
+    new_proposal_ids: list[int] = []
+    regenerated = 0
+
+    for item in pending:
+        options = propose_regenerated_options(
+            client, item["previous_options"], item["examples"], parents, subcategories
+        )
+        if not options:
+            log.warning(
+                f"Regeneration for proposal {item['old_id']} returned nothing new -- "
+                f"its {len(item['txn_ids'])} transaction(s) remain locked to it until answered differently"
+            )
+            continue
+        proposal_id, is_new = category_proposals.register_group(options, item["txn_ids"])
+        if is_new:
+            new_proposal_ids.append(proposal_id)
+        regenerated += 1
+        log.info(f"  [REGENERATED] proposal {item['old_id']} -> {proposal_id} ({len(options)} option(s))")
+
+    if new_proposal_ids:
+        try:
+            category_proposals.sync_new_proposals(new_proposal_ids)
+        except Exception as e:
+            log.error(f"Failed to sync regenerated category proposal(s) to the server: {e}", exc_info=True)
+
+    return regenerated
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────

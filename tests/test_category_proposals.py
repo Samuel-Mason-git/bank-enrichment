@@ -105,6 +105,19 @@ class TestDeniedNames:
         assert cp.denied_parent_names() == set()
         assert cp.denied_sub_names() == {"council tax"}
 
+    def test_a_regenerate_request_does_not_permanently_block_its_options(self, db):
+        """A "Try again" tap is recorded as 'denied' under the hood so the
+        transactions can be found via the FK, but asking for different ideas
+        isn't a verdict that the shown ones were wrong -- only a genuine
+        "None of these" should reach the permanent blocklist."""
+        db.execute(
+            """INSERT INTO category_proposals (id, options, status, regenerate_requested, proposed_at)
+               VALUES (1, ?, 'denied', TRUE, NOW())""",
+            [json.dumps([_option("Tax", "Self Assessment")])],
+        )
+        assert cp.denied_parent_names() == set()
+        assert cp.denied_sub_names() == set()
+
 
 class TestApplySelected:
     def test_creates_the_chosen_option_and_classifies_exactly_the_locked_transactions(self, db):
@@ -198,6 +211,50 @@ class TestDenyAll:
         assert cp.deny_all(999) == 0
 
 
+class TestPendingRegenerations:
+    def test_finds_a_regenerate_flagged_proposal_via_its_locked_transactions(self, db):
+        for txn_id, ctx in [("tx_1", "HMRC payment"), ("tx_2", None)]:
+            db.execute(
+                """INSERT INTO transactions (id, amount, currency, user_context, merchant_name, skipped)
+                   VALUES (?, -100.0, 'GBP', ?, 'HMRC', FALSE)""",
+                [txn_id, ctx],
+            )
+        options = [_option("Tax", "Self Assessment")]
+        proposal_id, _ = cp.register_group(options, ["tx_1", "tx_2"])
+        db.execute(
+            "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [proposal_id]
+        )
+
+        pending = cp.pending_regenerations()
+
+        assert len(pending) == 1
+        assert pending[0]["old_id"] == proposal_id
+        assert pending[0]["previous_options"] == options
+        assert set(pending[0]["txn_ids"]) == {"tx_1", "tx_2"}
+        assert set(pending[0]["examples"]) == {"HMRC payment", "HMRC"}
+
+    def test_a_plain_denial_is_not_returned(self, db):
+        """Deny-all already unlocked its transactions, so the FK join finds
+        nothing -- this is what makes plain denials naturally invisible here
+        without any extra bookkeeping."""
+        _seed_pending_txns(db, ["tx_1"])
+        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
+        cp.deny_all(proposal_id)
+        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = ?", [proposal_id])
+        assert cp.pending_regenerations() == []
+
+    def test_a_still_pending_proposal_is_not_returned(self, db):
+        _seed_pending_txns(db, ["tx_1"])
+        cp.register_group([_option()], ["tx_1"])
+        assert cp.pending_regenerations() == []
+
+    def test_an_applied_proposal_is_not_returned(self, db):
+        _seed_pending_txns(db, ["tx_1"])
+        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
+        cp.apply_selected(proposal_id, 0)
+        assert cp.pending_regenerations() == []
+
+
 class TestCollectDecisions:
     def test_selected_decision_is_applied_and_recorded(self, db):
         _seed_pending_txns(db, ["tx_1"])
@@ -227,6 +284,27 @@ class TestCollectDecisions:
         assert db.execute(
             "SELECT llm_category, pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
         ).fetchone() == (None, None)
+
+    def test_a_regenerate_decision_leaves_transactions_locked_rather_than_unlocking(self, db):
+        """Deliberately does NOT call deny_all(): the transactions must stay
+        locked to the (now-denied) proposal so pending_regenerations() can
+        still find them via that FK -- unlocking here would lose the link
+        between "these transactions" and "what was already shown"."""
+        _seed_pending_txns(db, ["tx_1", "tx_2"])
+        proposal_id, _ = cp.register_group([_option()], ["tx_1", "tx_2"])
+        with patch.object(cp, "fetch_decisions",
+                          return_value=[{"id": proposal_id, "status": "denied", "regenerate_requested": True}]), \
+             patch.object(cp, "confirm_collected"):
+            applied = cp.collect_decisions()
+        assert applied == 0
+        row = db.execute(
+            "SELECT status, regenerate_requested FROM category_proposals WHERE id = ?", [proposal_id]
+        ).fetchone()
+        assert row == ("denied", True)
+        locked = {r[0] for r in db.execute(
+            "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
+        ).fetchall()}
+        assert locked == {"tx_1", "tx_2"}
 
     def test_a_backup_is_taken_before_any_selection_is_applied(self, db):
         _seed_pending_txns(db, ["tx_1"])

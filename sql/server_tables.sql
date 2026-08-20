@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     status            VARCHAR(20)  NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'selected', 'denied', 'collected')),
     selected_option   INTEGER,
+    regenerate_requested BOOLEAN   DEFAULT FALSE,
     sent_at           TIMESTAMP    NOT NULL,
     decided_at        TIMESTAMP
 );

@@ -155,6 +155,19 @@ class TestSelectDenyCallbacks:
         assert row == ("denied", None)
         assert "None of these" in bot.send_message.call_args[0][1]
 
+    def test_regenerate_is_recorded_as_denied_with_the_flag_set(self, server_con):
+        """Recorded as 'denied' under the hood so the same collection path
+        (status IN ('selected','denied')) picks it up, but flagged so the
+        local side knows to ask Claude for fresh options instead of just
+        unlocking the transactions."""
+        self._seed(server_con)
+        bot = self._tap(server_con, "catprop:regenerate:1")
+        row = server_con.execute(
+            "SELECT status, selected_option, regenerate_requested FROM category_proposals WHERE local_id = 1"
+        ).fetchone()
+        assert row == ("denied", None, True)
+        assert "fresh set of options" in bot.send_message.call_args[0][1]
+
     def test_the_server_never_applies_anything_itself(self, server_con):
         self._seed(server_con)
         self._tap(server_con, "catprop:select:1:0")
@@ -208,4 +221,21 @@ class TestCollectedEndpoint:
         with patch.object(main, "get_con", return_value=server_con), \
              patch.object(main, "verify_api_key", new=_ok_api_key):
             result = _run(main.category_decisions(api_key="k"))
-        assert result["decisions"] == [{"id": 2, "status": "selected", "selected_option": 1}]
+        assert result["decisions"] == [
+            {"id": 2, "status": "selected", "selected_option": 1, "regenerate_requested": False}
+        ]
+
+    def test_decisions_endpoint_reports_regenerate_requested(self, server_con):
+        import json
+        opts = json.dumps([{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}])
+        server_con.execute(
+            """INSERT INTO category_proposals
+               (local_id, options, txn_count, examples, status, regenerate_requested, sent_at)
+               VALUES (1, ?, 1, '[]', 'denied', TRUE, NOW())""",
+            [opts])
+        with patch.object(main, "get_con", return_value=server_con), \
+             patch.object(main, "verify_api_key", new=_ok_api_key):
+            result = _run(main.category_decisions(api_key="k"))
+        assert result["decisions"] == [
+            {"id": 1, "status": "denied", "selected_option": None, "regenerate_requested": True}
+        ]
