@@ -150,41 +150,11 @@ def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
     return added
 
 
-def _migrate_category_proposals_to_multi_option(con) -> None:
-    """One-off exception to "additive only": category_proposals moved from a
-    single (parent, subcategory) guess per row to a JSON `options` list of a
-    few candidates. Unlike every other table here, this one has no real
-    financial data and (checked below) no undecided proposal to lose -- it's
-    just today's design still settling -- so a guarded drop and recreate is
-    safe where it would never be for transactions or subscriptions.
-
-    Guarded on the old shape still being present (idempotent -- a no-op on
-    every run after the first) and on there being no 'pending' row (refuses
-    to touch a proposal someone hasn't answered yet, rather than losing it)."""
-    if "parent_name" not in _columns(con, "category_proposals"):
-        return  # already migrated, or a fresh DB that got the new shape from tables.sql directly
-    pending = con.execute("SELECT COUNT(*) FROM category_proposals WHERE status = 'pending'").fetchone()[0]
-    if pending:
-        log.warning(
-            f"category_proposals still has {pending} pending proposal(s) in the old shape -- "
-            "skipping the multi-option migration until they're resolved"
-        )
-        return
-    con.execute("DROP TABLE category_proposals")
-    sql_path = Path(__file__).parent.parent.parent / "sql" / "tables.sql"
-    for statement in split_sql_statements(sql_path.read_text()):
-        if "CREATE TABLE IF NOT EXISTS category_proposals" in statement:
-            con.execute(statement)
-            break
-    log.info("Recreated category_proposals with the multi-option shape")
-
-
 def _migrate() -> None:
     """Additive schema migrations — safe to run on every startup."""
     added = _apply_migrations(_con, MIGRATIONS)
     if added:
         log.info(f"Applied schema migrations: {', '.join(added)}")
-    _migrate_category_proposals_to_multi_option(_con)
 
 
 def _seed_taxonomy() -> None:

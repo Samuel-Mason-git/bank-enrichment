@@ -199,14 +199,13 @@ poetry run python src/local_scripts/process.py
 ```
 
 This single command does everything in sequence:
-1. Create the local database file at `DB_PATH` (first run only)
-2. Create all tables (transactions, parent_categories, subcategories)
-3. Seed the default taxonomy — 13 parent categories and ~70 subcategories are inserted on first run (skipped if they already exist)
-4. Fetch all enriched transactions from the server
-5. Write them to the local database
-6. Mark them as processed on the server
-7. Run the LLM classifier — assigns parent categories and subcategories to any unclassified transactions using Claude
-8. Send any missing monthly summaries to Telegram
+1. Create the local database file at `DB_PATH` (first run only), create all tables, and seed the default taxonomy — 13 parent categories and ~70 subcategories are inserted on first run (skipped if they already exist)
+2. Fetch all enriched transactions from the server, write them to the local database, and mark them as processed on the server
+3. Apply any exact quick-tap matches without calling the LLM
+4. Collect any new-category decisions made via Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](README.md#new-category-approval) in the README)
+5. Collect any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](README.md#monthly-taxonomy-review))
+6. Send any missing weekly or monthly summaries to Telegram
+7. Sync quick-category suggestions to the server for the next batch of Telegram cards
 
 The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
