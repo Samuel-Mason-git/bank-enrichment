@@ -125,6 +125,7 @@ MIGRATIONS = [
     ("monthly_summaries", "total_invested", "DECIMAL(19,4)"),
     ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
     ("transactions", "pending_category_proposal_id", "INTEGER"),
+    ("category_proposals", "regenerate_requested", "BOOLEAN DEFAULT FALSE"),
 ]
 
 

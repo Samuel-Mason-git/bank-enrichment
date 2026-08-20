@@ -12,9 +12,11 @@ from llm_labelling import (
     _pass0_prompt,
     _pass1_prompt,
     _pass2_prompt,
+    _pass_regenerate_prompt,
     match_existing,
     classify_parents,
     classify_subcategories,
+    propose_regenerated_options,
 )
 
 
@@ -609,6 +611,118 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         options = json.loads(row[0])
         assert [(o["parent_name"], o["subcategory_name"]) for o in options] == [("Miscellaneous", "One-off Payments")], \
             "a different new name must still be proposed, not silently forced into an existing category"
+
+
+class TestPassRegeneratePrompt:
+    def test_includes_previous_options_examples_and_taxonomy(self):
+        previous = [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
+        parents = [{"name": "Bills & Utilities", "transaction_count": 5}]
+        subs = [{"name": "Council Tax", "parent_name": "Bills & Utilities", "transaction_count": 3}]
+        prompt = _pass_regenerate_prompt(previous, ["HMRC payment"], parents, subs)
+        assert "Tax › Self Assessment" in prompt
+        assert "HMRC payment" in prompt
+        assert "Bills & Utilities" in prompt and "Council Tax" in prompt
+        assert "do not repeat them" in prompt
+
+
+class TestProposeRegeneratedOptions:
+    def _client(self, payload):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(text=json.dumps(payload))]
+        return client
+
+    def test_returns_new_options_with_parent_is_new_computed_from_taxonomy(self):
+        """Never trust the model's own claim about novelty -- compute it from
+        the actual taxonomy, same as the primary pick and Pass 3 alternatives."""
+        previous = [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
+        parents = [{"name": "Bills & Utilities", "transaction_count": 5}]
+        client = self._client([
+            {"parent_name": "Bills & Utilities", "subcategory_name": "Government Payments", "rationale": "Different angle."},
+        ])
+        options = propose_regenerated_options(client, previous, ["HMRC"], parents, [])
+        assert options == [{
+            "parent_name": "Bills & Utilities", "subcategory_name": "Government Payments",
+            "parent_is_new": False, "rationale": "Different angle.",
+        }]
+
+    def test_a_repeat_of_a_previous_option_is_dropped(self):
+        previous = [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
+        client = self._client([
+            {"parent_name": "tax", "subcategory_name": "self assessment", "rationale": "Same idea reworded."},
+            {"parent_name": "Government", "subcategory_name": "Tax Returns", "rationale": "Genuinely new."},
+        ])
+        options = propose_regenerated_options(client, previous, [], [], [])
+        assert len(options) == 1
+        assert options[0]["parent_name"] == "Government"
+
+    def test_capped_at_max_options(self):
+        results = [{"parent_name": f"P{i}", "subcategory_name": f"S{i}", "rationale": "x"} for i in range(5)]
+        client = self._client(results)
+        options = propose_regenerated_options(client, [], [], [], [])
+        assert len(options) == ll.MAX_OPTIONS
+
+    def test_returns_empty_on_api_error(self):
+        client = MagicMock()
+        client.messages.create.side_effect = Exception("boom")
+        assert propose_regenerated_options(client, [], [], [], []) == []
+
+
+class TestRegenerateCategoryProposals:
+    """End-to-end: a "Try again" tap has already been recorded as a denied,
+    regenerate_requested proposal with its transactions still locked (see
+    category_proposals.collect_decisions()) -- this is the step that turns
+    that into a fresh proposal."""
+
+    def _seed_denied_for_regeneration(self, db, txn_id="tx_1", old_options=None):
+        db.execute(
+            """INSERT INTO transactions (id, amount, currency, user_context, skipped)
+               VALUES (?, -3000.0, 'GBP', 'HMRC payment', FALSE)""",
+            [txn_id],
+        )
+        options = old_options or [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
+        old_id, _ = cp.register_group(options, [txn_id])
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [old_id])
+        return old_id
+
+    def test_creates_a_fresh_proposal_and_relocks_the_transactions(self, db, monkeypatch):
+        old_id = self._seed_denied_for_regeneration(db)
+        new_options = [{"parent_name": "Professional Services", "subcategory_name": "Tax Filing", "parent_is_new": False, "rationale": "Different angle."}]
+        monkeypatch.setattr(ll, "propose_regenerated_options", lambda client, previous, examples, parents, subs: new_options)
+        monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+        synced = []
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: synced.extend(ids))
+
+        count = ll.regenerate_category_proposals()
+
+        assert count == 1
+        new_id = db.execute("SELECT id FROM category_proposals WHERE status = 'pending'").fetchone()[0]
+        assert new_id != old_id
+        assert json.loads(db.execute(
+            "SELECT options FROM category_proposals WHERE id = ?", [new_id]).fetchone()[0]) == new_options
+        assert db.execute(
+            "SELECT pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
+        ).fetchone()[0] == new_id
+        assert synced == [new_id]
+
+    def test_nothing_pending_is_a_no_op(self, db):
+        assert ll.regenerate_category_proposals() == 0
+
+    def test_no_claude_secret_returns_zero(self, db, monkeypatch):
+        self._seed_denied_for_regeneration(db)
+        monkeypatch.setattr(ll, "CLAUDE_SECRET", None)
+        assert ll.regenerate_category_proposals() == 0
+
+    def test_the_model_finding_nothing_new_leaves_the_transaction_locked_to_the_old_proposal(self, db, monkeypatch):
+        old_id = self._seed_denied_for_regeneration(db)
+        monkeypatch.setattr(ll, "propose_regenerated_options", lambda *a, **k: [])
+        monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
+
+        count = ll.regenerate_category_proposals()
+
+        assert count == 0
+        assert db.execute(
+            "SELECT pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
+        ).fetchone()[0] == old_id
 
 
 class TestCounterparty:

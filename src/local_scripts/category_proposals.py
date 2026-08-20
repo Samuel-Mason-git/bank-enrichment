@@ -42,8 +42,15 @@ def _denied_options() -> list[dict]:
     """Every option that appeared on a denied card -- not just whichever one
     the user might have been looking at. Denying the card rejects the whole
     set, so re-proposing any one of them is re-asking a question already
-    answered."""
-    rows = get_con().execute("SELECT options FROM category_proposals WHERE status = 'denied'").fetchall()
+    answered.
+
+    Excludes regenerate requests: those are "denied" under the hood (see
+    collect_decisions()) so the transactions stay locked and findable, but
+    asking for different options isn't a verdict that these were wrong --
+    only a genuine "None of these" permanently blocks a name."""
+    rows = get_con().execute(
+        "SELECT options FROM category_proposals WHERE status = 'denied' AND regenerate_requested IS NOT TRUE"
+    ).fetchall()
     options = []
     for (options_json,) in rows:
         options.extend(json.loads(options_json))
@@ -101,6 +108,41 @@ def _lock(con, proposal_id: int, txn_ids: list[str]) -> None:
         f"UPDATE transactions SET pending_category_proposal_id = ? WHERE id IN ({placeholders})",
         [proposal_id, *txn_ids],
     )
+
+
+def pending_regenerations() -> list[dict]:
+    """Proposals whose card was answered with "Try again" -- collect_decisions()
+    deliberately leaves their transactions locked (rather than unlocking them
+    the way a plain denial does), so the still-intact FK is what identifies
+    which transactions are waiting on a fresh set of options and links them
+    back to what was already shown, for llm_labelling.regenerate_category_proposals()
+    to act on. Returns {"old_id", "previous_options", "txn_ids", "examples"}
+    per proposal still waiting."""
+    con = get_con()
+    rows = con.execute(
+        """SELECT DISTINCT p.id, p.options
+           FROM category_proposals p
+           JOIN transactions t ON t.pending_category_proposal_id = p.id
+           WHERE p.status = 'denied' AND p.regenerate_requested"""
+    ).fetchall()
+    result = []
+    for pid, options_json in rows:
+        txns = con.execute(
+            "SELECT id, user_context, merchant_name, counterparty_name FROM transactions WHERE pending_category_proposal_id = ?",
+            [pid],
+        ).fetchall()
+        examples = []
+        for _, user_context, merchant_name, counterparty_name in txns:
+            example = user_context or merchant_name or counterparty_name
+            if example and len(examples) < 4:
+                examples.append(example)
+        result.append({
+            "old_id": pid,
+            "previous_options": json.loads(options_json),
+            "txn_ids": [t[0] for t in txns],
+            "examples": examples,
+        })
+    return result
 
 
 # ── Sync ─────────────────────────────────────────────────────────────────────
@@ -269,6 +311,16 @@ def collect_decisions() -> int:
                      time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]],
                 )
                 applied += 1
+            elif d.get("regenerate_requested"):
+                # Deliberately does NOT call deny_all(): the transactions stay
+                # locked to this now-terminal proposal so pending_regenerations()
+                # can find them via that FK and hand them to Claude for a fresh
+                # set of options -- unlocking here would lose the link between
+                # "these transactions" and "what was already shown".
+                con.execute(
+                    "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE, decided_at = ? WHERE id = ?",
+                    [time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]],
+                )
             else:
                 deny_all(d["id"])
                 con.execute(

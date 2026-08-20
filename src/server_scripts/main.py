@@ -430,9 +430,10 @@ async def recieve_telegram(request: Request):
             log.info(f"Taxonomy proposal {local_id} ({proposed_sub}) {decision}d via Telegram")
 
         elif cq.data and cq.data.startswith("catprop:"):
-            # catprop:select:<local_id>:<option_index> or catprop:denyall:<local_id>.
-            # The server only records the decision -- creating the category and
-            # classifying the waiting transaction(s) happens locally on the next run.
+            # catprop:select:<local_id>:<option_index>, catprop:regenerate:<local_id>,
+            # or catprop:denyall:<local_id>. The server only records the decision --
+            # everything else (creating a category, asking Claude for fresh options)
+            # happens locally on the next run.
             parts = cq.data.split(":")
             action = parts[1]
             local_id = int(parts[2])
@@ -455,6 +456,15 @@ async def recieve_telegram(request: Request):
                         "UPDATE category_proposals SET status = 'selected', selected_option = ?, decided_at = ? WHERE local_id = ?",
                         [option_index, time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
                     )
+                elif action == "regenerate":
+                    # Recorded as "denied" under the hood -- see collect_decisions()
+                    # locally -- but regenerate_requested keeps these options off
+                    # the permanent denied-name blocklist, since asking for
+                    # something different isn't a verdict that these were wrong.
+                    con.execute(
+                        "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE, decided_at = ? WHERE local_id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                    )
                 else:
                     con.execute(
                         "UPDATE category_proposals SET status = 'denied', decided_at = ? WHERE local_id = ?",
@@ -470,6 +480,11 @@ async def recieve_telegram(request: Request):
                     chat_id,
                     f"✅ Selected <b>{chosen['parent_name']} › {chosen['subcategory_name']}</b>.\n\n"
                     "It'll be created and the waiting transaction(s) classified on the next run."
+                )
+            elif action == "regenerate":
+                bot.send_message(
+                    chat_id,
+                    "🔄 Got it — you'll get a fresh set of options on the next run."
                 )
             else:
                 bot.send_message(
@@ -1121,10 +1136,13 @@ async def category_decisions(api_key: str = Security(API_KEY_HEADER)):
     failed local run doesn't lose an approval."""
     await verify_api_key(api_key)
     rows = get_con().execute(
-        """SELECT local_id, status, selected_option FROM category_proposals
+        """SELECT local_id, status, selected_option, regenerate_requested FROM category_proposals
            WHERE status IN ('selected', 'denied') ORDER BY local_id"""
     ).fetchall()
-    return {"decisions": [{"id": r[0], "status": r[1], "selected_option": r[2]} for r in rows]}
+    return {"decisions": [
+        {"id": r[0], "status": r[1], "selected_option": r[2], "regenerate_requested": bool(r[3])}
+        for r in rows
+    ]}
 
 
 @app.post('/category-decisions/collected')
