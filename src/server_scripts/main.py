@@ -1103,16 +1103,28 @@ async def taxonomy_decisions_collected(body: MarkProcessedRequest, api_key: str 
 async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: str = Security(API_KEY_HEADER)):
     """Store newly created real-time category proposals and send their cards.
     Unlike /sync-taxonomy-proposals, nothing pending is cleared first -- these
-    arrive continuously (several pipeline runs a day), not one batch a month."""
+    arrive continuously (several pipeline runs a day), not one batch a month.
+
+    Checks for a pre-existing row before inserting, rather than INSERT ...
+    ON CONFLICT DO NOTHING: that let a local_id collision (any row already on
+    the server for that id, in any status) silently no-op the insert while
+    still sending a card built from the NEW proposal's content -- a card that
+    then didn't match what was actually stored, so tapping it just replied
+    "Already <old status>." A collision is unlikely in normal operation (ids
+    only ever increase), but can happen if a local database is restored from
+    a backup older than the server's own state, so it's worth guarding against
+    outright rather than trusting it can't occur."""
     await verify_api_key(api_key)
     con = get_con()
     stored = []
     for p in body.proposals:
+        if con.execute("SELECT 1 FROM category_proposals WHERE local_id = ?", [p.id]).fetchone():
+            log.warning(f"Category proposal local_id={p.id} already exists on the server -- skipping, not sending a card for it")
+            continue
         con.execute(
             """INSERT INTO category_proposals
                (local_id, options, txn_count, examples, status, sent_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)
-               ON CONFLICT (local_id) DO NOTHING""",
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
             [p.id, json.dumps([o.model_dump() for o in p.options]), p.txn_count,
              json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
         )
