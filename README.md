@@ -371,7 +371,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   └── server_tables.sql      # Server database schema (queue, stats, rules)
 ├── config/
 │   └── .env.example           # Environment variable template
-├── Dockerfile                 # Server container
+├── Dockerfile                 # Server container (server dependencies + server files only)
 ├── docker-compose.yml         # Server + Caddy
 └── Caddyfile                  # Reverse proxy + automatic HTTPS
 ```
@@ -387,7 +387,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose |
-| CI/CD | GitHub Actions — tests run on every PR; merging to `main` auto-deploys to the server over SSH |
+| CI/CD | GitHub Actions — tests and a server-image build/smoke test run on every PR; merging to `main` auto-deploys over SSH, but only when something the server is built from changed (`src/server_scripts/`, `sql/server_tables.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — pipeline and dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
 

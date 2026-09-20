@@ -26,10 +26,69 @@ jobs:
       - name: Run tests
         run: poetry run pytest --tb=short -q
 
-  deploy:
-    needs: test
+  # The server image installs only the "main" dependency group and copies only the
+  # server's files, so a dependency or file it needs but no longer gets would break
+  # production at startup and nothing else here would notice: the tests run against
+  # the full environment. Build the real image and import the real modules from it.
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the server image
+        run: docker build -t bank-enrichment-server .
+
+      - name: Smoke test the server image
+        run: |
+          docker run --rm -w /app \
+            -e TELEGRAM_API=ci -e TELEGRAM_CHAT_ID=1 \
+            bank-enrichment-server \
+            python -c "import sys; sys.path.insert(0, 'src/server_scripts'); import server_db, telegram, check_rules, follow_up_tg, main; print('server modules import OK')"
+
+  # Only rebuild the server when something the server is made of changed. A pipeline
+  # or dashboard change has no business restarting a service that is receiving live
+  # bank webhooks.
+  changes:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        run: |
+          before="${{ github.event.before }}"
+          # No usable "before" (first push, force push): deploy rather than guess.
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            echo "No comparable previous commit -- deploying to be safe"
+            echo "server=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$before" "${{ github.sha }}")
+          echo "Files changed in this push:"
+          echo "$changed"
+          if echo "$changed" | grep -E -q '^(src/server_scripts/|sql/server_tables\.sql$|Dockerfile$|\.dockerignore$|docker-compose\.yml$|Caddyfile$|pyproject\.toml$|poetry\.lock$)'; then
+            echo "server=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing the server is built from changed -- skipping deploy"
+            echo "server=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: [test, docker, changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    # Two deploys at once would run two builds and two container swaps on one small
+    # box. Queue behind the running one instead of cancelling it mid-build.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
 
     steps:
       - name: Deploy over SSH
@@ -38,6 +97,8 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # The action's default is 10 minutes, which a cold Docker build can exceed.
+          command_timeout: 30m
           script: |
             set -e
             cd /home/ubuntu/bank-enrichment
