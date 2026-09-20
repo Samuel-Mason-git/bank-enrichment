@@ -268,6 +268,18 @@ can't show a card.
 The card is worded for what it is ("🔍 Second look", the keep option marked ↩️, buttons 
 "Neither — try again" / "Skip — no change"), which needs the server deployed.
 
+#### Reviewing history
+
+Everything classified before the judge existed can get the same second look with
+`src/local_scripts/judge_backlog.py`. It costs one API call per transaction, so by default it
+only counts them and estimates the cost — nothing is sent, written or held until you add
+`--yes`. Objections are held behind the same cards (10 at a time by default, `--cards N` to
+change it, `--list-only` to see them without sending any); a held transaction **stays
+classified where it is**, so your totals don't move while a card waits, and declining or
+ignoring one leaves it exactly as it was. Each transaction is judged once, so re-running only
+reviews what's left, and your own decisions (dashboard edits, card choices) are never
+second-guessed. Close the dashboard first: it holds the database's write lock.
+
 ### Failure Alerts
 
 Every Anthropic error the pipeline catches — most importantly **running out of credit** — 
