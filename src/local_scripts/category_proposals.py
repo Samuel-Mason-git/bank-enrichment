@@ -173,11 +173,35 @@ def server_supports_proposals() -> bool:
     return response.ok
 
 
+def card_example(amount, currency, created_at, merchant_name, counterparty_name, description, user_context) -> str:
+    """One line on a Telegram card saying WHICH transaction it is about, e.g.
+    '-£25.00 · 17 Aug · The Hub Dental Practice — "Food & Drink - Alcohol"'.
+
+    The context alone was not enough: "Cards", "Bike ride to work" or a quick-tap
+    label like "Food & Drink - Groceries" doesn't tell you which of several
+    transactions a card means. The server already holds every transaction's full
+    payload, so amount, date and payee add nothing new to what it knows."""
+    parts = []
+    if amount is not None:
+        symbol = "£" if (currency or "GBP") == "GBP" else f"{currency} "
+        parts.append(f"{'-' if amount < 0 else '+'}{symbol}{abs(float(amount)):,.2f}")
+    if created_at:
+        parts.append(f"{created_at.day} {created_at.strftime('%b')}")
+    who = (merchant_name or counterparty_name or description or "").strip()
+    if who:
+        parts.append(who[:40])
+    line = " · ".join(parts)
+    context = (user_context or "").strip()
+    if context:
+        line = f'{line} — "{context[:60]}"' if line else context[:60]
+    return line
+
+
 def sync_new_proposals(proposal_ids: list[int]) -> None:
     """Push newly-created proposals to the server, which owns Telegram. Only
-    the option names/rationales, counts and a few example contexts cross the
-    wire -- never full transaction data, the same restraint taxonomy_review's
-    sync uses."""
+    the option names/rationales, counts and a few example lines (amount, date,
+    payee and your context) cross the wire -- never the full transaction, the
+    same restraint taxonomy_review's sync uses."""
     if not proposal_ids:
         return
     con = get_con()
@@ -188,12 +212,13 @@ def sync_new_proposals(proposal_ids: list[int]) -> None:
             continue
         options = json.loads(row[0])
         txns = con.execute(
-            "SELECT user_context, merchant_name, counterparty_name FROM transactions WHERE pending_category_proposal_id = ?",
+            """SELECT CAST(amount AS DOUBLE), currency, created_at, merchant_name, counterparty_name, description, user_context
+               FROM transactions WHERE pending_category_proposal_id = ? ORDER BY created_at""",
             [pid],
         ).fetchall()
         examples = []
-        for user_context, merchant_name, counterparty_name in txns:
-            example = user_context or merchant_name or counterparty_name
+        for txn in txns:
+            example = card_example(*txn)
             if example and len(examples) < 4:
                 examples.append(example)
         proposals.append({"id": pid, "options": options, "txn_count": len(txns), "examples": examples})

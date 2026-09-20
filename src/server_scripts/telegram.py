@@ -165,6 +165,12 @@ class TelegramBot:
             lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
         lines += [f"  • {e}" for e in examples[:4]]
         if second_look:
+            # Say where it sits NOW. The "keep it" option names it, but only as one
+            # choice among two -- you shouldn't have to work out which option is
+            # the current placement to see what is supposedly wrong with it.
+            current = next((o for o in options if o.get("is_original")), None)
+            if current:
+                lines += ["", f"Currently filed under: <b>{current['parent_name']} › {current['subcategory_name']}</b>"]
             lines += ["", "Pick where it belongs, ask for different options, or skip:"]
         else:
             lines += ["", "Pick whichever fits, ask for different options, or deny them all:"]
@@ -176,7 +182,7 @@ class TelegramBot:
             label = f"{opt['parent_name']} › {opt['subcategory_name']}"
             lines.append(f"\n{num} {icon} <b>{label}</b>\n{opt['rationale']}")
             buttons.append([{
-                "text": f"{num} {label}",
+                "text": f"{num} ↩️ Keep in {label}" if opt.get("is_original") else f"{num} {label}",
                 "callback_data": f"catprop:select:{proposal['local_id']}:{i}",
             }])
         buttons.append([{
@@ -187,7 +193,9 @@ class TelegramBot:
             "text": "❌ Skip — no change" if second_look else "❌ Give up — leave unclassified",
             "callback_data": f"catprop:denyall:{proposal['local_id']}",
         }])
-        lines += ["", "Until you decide, these stay unclassified."]
+        # A second-look card can be about history that is still classified where it
+        # is, so "stay unclassified" would be wrong there.
+        lines += ["", "Nothing changes until you choose." if second_look else "Until you decide, these stay unclassified."]
 
         return self._post("sendMessage", {
             "chat_id": chat_id,
