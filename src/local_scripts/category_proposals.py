@@ -233,7 +233,12 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
     transactions still waiting on it. Re-checks llm_category IS NULL:
     update_classification() clears the lock the moment anything else
     classifies a waiting transaction (a manual dashboard edit, a quick-tap
-    match), so this never overwrites that."""
+    match), so this never overwrites that.
+
+    The one exception is a transaction the placement judge is holding while it
+    is still classified (judge_backlog.py reviews history, and leaves it where
+    it is until you decide). Those are recognised by their 'held' row in
+    judge_reviews, so the new-category flow above keeps its NULL check as is."""
     from database_functions import upsert_parent, upsert_subcategory
 
     con = get_con()
@@ -248,7 +253,10 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
     parent_name, subcategory_name = chosen["parent_name"], chosen["subcategory_name"]
 
     pending_ids = [r[0] for r in con.execute(
-        "SELECT id FROM transactions WHERE pending_category_proposal_id = ? AND llm_category IS NULL",
+        """SELECT id FROM transactions
+           WHERE pending_category_proposal_id = ?
+           AND (llm_category IS NULL
+                OR id IN (SELECT txn_id FROM judge_reviews WHERE outcome = 'held'))""",
         [proposal_id],
     ).fetchall()]
     if not pending_ids:

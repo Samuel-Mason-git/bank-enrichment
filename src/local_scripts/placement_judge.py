@@ -167,6 +167,15 @@ def is_objection(verdict: dict, category: str, subcategory: str) -> bool:
     return (parent.lower(), sub.lower()) != (category.strip().lower(), subcategory.strip().lower())
 
 
+def group_key(category: str, subcategory: str, verdict: dict) -> tuple:
+    """Objections with the same suggestion for the same original placement share
+    one card, so this is what 'the same question' means."""
+    return (
+        verdict["suggested_parent"].strip().lower(), verdict["suggested_subcategory"].strip().lower(),
+        category.lower(), subcategory.lower(),
+    )
+
+
 def hold_options(category: str, subcategory: str, verdict: dict, existing_parents: set[str]) -> list[dict]:
     """The card's two choices. 'judge' marks the card as a second-look card so
     its option names never feed the classifier's declined-names list (see
@@ -222,6 +231,10 @@ class PlacementReviewer:
         self.new_proposal_ids: list[int] = []
         # Placements left unsaved this run because the judge could not answer.
         self.unavailable_count = 0
+
+    @property
+    def out_of_credit(self) -> bool:
+        return self._out_of_credit
 
     @property
     def configured(self) -> bool:
@@ -337,10 +350,7 @@ class PlacementReviewer:
         existing_parents = {p["name"].strip().lower() for p in get_parents()}
         groups: dict[tuple, dict] = {}
         for txn, category, subcategory, verdict in objected:
-            key = (
-                verdict["suggested_parent"].strip().lower(), verdict["suggested_subcategory"].strip().lower(),
-                category.lower(), subcategory.lower(),
-            )
+            key = group_key(category, subcategory, verdict)
             group = groups.setdefault(key, {"txns": [], "options": hold_options(category, subcategory, verdict, existing_parents)})
             group["txns"].append((txn, category, subcategory))
 
