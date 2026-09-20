@@ -1,0 +1,3 @@
+# The WSL launcher is run by bash, which chokes on CRLF ("$'\r': command not found").
+# core.autocrlf=true on Windows would otherwise convert it on checkout.
+*.sh text eol=lf

@@ -143,6 +143,68 @@ class TestSendCardFollowUpText:
         assert keyboard[0][0]["callback_data"] == "quickcat:tx_001:1"
 
 
+class TestSendAlert:
+    def _sent_text(self, title, message):
+        bot = TelegramBot()
+        mock_resp = MagicMock(status_code=200)
+        with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
+            bot.send_alert(123, title, message)
+        payload = mock_post.call_args[1]["json"]
+        assert payload["chat_id"] == 123 and payload["parse_mode"] == "HTML"
+        return payload["text"]
+
+    def test_leads_with_the_title_in_bold_then_the_message(self):
+        text = self._sent_text("Anthropic credit balance too low", "Top up to resume.")
+        assert text == "⚠️ <b>Anthropic credit balance too low</b>\n\nTop up to resume."
+
+    def test_html_in_the_text_is_escaped_so_telegram_does_not_reject_it(self):
+        text = self._sent_text("a < b", "x <script> & y")
+        assert "a &lt; b" in text and "&lt;script&gt; &amp; y" in text
+
+
+class TestSendCategoryProposalCards:
+    NEW = {"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "Best fit."}
+    SUGGESTION = {"parent_name": "Health", "subcategory_name": "Dental", "parent_is_new": False,
+                  "rationale": "Second look: it is a dentist.", "judge": True, "is_original": False}
+    KEEP = {"parent_name": "Food & Drink", "subcategory_name": "Alcohol", "parent_is_new": False,
+            "rationale": "Keep it where it was.", "judge": True, "is_original": True}
+
+    def _card(self, options):
+        bot = TelegramBot()
+        mock_resp = MagicMock(status_code=200)
+        with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
+            bot.send_category_proposal(123, {"local_id": 7, "options": options, "txn_count": 1, "examples": ["Dentist"]})
+        payload = mock_post.call_args[1]["json"]
+        buttons = [b[0] for b in payload["reply_markup"]["inline_keyboard"]]
+        return payload["text"], buttons
+
+    def test_a_new_category_card_is_unchanged(self):
+        text, buttons = self._card([self.NEW])
+        assert "New category needed" in text and "Second look" not in text
+        assert "🆕" in text
+        assert [b["text"] for b in buttons][-2:] == ["🔄 None of these — try again", "❌ Give up — leave unclassified"]
+
+    def test_a_second_look_card_says_what_it_is_really_asking(self):
+        text, buttons = self._card([self.SUGGESTION, self.KEEP])
+        assert "Second look" in text and "New category needed" not in text
+        assert "may be filed in the wrong place" in text
+        assert "Pick where it belongs" in text
+
+    def test_the_keep_option_gets_its_own_icon_and_the_others_keep_theirs(self):
+        text, _ = self._card([self.SUGGESTION, self.KEEP])
+        assert "↩️ <b>Food &amp; Drink › Alcohol</b>".replace("&amp;", "&") in text
+        assert "📁 <b>Health › Dental</b>" in text
+
+    def test_a_second_look_card_words_its_buttons_for_what_they_do(self):
+        _, buttons = self._card([self.SUGGESTION, self.KEEP])
+        assert [b["text"] for b in buttons][-2:] == ["🔄 Neither — try again", "❌ Skip — no change"]
+        assert [b["callback_data"] for b in buttons][:2] == ["catprop:select:7:0", "catprop:select:7:1"]
+
+    def test_options_from_an_older_local_side_without_the_flags_still_render(self):
+        text, _ = self._card([self.NEW])
+        assert "Tax › Self Assessment" in text
+
+
 class TestSendMessageReplyMarkup:
     def test_no_reply_markup_by_default(self):
         bot = TelegramBot()

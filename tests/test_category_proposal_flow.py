@@ -269,3 +269,61 @@ class TestCollectedEndpoint:
         assert result["decisions"] == [
             {"id": 1, "status": "denied", "selected_option": None, "regenerate_requested": True}
         ]
+
+
+class TestSecondLookOptionsAndAlerts:
+    def test_the_judge_flags_survive_the_round_trip_to_the_card_and_the_stored_row(self, server_con):
+        """Without these fields on CategoryOption the server would silently drop
+        them, and every second-look card would be drawn as a new-category one."""
+        bot = MagicMock()
+        options = [
+            main.CategoryOption(parent_name="Health", subcategory_name="Dental", parent_is_new=False,
+                                rationale="Second look: a dentist.", judge=True),
+            main.CategoryOption(parent_name="Food & Drink", subcategory_name="Alcohol", parent_is_new=False,
+                                rationale="Keep it where it was.", judge=True, is_original=True),
+        ]
+        with patch.object(main, "get_con", return_value=server_con), \
+             patch.object(main, "bot", bot), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+             patch.object(main, "verify_api_key", new=_ok_api_key):
+            _run(main.sync_category_proposals(
+                main.SyncCategoryProposalsRequest(proposals=[_proposal_entry(1, options)]), "k"))
+
+        sent = bot.send_category_proposal.call_args[0][1]["options"]
+        assert [o["judge"] for o in sent] == [True, True]
+        assert [o["is_original"] for o in sent] == [False, True]
+        stored = server_con.execute("SELECT options FROM category_proposals WHERE local_id = 1").fetchone()[0]
+        assert '"is_original": true' in stored
+
+    def test_options_from_an_older_local_side_default_to_an_ordinary_card(self):
+        option = main.CategoryOption(parent_name="Tax", subcategory_name="X", parent_is_new=True, rationale="r")
+        assert option.judge is False and option.is_original is False
+
+    def test_send_alert_route_forwards_the_text_to_telegram(self):
+        bot = MagicMock()
+        with patch.object(main, "bot", bot), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+             patch.object(main, "verify_api_key", new=_ok_api_key):
+            result = _run(main.send_alert(main.AlertRequest(title="Credit low", message="Top up."), "k"))
+        assert result == {"sent": True}
+        bot.send_alert.assert_called_once_with(12345, "Credit low", "Top up.")
+
+    def test_send_alert_rejects_an_unauthenticated_caller(self):
+        bot = MagicMock()
+        with patch.object(main, "bot", bot), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}):
+            try:
+                _run(main.send_alert(main.AlertRequest(title="t", message="m"), "wrong-key"))
+            except Exception as e:
+                assert getattr(e, "status_code", None) in (401, 403)
+            else:
+                raise AssertionError("an unauthenticated alert must be refused")
+        bot.send_alert.assert_not_called()
+
+    def test_an_oversized_alert_is_refused_by_validation(self):
+        import pydantic
+        try:
+            main.AlertRequest(title="t", message="x" * 1001)
+        except pydantic.ValidationError:
+            return
+        raise AssertionError("message length must be capped")

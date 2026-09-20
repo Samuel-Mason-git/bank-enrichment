@@ -228,6 +228,16 @@ class CategoryOption(BaseModel):
     subcategory_name: str
     parent_is_new: bool
     rationale: str
+    # Set by the local placement judge. 'judge' marks a second-look card (a
+    # placement being questioned, not a new category being asked for) and
+    # 'is_original' the option that means "leave it where it was". Both default
+    # off so an older local side, which sends neither, is unaffected.
+    judge: bool = False
+    is_original: bool = False
+
+class AlertRequest(BaseModel):
+    title: str = Field(max_length=120)
+    message: str = Field(max_length=1000)
 
 class CategoryProposalEntry(BaseModel):
     id: int                      # the id in the LOCAL database
@@ -1097,6 +1107,18 @@ async def taxonomy_decisions_collected(body: MarkProcessedRequest, api_key: str 
             [int(local_id)]
         )
     return {"collected": len(body.ids)}
+
+
+@app.post('/send-alert')
+async def send_alert(body: AlertRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Let the local pipeline reach Telegram, which only the server can. Used
+    for "I can't do my job" notices -- out of Anthropic credit, a rejected key --
+    that would otherwise sit unseen in a log file on the local machine. Text
+    only; the local side never sends transaction data through this."""
+    await verify_api_key(api_key)
+    bot.send_alert(int(os.getenv("TELEGRAM_CHAT_ID")), body.title, body.message)
+    log.info(f"Sent alert to Telegram: {body.title}")
+    return {"sent": True}
 
 
 @app.post('/sync-category-proposals')
