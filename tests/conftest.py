@@ -2,7 +2,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # Stub out load_dotenv before any source module is imported so the real
 # config/.env file is never read and real credentials can't leak into tests.
@@ -55,6 +55,19 @@ def db():
     yield con
     con.close()
     database_functions._con = None
+
+
+@pytest.fixture(autouse=True)
+def alert_post():
+    """Keep the pipeline's Telegram alerts off the network in every test, and
+    start each one with nothing already sent (alerts.py sends each kind at most
+    once per process). Yields the mocked requests.post so a test can assert on
+    what would have been sent."""
+    import alerts
+    alerts._sent.clear()
+    with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:
+        yield post
+    alerts._sent.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import logging
@@ -42,6 +43,13 @@ class TelegramBot:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         self._post("sendMessage", payload)
+
+    def send_alert(self, chat_id: int, title: str, message: str):
+        """A "the pipeline can't do its job" notice from the local side -- out of
+        Anthropic credit, a rejected key, a check that couldn't run. Escaped
+        because the text comes from the caller, and Telegram rejects the whole
+        message over a stray '<' in HTML mode."""
+        self.send_message(chat_id, f"⚠️ <b>{html.escape(title)}</b>\n\n{html.escape(message)}")
 
     def send_skip_confirm(self, chat_id: int, transaction_id: str):
         data = self._post("sendMessage", {
@@ -146,23 +154,39 @@ class TelegramBot:
         n = proposal["txn_count"]
         plural = "s" if n != 1 else ""
         numbers = ["1️⃣", "2️⃣", "3️⃣"]
+        # A second-look card (placement_judge.py) isn't asking for a new category:
+        # it questions where something was ALREADY going to be filed, and one of
+        # its options is "leave it where it was".
+        second_look = any(o.get("judge") for o in options)
 
-        lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
+        if second_look:
+            lines = ["🔍 <b>Second look</b>", "", f"<b>{n}</b> transaction{plural} may be filed in the wrong place:"]
+        else:
+            lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
         lines += [f"  • {e}" for e in examples[:4]]
-        lines += ["", "Pick whichever fits, ask for different options, or deny them all:"]
+        if second_look:
+            lines += ["", "Pick where it belongs, ask for different options, or skip:"]
+        else:
+            lines += ["", "Pick whichever fits, ask for different options, or deny them all:"]
 
         buttons = []
         for i, opt in enumerate(options):
             num = numbers[i] if i < len(numbers) else f"{i + 1}."
-            icon = "🆕" if opt["parent_is_new"] else "📁"
+            icon = "↩️" if opt.get("is_original") else ("🆕" if opt["parent_is_new"] else "📁")
             label = f"{opt['parent_name']} › {opt['subcategory_name']}"
             lines.append(f"\n{num} {icon} <b>{label}</b>\n{opt['rationale']}")
             buttons.append([{
                 "text": f"{num} {label}",
                 "callback_data": f"catprop:select:{proposal['local_id']}:{i}",
             }])
-        buttons.append([{"text": "🔄 None of these — try again", "callback_data": f"catprop:regenerate:{proposal['local_id']}"}])
-        buttons.append([{"text": "❌ Give up — leave unclassified", "callback_data": f"catprop:denyall:{proposal['local_id']}"}])
+        buttons.append([{
+            "text": "🔄 Neither — try again" if second_look else "🔄 None of these — try again",
+            "callback_data": f"catprop:regenerate:{proposal['local_id']}",
+        }])
+        buttons.append([{
+            "text": "❌ Skip — no change" if second_look else "❌ Give up — leave unclassified",
+            "callback_data": f"catprop:denyall:{proposal['local_id']}",
+        }])
         lines += ["", "Until you decide, these stay unclassified."]
 
         return self._post("sendMessage", {

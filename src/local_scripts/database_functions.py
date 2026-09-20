@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import statistics
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -411,10 +412,17 @@ def write_to_db(transactions: list[dict]) -> None:
         log.info(f"  Stored {t['id']} | £{amount:.2f} | {desc} | {t['user_context']}")
 
 
-def apply_quick_tap_classifications() -> int:
+def apply_quick_tap_classifications(review=None) -> int:
     """Classify transactions whose user_context exactly matches an existing
     'Category - Subcategory' pair (written by a Telegram quick-tap button),
-    skipping the LLM entirely for those. Returns the number classified."""
+    skipping the LLM entirely for those. Returns the number classified.
+
+    review, if given, is called as review(transaction, category, subcategory)
+    before each tap is applied and returns True when it has taken the
+    transaction over -- the placement judge does this when it thinks a tap was a
+    mis-tap, locking the transaction behind a Telegram card. It is then left
+    unclassified here, and excluded from later runs by the lock rather than
+    matched again."""
     con = get_con()
     taxonomy = {
         f"{parent} - {sub}": (parent, sub)
@@ -423,18 +431,89 @@ def apply_quick_tap_classifications() -> int:
                JOIN parent_categories p ON p.id = s.parent_id"""
         ).fetchall()
     }
-    unclassified = con.execute(
-        """SELECT id, user_context FROM transactions
-           WHERE llm_category IS NULL AND skipped = FALSE AND user_context IS NOT NULL"""
-    ).fetchall()
+    unclassified = _rows(
+        """SELECT * FROM transactions
+           WHERE llm_category IS NULL AND skipped = FALSE AND user_context IS NOT NULL
+           AND pending_category_proposal_id IS NULL"""
+    )
     count = 0
-    for txn_id, context in unclassified:
-        match = taxonomy.get(context)
+    for txn in unclassified:
+        match = taxonomy.get(txn["user_context"])
         if match:
             category, subcategory = match
-            update_classification(txn_id, category, subcategory, confidence=1.0, model="quick-tap")
+            if review is not None and review(txn, category, subcategory):
+                continue
+            update_classification(txn["id"], category, subcategory, confidence=1.0, model="quick-tap")
             count += 1
     return count
+
+
+# ── Subcategory profiles (context for the classifier and the placement judge) ─
+
+def get_subcategory_stats() -> dict[tuple[str, str], dict]:
+    """How big and how regular the transactions already in each subcategory
+    are, keyed by (parent name, subcategory name): count, min/median/max
+    absolute amount, and the median number of days between transactions once
+    there are enough of them for that to mean anything.
+
+    This is what lets a £282 one-off be seen as not belonging next to £1,315
+    monthly rent -- the names alone say nothing about either."""
+    rows = get_con().execute(
+        """SELECT llm_category, llm_subcategory, ABS(CAST(amount AS DOUBLE)), created_at
+           FROM transactions
+           WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL"""
+    ).fetchall()
+    grouped: dict[tuple[str, str], list] = {}
+    for category, subcategory, amount, created_at in rows:
+        grouped.setdefault((category, subcategory), []).append((amount, created_at))
+    stats = {}
+    for key, items in grouped.items():
+        amounts = [a for a, _ in items]
+        dates = sorted(d for _, d in items if d)
+        gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+        stats[key] = {
+            "count": len(items),
+            "min": min(amounts),
+            "median": statistics.median(amounts),
+            "max": max(amounts),
+            "gap_days": statistics.median(gaps) if len(items) >= 3 and gaps else None,
+        }
+    return stats
+
+
+def format_subcategory_stats(stat: dict) -> str:
+    if stat["min"] == stat["max"]:
+        amounts = f"always £{stat['min']:.2f}"
+    else:
+        amounts = f"£{stat['min']:.2f}-£{stat['max']:.2f}, median £{stat['median']:.2f}"
+    if stat["gap_days"] is not None:
+        rhythm = f"typically one every {stat['gap_days']:.0f} day(s)"
+    else:
+        rhythm = f"only {stat['count']} so far, no clear rhythm"
+    return f"amounts {amounts}; {rhythm}"
+
+
+def get_subcategory_examples(category: str, subcategory: str, limit: int = 6) -> list[dict]:
+    return _rows(
+        """SELECT amount, created_at, merchant_name, counterparty_name, description, user_context
+           FROM transactions
+           WHERE llm_category = ? AND llm_subcategory = ?
+           ORDER BY created_at DESC LIMIT ?""",
+        [category, subcategory, limit],
+    )
+
+
+def get_merchant_history(merchant_key: str, exclude_id: str) -> list[dict]:
+    """Every other classified transaction from the same merchant or
+    counterparty -- evidence both that something recurs and of where it has
+    been put before."""
+    return _rows(
+        """SELECT llm_category, llm_subcategory, ABS(CAST(amount AS DOUBLE)) AS amount
+           FROM transactions
+           WHERE id != ? AND llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
+           AND (LOWER(TRIM(merchant_name)) = ? OR LOWER(TRIM(counterparty_name)) = ?)""",
+        [exclude_id, merchant_key, merchant_key],
+    )
 
 
 def upsert_parent(name: str) -> int:

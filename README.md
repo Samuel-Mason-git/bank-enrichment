@@ -174,6 +174,12 @@ its first choice — a stretch-fit into an existing category it wasn't confident
 to auto-match, or a different new-category idea — each with a one-line rationale. See 
 [New Category Approval](#new-category-approval) for what happens with these.
 
+Passes 0 and 2 also see how big and how regular the transactions already in each 
+subcategory are (amount range and typical gap between them), so a one-off £282 
+deposit isn't matched into a subcategory of £1,315 monthly rent just because the 
+topics sound related. See [Second-Look Review](#second-look-review) for the check 
+that runs after classification.
+
 A default taxonomy is seeded on first run — 13 parent categories and ~70 subcategories 
 covering most common personal spending:
 
@@ -232,6 +238,47 @@ and the transaction is released back for reclassification, with every declined n
 off the table (and no bias toward forcing it into an existing category — a rejection is 
 evidence none of the offered ideas were right, existing or new). There is no minimum size; 
 a single unusual transaction is reason enough to ask.
+
+### Second-Look Review
+
+New Category Approval only fires when a *new* name is needed, so a confidently wrong 
+placement into an existing category (a holding deposit filed under Rent, a dentist 
+tapped into Alcohol) would otherwise go straight through. So every placement into an 
+existing category — including Telegram quick-taps — gets a second opinion from a 
+separate Claude call (`placement_judge.py`) before it is saved. It sees the amounts and 
+rhythm of what that subcategory already holds and where the same merchant has been 
+filed before, and is told the categories exist to aggregate spending over time, so 
+neighbouring-subcategory nitpicks aren't worth raising.
+
+If it objects, nothing changes by itself: the transaction is held behind the same kind 
+of Telegram card, offering its suggestion alongside **"Keep it where it was"**. Choosing 
+keep is remembered — the same merchant with the same placement isn't questioned again — 
+and a transaction is only ever judged once, so declining a card doesn't bring it back. 
+"Try again" keeps the keep option. A declined second-look card never counts against 
+any category name.
+
+It fails **closed**: if the judge is switched on but can't reach a verdict (API down, 
+balance out, unparseable reply), the transaction is left unclassified and retried on the 
+next run rather than saved unreviewed — a check that quietly steps aside whenever 
+something is wrong only works when nothing is. This applies to quick-taps too. Set 
+`PLACEMENT_JUDGE=off` in `config/.env` to turn it off deliberately, which releases 
+anything it was holding back; it is also off when there is no API key or the server 
+can't show a card.
+
+The card is worded for what it is ("🔍 Second look", the keep option marked ↩️, buttons 
+"Neither — try again" / "Skip — no change"), which needs the server deployed.
+
+### Failure Alerts
+
+Every Anthropic error the pipeline catches — most importantly **running out of credit** — 
+also sends a Telegram alert through the server's `/send-alert` endpoint, so it doesn't 
+sit unseen in a log file while transactions quietly stop being classified. Each kind is 
+sent at most once per run (a run that fails 40 calls sends one message, not 40): credit 
+balance too low, API key rejected, other Claude API errors, and the judge holding 
+transactions back. Alerts contain a kind, what to do about it, and counts — never 
+transaction text, and never an error's own message, since a parse error quotes the 
+model's output. An older server without the endpoint is tolerated: the alert is simply 
+not sent and the log line stands.
 
 ### Monthly Taxonomy Review
 

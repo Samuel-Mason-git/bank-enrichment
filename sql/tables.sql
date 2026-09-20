@@ -131,6 +131,26 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     applied_at        TIMESTAMP
 );
 
+-- One row per transaction the placement judge has looked at (placement_judge.py).
+-- category/subcategory are the placement that was JUDGED, not necessarily where the
+-- transaction ended up. Two jobs: a transaction is never judged twice, so declining
+-- a card can't make the same question come back on every run, and outcome 'kept'
+-- (the user chose "keep it where it was") is a standing answer: the same merchant
+-- with the same placement is not questioned again.
+--   approved  the judge was happy with the placement
+--   held      the judge objected and the transaction went behind a card (it stays
+--             'held' if the card is later declined, which is what stops it being asked again)
+--   kept      the user chose to keep the original placement
+--   changed   the user chose the judge's suggestion or another option
+CREATE TABLE IF NOT EXISTS judge_reviews (
+    txn_id       VARCHAR PRIMARY KEY,
+    merchant_key VARCHAR,
+    category     VARCHAR NOT NULL,
+    subcategory  VARCHAR NOT NULL,
+    outcome      VARCHAR NOT NULL CHECK (outcome IN ('approved', 'held', 'kept', 'changed')),
+    reviewed_at  TIMESTAMP NOT NULL
+);
+
 -- User-set Income/Spend/Investment/Transfer/Excluded role per category.
 -- subcategory_id NULL = applies to the whole parent. Empty until edited in Settings.
 CREATE TABLE IF NOT EXISTS category_roles (

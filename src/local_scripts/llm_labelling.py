@@ -12,8 +12,11 @@ from database_functions import (
     init_db, get_unclassified, update_classification,
     get_parents, get_subcategories,
     upsert_parent, upsert_subcategory,
+    get_subcategory_stats, format_subcategory_stats,
 )
+import alerts
 import category_proposals
+import placement_judge
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -134,11 +137,41 @@ def _format_transaction(t: dict) -> str:
     return " | ".join(parts)
 
 
+_P0_STATS_RULE = (
+    "Each subcategory below shows the amounts and rhythm of what it already holds. A transaction whose amount or timing is far "
+    "outside that pattern — for example a one-off payment next to a subcategory of regular recurring ones — is probably a different "
+    "kind of thing, so return null rather than matching it."
+)
+_P2_STATS_RULE = (
+    "Each existing subcategory shows the amounts and rhythm of what it already holds. Treat a transaction whose amount or timing is far "
+    "outside a subcategory's pattern — for example a one-off payment next to a subcategory of regular recurring ones — as probably NOT belonging "
+    "to it, even if the topic seems related. In that case propose a new, accurately named subcategory rather than forcing the fit."
+)
+
+
+def _with_stats(subcategories: list[dict]) -> list[dict]:
+    """Attach each subcategory's amount/rhythm profile as a 'stats' string, for
+    the Pass 0/2 prompts to print. Carried on the dicts rather than passed as
+    another argument so the pass functions keep their signatures. A subcategory
+    with nothing in it yet simply has no stats."""
+    stats = get_subcategory_stats()
+    enriched = []
+    for s in subcategories:
+        stat = stats.get((s["parent_name"], s["name"]))
+        enriched.append({**s, "stats": format_subcategory_stats(stat)} if stat else s)
+    return enriched
+
+
+def _stats_suffix(s: dict) -> str:
+    return f" — {s['stats']}" if s.get("stats") else ""
+
+
 def _pass0_prompt(transactions: list[dict], subcategories: list[dict]) -> str:
     sub_lines = "\n".join(
-        f"  - {s['name']} (under: {s['parent_name']})"
+        f"  - {s['name']} (under: {s['parent_name']}){_stats_suffix(s)}"
         for s in subcategories
     )
+    stats_rule = f"\n- {_P0_STATS_RULE}" if any(s.get("stats") for s in subcategories) else ""
     txn_lines = "\n".join(
         f"{i+1}. {_format_transaction(t)}" for i, t in enumerate(transactions)
     )
@@ -147,7 +180,7 @@ def _pass0_prompt(transactions: list[dict], subcategories: list[dict]) -> str:
 Existing subcategories (with their parent category):
 {sub_lines}
 
-Instructions:
+Instructions:{stats_rule}
 - Return a match ONLY if you are highly confident — the transaction clearly and obviously belongs to that subcategory with no reasonable alternative.
 - If there is any doubt, any ambiguity, or any other subcategory that could plausibly fit, return null. It is far better to leave a transaction unmatched than to assign it incorrectly.
 - Think carefully about overlapping subcategories — pick the most specific and accurate fit, not just the first plausible one.
@@ -209,9 +242,10 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
     if existing_subs:
         existing = f"Existing subcategories under '{parent_name}':\n"
         for s in existing_subs:
-            existing += f"  - {s['name']} ({s['transaction_count']} transactions)\n"
+            existing += f"  - {s['name']} ({s['transaction_count']} transactions){_stats_suffix(s)}\n"
     else:
         existing = f"No subcategories under '{parent_name}' yet — you will create them.\n"
+    stats_rule = f"\n- {_P2_STATS_RULE}" if any(s.get("stats") for s in existing_subs) else ""
 
     denied_block = ""
     if denied_sub_names:
@@ -231,7 +265,7 @@ def _pass2_prompt(transactions: list[dict], parent_name: str, subcategories: lis
     return f"""You are assigning subcategories to bank transactions already classified under the parent category "{parent_name}".
 
 {existing}{denied_block}
-Instructions:
+Instructions:{stats_rule}
 - Assign each transaction to the single most appropriate subcategory within "{parent_name}".
 - Reuse existing subcategories wherever they genuinely fit — only create a new one when no existing subcategory accurately describes this transaction.
 - Think carefully about overlap between existing subcategories. If two subcategories could plausibly apply, pick the one that is the best and most specific fit given all available information.
@@ -365,6 +399,7 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
         return matched
     except Exception as e:
         log.error(f"Pass 0 LLM error: {e}")
+        alerts.llm_failure("Pass 0", e)
         return {}
 
 
@@ -390,6 +425,7 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
         return {r["id"]: r["category"] for r in results}
     except Exception as e:
         log.error(f"Pass 1 LLM error: {e}")
+        alerts.llm_failure("Pass 1", e)
         return {}
 
 
@@ -411,6 +447,7 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
         return {r["id"]: r["subcategory"] for r in results}
     except Exception as e:
         log.error(f"Pass 2 LLM error for '{parent_name}': {e}")
+        alerts.llm_failure("Pass 2", e)
         return {}
 
 
@@ -435,6 +472,7 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
         return {r["group"]: r.get("alternatives") or [] for r in results}
     except Exception as e:
         log.error(f"Pass 3 LLM error: {e}")
+        alerts.llm_failure("Pass 3", e)
         return {}
 
 
@@ -458,6 +496,7 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
         results = _extract_json(raw)
     except Exception as e:
         log.error(f"Regenerate LLM error: {e}")
+        alerts.llm_failure("regenerating category options", e)
         return []
 
     existing_parent_names = {p["name"].strip().lower() for p in parents}
@@ -480,7 +519,31 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
     return options
 
 
+# ── Placement judge ───────────────────────────────────────────────────────────
+
+def make_placement_reviewer() -> placement_judge.PlacementReviewer:
+    """For process.py's quick-tap step, which runs before run() and so has no
+    client of its own. Without a key the reviewer is simply off and every tap
+    is applied as tapped."""
+    client = anthropic.Anthropic(api_key=CLAUDE_SECRET) if CLAUDE_SECRET else None
+    return placement_judge.PlacementReviewer(
+        client, MODEL, _format_transaction, gate_check=category_proposals.server_supports_proposals
+    )
+
+
 # ── Regenerate ────────────────────────────────────────────────────────────────
+
+def _carry_over_judge_card(previous_options: list[dict], options: list[dict]) -> list[dict]:
+    """"Try again" on a placement-judge card asks for fresh suggestions, but the
+    choice that means "the original placement was fine" must survive it -- it
+    is not one of the ideas being replaced -- and the new options stay marked
+    as belonging to a second-look card (see placement_judge.hold_options)."""
+    if not any(o.get("judge") for o in previous_options):
+        return options
+    keep = [o for o in previous_options if o.get("is_original")]
+    fresh = [{**o, "judge": True} for o in options][:max(MAX_OPTIONS - len(keep), 0)]
+    return fresh + keep
+
 
 def regenerate_category_proposals() -> int:
     """For every proposal answered with "Try again", ask Claude for a fresh
@@ -515,6 +578,7 @@ def regenerate_category_proposals() -> int:
                 f"its {len(item['txn_ids'])} transaction(s) remain locked to it until answered differently"
             )
             continue
+        options = _carry_over_judge_card(item["previous_options"], options)
         proposal_id, is_new = category_proposals.register_group(options, item["txn_ids"])
         if is_new:
             new_proposal_ids.append(proposal_id)
@@ -569,6 +633,10 @@ def run():
         log.info("Category-proposal endpoints unavailable — creating new categories immediately")
     new_proposal_ids: list[int] = []
 
+    # A questioned placement is held behind the same kind of card as a new
+    # category, so the judge is pointless -- and stays off -- when the gate is.
+    reviewer = placement_judge.PlacementReviewer(client, MODEL, _format_transaction, gate_check=lambda: gate_novel)
+
     total_classified = 0
     batches = [unclassified[i:i + BATCH_SIZE] for i in range(0, len(unclassified), BATCH_SIZE)]
     log.info(f"Processing {len(unclassified)} transactions in {len(batches)} batch(es) of up to {BATCH_SIZE}")
@@ -578,7 +646,7 @@ def run():
 
         # Refresh taxonomy before each batch so new categories from prior batches are visible
         parents = get_parents()
-        subcategories = get_subcategories()
+        subcategories = _with_stats(get_subcategories())
         existing_parent_names = {p["name"].strip().lower() for p in parents}
 
         # ── Pass 0: match against existing taxonomy ────────────────────────────
@@ -616,7 +684,7 @@ def run():
         sub_map: dict[str, str] = {}
         existing_subs_by_parent: dict[str, set[str]] = {}
         if unmatched and parent_map:
-            subcategories = get_subcategories()
+            subcategories = _with_stats(get_subcategories())
             for s in subcategories:
                 existing_subs_by_parent.setdefault(s["parent_name"].strip().lower(), set()).add(s["name"].strip().lower())
 
@@ -646,15 +714,15 @@ def run():
         # pairs for Telegram approval instead of creating them outright ──────
         novel_groups: dict[tuple[str, str], list[str]] = {}
         novel_group_is_new_parent: dict[tuple[str, str], bool] = {}
+        # Placements into EXISTING categories, not written yet: the judge gets
+        # a look at them all together (its calls run concurrently) before any
+        # is committed. (transaction, parent, subcategory, log tag)
+        placements: list[tuple[dict, str, str, str]] = []
 
         for t in batch:
             txn_id = t["id"]
             if txn_id in existing_map:
-                p_name = existing_map[txn_id]["category"]
-                s_name = existing_map[txn_id]["subcategory"]
-                update_classification(txn_id, p_name, s_name, None, MODEL)
-                total_classified += 1
-                log.info(f"  [P0] {txn_id} -> {p_name} / {s_name}")
+                placements.append((t, existing_map[txn_id]["category"], existing_map[txn_id]["subcategory"], "P0"))
                 continue
 
             p_name = parent_map.get(txn_id)
@@ -674,10 +742,27 @@ def run():
                 novel_group_is_new_parent[key] = parent_is_novel
                 continue
 
-            upsert_subcategory(s_name, parent_id_map[p_name])
-            update_classification(txn_id, p_name, s_name, None, MODEL)
+            placements.append((t, p_name, s_name, "P1+2"))
+
+        # ── Second opinion on placements into existing categories ──────────────
+        # A placement the judge objects to is held behind a card (suggestion
+        # vs. keep it) instead of being written. One it could not get a verdict
+        # on is not written either -- it stays unclassified and is picked up
+        # again next run, rather than being saved unreviewed. Everything else
+        # is committed.
+        review = reviewer.review([(t, p, s) for t, p, s, _ in placements])
+        objections = review.objections
+        if objections:
+            reviewer.hold([(t, p, s, objections[t["id"]]) for t, p, s, _ in placements if t["id"] in objections])
+
+        for t, p_name, s_name, tag in placements:
+            if t["id"] in objections or t["id"] in review.unavailable:
+                continue
+            if tag == "P1+2":
+                upsert_subcategory(s_name, parent_id_map[p_name])
+            update_classification(t["id"], p_name, s_name, None, MODEL)
             total_classified += 1
-            log.info(f"  [P1+2] {txn_id} -> {p_name} / {s_name or '—'}")
+            log.info(f"  [{tag}] {t['id']} -> {p_name} / {s_name or '—'}")
 
         # ── Pass 3: propose a few alternative placements for each novel group ──
         if novel_groups:
@@ -731,11 +816,18 @@ def run():
                     f"{len(options)} option(s), primary '{p_name} / {s_name}'"
                 )
 
+    new_proposal_ids.extend(reviewer.new_proposal_ids)
     if new_proposal_ids:
         try:
             category_proposals.sync_new_proposals(new_proposal_ids)
         except Exception as e:
             log.error(f"Failed to sync category proposal(s) to the server: {e}", exc_info=True)
+
+    if reviewer.unavailable_count:
+        log.error(
+            f"{reviewer.unavailable_count} transaction(s) were left unclassified because the placement judge "
+            f"could not review them — they will be retried on the next run"
+        )
 
     log.info(f"--- Run complete: {total_classified}/{len(unclassified)} classified in {time.time() - run_start:.2f}s ---")
 

@@ -10,7 +10,7 @@ from database_functions import (
     init_db, write_to_db, get_top_subcategories, get_top_merchant_subcategories,
     apply_quick_tap_classifications,
 )
-from llm_labelling import run as run_classifier, regenerate_category_proposals
+from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
@@ -126,7 +126,12 @@ if __name__ == "__main__":
 
     try:
         t0 = time.time()
-        quick_classified = apply_quick_tap_classifications()
+        # A tap is the user's own choice, but a mis-tap (a dentist filed under
+        # Alcohol) is exactly what it can't catch -- so the placement judge
+        # gets a look and can hold one behind a card instead.
+        reviewer = make_placement_reviewer()
+        quick_classified = apply_quick_tap_classifications(review=reviewer.review_tap)
+        reviewer.sync()
         if quick_classified:
             log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
     except Exception as e:

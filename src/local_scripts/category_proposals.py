@@ -53,7 +53,14 @@ def _denied_options() -> list[dict]:
     ).fetchall()
     options = []
     for (options_json,) in rows:
-        options.extend(json.loads(options_json))
+        card_options = json.loads(options_json)
+        # A placement-judge card (placement_judge.py) offers a suggestion next to
+        # the EXISTING placement it questioned. Declining it says nothing about
+        # those names -- and treating them as declined would forbid an existing
+        # subcategory like "Groceries" in every later classifier prompt.
+        if any(o.get("judge") for o in card_options):
+            continue
+        options.extend(card_options)
     return options
 
 
@@ -256,6 +263,14 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
                 llm_model = 'category-proposal', classified_at = ?, pending_category_proposal_id = NULL
             WHERE id IN ({placeholders})""",
         [parent_name, subcategory_name, time.strftime("%Y-%m-%d %H:%M:%S"), *pending_ids],
+    )
+    # Only rows the placement judge is still holding have anything to update.
+    # 'kept' is the standing answer that stops the same merchant being
+    # questioned about the same placement again.
+    con.execute(
+        f"""UPDATE judge_reviews SET outcome = ?, reviewed_at = ?
+            WHERE outcome = 'held' AND txn_id IN ({placeholders})""",
+        ["kept" if chosen.get("is_original") else "changed", time.strftime("%Y-%m-%d %H:%M:%S"), *pending_ids],
     )
     log.info(f"Applied '{parent_name} / {subcategory_name}' — {len(pending_ids)} transaction(s) classified")
     return len(pending_ids)
