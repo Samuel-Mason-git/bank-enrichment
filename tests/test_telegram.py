@@ -200,6 +200,27 @@ class TestSendCategoryProposalCards:
         assert [b["text"] for b in buttons][-2:] == ["🔄 Neither — try again", "❌ Skip — no change"]
         assert [b["callback_data"] for b in buttons][:2] == ["catprop:select:7:0", "catprop:select:7:1"]
 
+    def test_a_second_look_card_says_where_the_transaction_currently_sits(self):
+        """Without this you have to work out which option is the current placement
+        before you can see what is supposedly wrong with it."""
+        text, _ = self._card([self.SUGGESTION, self.KEEP])
+        assert "Currently filed under: <b>Food & Drink › Alcohol</b>" in text
+        assert text.index("Currently filed under") < text.index("Pick where it belongs")
+
+    def test_the_keep_button_says_it_is_keeping_and_names_the_placement(self):
+        _, buttons = self._card([self.SUGGESTION, self.KEEP])
+        assert buttons[0]["text"] == "1️⃣ Health › Dental"
+        assert buttons[1]["text"] == "2️⃣ ↩️ Keep in Food & Drink › Alcohol"
+
+    def test_a_second_look_footer_does_not_claim_history_becomes_unclassified(self):
+        text, _ = self._card([self.SUGGESTION, self.KEEP])
+        assert "Nothing changes until you choose." in text and "stay unclassified" not in text
+
+    def test_a_new_category_card_has_no_current_placement_line_and_keeps_its_footer(self):
+        text, buttons = self._card([self.NEW])
+        assert "Currently filed under" not in text and "Keep in" not in " ".join(b["text"] for b in buttons)
+        assert "Until you decide, these stay unclassified." in text
+
     def test_options_from_an_older_local_side_without_the_flags_still_render(self):
         text, _ = self._card([self.NEW])
         assert "Tax › Self Assessment" in text

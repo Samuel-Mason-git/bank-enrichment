@@ -384,8 +384,60 @@ class TestSyncNewProposals:
         assert entry["txn_count"] == 6
         assert len(entry["examples"]) == 4
 
+    def test_each_example_says_which_transaction_it_is(self, db, monkeypatch):
+        """A card that only shows 'Cards' or a quick-tap label can't tell you which
+        of several transactions it means."""
+        db.execute(
+            """INSERT INTO transactions (id, amount, currency, description, merchant_name, user_context, created_at, skipped)
+               VALUES ('tx_a', -25.0, 'GBP', 'THE HUB DENTAL', 'The Hub Dental Practice', 'Food & Drink - Alcohol',
+                       '2026-08-17 10:00:00', FALSE)"""
+        )
+        proposal_id, _ = cp.register_group([_option()], ["tx_a"])
+        posted = {}
+        monkeypatch.setattr(cp.requests, "post", lambda url, headers, json, timeout: posted.update(json=json) or type(
+            "R", (), {"raise_for_status": lambda self: None})())
+
+        cp.sync_new_proposals([proposal_id])
+
+        assert posted["json"]["proposals"][0]["examples"] == ['-£25.00 · 17 Aug · The Hub Dental Practice — "Food & Drink - Alcohol"']
+
     def test_empty_id_list_makes_no_request(self, monkeypatch):
         called = []
         monkeypatch.setattr(cp.requests, "post", lambda *a, **k: called.append(1))
         cp.sync_new_proposals([])
         assert called == []
+
+
+class TestCardExample:
+    from datetime import datetime as _dt
+
+    def _line(self, **kw):
+        base = dict(amount=-25.0, currency="GBP", created_at=self._dt(2026, 8, 7, 9, 0), merchant_name="Tesco",
+                    counterparty_name=None, description="TESCO STORES 5578", user_context="weekly shop")
+        base.update(kw)
+        return cp.card_example(**base)
+
+    def test_full_line(self):
+        assert self._line() == '-£25.00 · 7 Aug · Tesco — "weekly shop"'
+
+    def test_money_in_is_marked_with_a_plus(self):
+        assert self._line(amount=9.07, merchant_name=None, counterparty_name="Glen Parrish").startswith("+£9.07 · 7 Aug · Glen Parrish")
+
+    def test_payee_falls_back_from_merchant_to_counterparty_to_description(self):
+        assert "Glen" in self._line(merchant_name=None, counterparty_name="Glen", description="x")
+        assert "RAW DESC" in self._line(merchant_name=None, counterparty_name=None, description="RAW DESC")
+
+    def test_thousands_are_separated_and_other_currencies_named(self):
+        assert self._line(amount=-1315.0).startswith("-£1,315.00")
+        assert self._line(amount=-12.5, currency="EUR").startswith("-EUR 12.50")
+
+    def test_no_context_means_no_dash_clause(self):
+        assert self._line(user_context=None) == "-£25.00 · 7 Aug · Tesco"
+
+    def test_missing_pieces_are_skipped_rather_than_printed_as_none(self):
+        line = self._line(amount=None, created_at=None, merchant_name=None, description=None)
+        assert "None" not in line and line == "weekly shop"
+
+    def test_long_payee_and_context_are_trimmed_for_a_phone_screen(self):
+        line = self._line(merchant_name="M" * 80, user_context="c" * 200)
+        assert "M" * 41 not in line and "c" * 61 not in line
