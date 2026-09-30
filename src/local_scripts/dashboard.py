@@ -116,27 +116,30 @@ presets = {
 st.sidebar.markdown("#### 📅 Date Range")
 preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=True, key="date_preset")
 
-# When the preset changes, push the new dates into the date_input's session state key
-# so it actually updates (date_input ignores value= after first render)
+# When the preset changes, push the new dates into the date inputs' session state
+# keys so they actually update (date_input ignores value= after first render)
 preset_from, preset_to = presets[preset]
 preset_from = max(preset_from, min_date)
 preset_to = min(preset_to, max_date)
 
 if st.session_state.get("_last_preset") != preset:
     st.session_state["_last_preset"] = preset
-    st.session_state["date_range"] = (preset_from, preset_to)
+    st.session_state["date_from"] = preset_from
+    st.session_state["date_to"] = preset_to
 
 if st.sidebar.button("Reset date range", help="Clear any custom dates typed below and snap back to the Quick Date Filter selected above."):
-    st.session_state["date_range"] = (preset_from, preset_to)
+    st.session_state["date_from"] = preset_from
+    st.session_state["date_to"] = preset_to
 
-date_range = st.sidebar.date_input(
-    "Custom Date Range",
-    key="date_range",
-    min_value=min_date,
-    max_value=max_date,
-)
-date_from = date_range[0] if isinstance(date_range, (list, tuple)) and len(date_range) > 0 else preset_from
-date_to = date_range[1] if isinstance(date_range, (list, tuple)) and len(date_range) > 1 else preset_to
+# Two separate boxes rather than one combined-range date_input: Streamlit's range
+# picker can visually close or reset after the first click, before a second date
+# is chosen, which looks exactly like the whole filter breaking. Plain date_input
+# doesn't have that failure mode, at the cost of not enforcing start <= end itself
+# -- handled below by sorting rather than fighting the widget over it.
+col_from, col_to = st.sidebar.columns(2)
+picked_from = col_from.date_input("Start date", key="date_from", min_value=min_date, max_value=max_date)
+picked_to = col_to.date_input("End date", key="date_to", min_value=min_date, max_value=max_date)
+date_from, date_to = min(picked_from, picked_to), max(picked_from, picked_to)
 
 st.sidebar.divider()
 st.sidebar.markdown("#### 🏷️ Categories")

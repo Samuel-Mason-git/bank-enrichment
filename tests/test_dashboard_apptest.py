@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -590,3 +591,79 @@ def test_backup_delete_warns_when_it_is_the_only_one(tmp_path):
 
     warning = next(w.value for w in at.tabs[6].warning if "cannot be recovered" in w.value)
     assert "only backup" in warning
+
+
+def _seed_date_spread(tmp_path):
+    """Four transactions spread across the year, so a custom date range can
+    actually narrow the result set instead of just returning everything."""
+    database_functions.DB_PATH = str(tmp_path / "test_dashboard.db")
+    database_functions.init_db()
+    database_functions.write_to_db([
+        {"id": f"tx_{i:03}", "payload": {"data": {
+            "amount": -100 - i, "currency": "GBP", "description": f"Txn {i}",
+            "category": "groceries", "merchant": {"name": "Tesco"},
+            "counterparty": {"name": ""}, "is_load": False,
+            "created": f"{day}T10:00:00", "settled": f"{day}T10:00:00",
+        }}, "user_context": f"txn {i}", "skipped": False,
+         "received_at": f"{day}T10:00:00", "enriched_at": f"{day}T10:00:01"}
+        for i, day in enumerate(["2026-01-05", "2026-03-10", "2026-06-20", "2026-09-25"])
+    ])
+
+
+class TestDateRangeFilter:
+    """Regression tests for the combined st.date_input range picker, which could
+    visually close or reset after the first click before a second date was
+    chosen -- looking exactly like the date filter breaking. Replaced with two
+    independent date_input boxes, each of which only ever holds one date."""
+
+    def test_two_separate_clicks_narrow_the_range(self, tmp_path):
+        """The real sequence a user hits: set the start box, rerun (as
+        Streamlit does after every widget interaction), then set the end box --
+        never a single combined tuple."""
+        _seed_date_spread(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        assert _txn_count(at) == "4 transactions"
+
+        at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
+        assert not at.exception
+        at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
+        assert not at.exception
+        assert _txn_count(at) == "2 transactions"
+
+    def test_start_and_end_are_sorted_regardless_of_which_box_holds_which(self, tmp_path):
+        """The combined widget used to enforce start <= end itself; two
+        independent boxes don't, so the app must sort them rather than let a
+        reversed pick silently return nothing (or everything)."""
+        _seed_date_spread(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+
+        at.sidebar.date_input(key="date_from").set_value(date(2026, 8, 1)).run()
+        at.sidebar.date_input(key="date_to").set_value(date(2026, 2, 1)).run()
+
+        assert not at.exception
+        assert _txn_count(at) == "2 transactions"
+
+    def test_changing_the_preset_updates_both_boxes(self, tmp_path):
+        _seed_date_spread(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
+        at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
+        assert _txn_count(at) == "2 transactions"
+
+        at.sidebar.radio(key="date_preset").set_value("This month").run()
+
+        assert not at.exception
+        assert at.sidebar.date_input(key="date_from").value == date(2026, 9, 1)
+
+    def test_reset_button_reverts_manual_edits_to_the_current_preset(self, tmp_path):
+        _seed_date_spread(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
+        at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
+        assert _txn_count(at) == "2 transactions"
+
+        reset_btn = next(b for b in at.sidebar.button if b.label == "Reset date range")
+        reset_btn.click().run()
+
+        assert not at.exception
+        assert _txn_count(at) == "4 transactions"
