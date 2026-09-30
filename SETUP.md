@@ -164,6 +164,23 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 The local processing script runs on your own machine and pulls enriched transactions from the server into a local DuckDB database.
 
+> **Windows note — Smart App Control:** Windows 11's Smart App Control can block pandas' compiled binaries from
+> loading, even for a normal `pip`/Poetry install, with an error like `ImportError: DLL load failed ... An
+> Application Control policy has blocked this file`. It's enforced by a Windows Update, not anything this project
+> does, and once it's switched itself to "On" it can't be turned off without reinstalling Windows. It doesn't affect
+> Mac/Linux, and if you never hit that error you can skip this and follow the steps below as written.
+>
+> If you do hit it, run everything in this part through **WSL2** instead of Windows Python — Smart App Control only
+> inspects Windows binaries, so it never sees the Linux ones:
+> 1. `wsl --install -d Ubuntu-24.04` (one-time; needs a reboot the first time WSL itself is installed)
+> 2. Inside the WSL shell: install Poetry and run `poetry install` there, against this same repo at its `/mnt/c/...`
+>    path — you don't need a second clone.
+> 3. Use `run_dashboard_wsl.sh` (dashboard) and `run_process_wsl.sh` (pipeline only) instead of calling `poetry run`
+>    directly — both just `cd` into the project and call Poetry's WSL install. Steps 5 and 6 below show how
+>    `launch_dashboard.bat` and Task Scheduler call these.
+> 4. A Windows-side Poetry install (`poetry env info --executable`) can still be pointed at from an editor for
+>    autocomplete — it just can't run pandas-dependent code, only WSL's install can.
+
 ### 1. Clone the Repository Locally
 
 If you haven't already cloned the repository on your local machine:
@@ -217,21 +234,28 @@ Two log files are created automatically alongside the database:
 
 ### 5. Schedule the Task
 
-First, get the path to the Poetry Python executable:
-```powershell
-poetry env info --executable
-```
-
 **Windows — Task Scheduler:**
 
+If you're routing through WSL (see the Smart App Control note above — this is the common case on Windows 11):
+
 1. Open **Task Scheduler** → **Create Basic Task**
-2. Name it `Bank Enrichment` → Next
+2. Name it `Bank Enrichment Collection` → Next
 3. Trigger: **Daily** → set your preferred time (e.g. 08:00) → Next
 4. Action: **Start a program** → Next
-5. **Program/script**: paste the full path from `poetry env info --executable`
-6. **Arguments**: `src\local_scripts\process.py`
-7. **Start in**: your project root (e.g. `C:\Users\you\Projects\bank-enrichment`)
-8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not**
+5. **Program/script**: `C:\WINDOWS\system32\wsl.exe`
+6. **Add arguments**: `-d Ubuntu-24.04 -- bash /mnt/c/Users/you/Projects/bank-enrichment/run_process_wsl.sh` (adjust the path and distro name to match yours)
+7. **Start in**: leave blank — the script `cd`s into the project itself
+8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not** (you'll be asked for your Windows password so the task can run while you're logged out)
+
+If you've confirmed you're *not* affected by Smart App Control, point the task directly at Poetry's Python instead:
+get the path with `poetry env info --executable`, use that as the program, and `src\local_scripts\process.py` as
+the arguments — everything else above is the same.
+
+**Whichever setup you use:** a scheduled task's action isn't visible day-to-day, so it can quietly start failing —
+for example if a later Windows Update changes what Smart App Control blocks — with nothing but a daily "1" in
+`(Get-ScheduledTaskInfo -TaskName "Bank Enrichment Collection").LastTaskResult` to show it. Check on it occasionally:
+a `LastTaskResult` of `0` means the last run's command exited cleanly (check `bank_enrichment.log` for what it
+actually did), anything else means it never got that far.
 
 The script is safe to re-run manually at any time.
 
@@ -246,18 +270,24 @@ Add one line (adjust path and time as needed):
 
 ### 6. View the Dashboard
 
-Launch:
+**Mac/Linux, or Windows unaffected by Smart App Control:**
 ```bash
 poetry run python -m streamlit run src/local_scripts/dashboard.py
 ```
+(`python -m streamlit` rather than `streamlit` directly — some Windows security policies block the `streamlit.exe`
+binary but allow running it as a Python module. This alone won't help if Smart App Control is blocking pandas
+itself — see below.)
 
-> **Note (Windows):** Use `python -m streamlit` rather than `streamlit` directly — some Windows security policies block the `streamlit.exe` binary but allow running it as a Python module.
+**Windows, routing through WSL:** double-click `launch_dashboard.bat` (or the desktop shortcut below) — it opens a
+console window running `run_dashboard_wsl.sh` in WSL, then opens your browser once the dashboard is actually ready.
+Closing the console window stops it.
 
 It opens in your browser automatically. Tabs:
 
 **Optional — Desktop shortcut (Windows):**
 
-A `launch_dashboard.bat` file is included in the project root. To add a shortcut to your desktop, run this once in PowerShell:
+A `launch_dashboard.bat` file is included in the project root — this is how you'll normally start the dashboard day
+to day. To add a shortcut to your desktop, run this once in PowerShell:
 
 ```powershell
 $ws = New-Object -ComObject WScript.Shell

@@ -745,24 +745,28 @@ def run():
             placements.append((t, p_name, s_name, "P1+2"))
 
         # ── Second opinion on placements into existing categories ──────────────
-        # A placement the judge objects to is held behind a card (suggestion
-        # vs. keep it) instead of being written. One it could not get a verdict
-        # on is not written either -- it stays unclassified and is picked up
-        # again next run, rather than being saved unreviewed. Everything else
-        # is committed.
+        # A placement the judge objects to is written AND held behind a card
+        # (suggestion vs. keep it) -- it stays classified exactly where the
+        # classifier put it while the card waits, the same as a piece of older
+        # history reviewed by judge_backlog.py, rather than becoming invisible
+        # in the dashboard's "unclassified" view for as long as the card sits
+        # unanswered. One the judge could not get a verdict on is NOT written
+        # -- it stays unclassified and is picked up again next run, rather than
+        # being saved unreviewed.
         review = reviewer.review([(t, p, s) for t, p, s, _ in placements])
         objections = review.objections
-        if objections:
-            reviewer.hold([(t, p, s, objections[t["id"]]) for t, p, s, _ in placements if t["id"] in objections])
 
         for t, p_name, s_name, tag in placements:
-            if t["id"] in objections or t["id"] in review.unavailable:
+            if t["id"] in review.unavailable:
                 continue
             if tag == "P1+2":
                 upsert_subcategory(s_name, parent_id_map[p_name])
             update_classification(t["id"], p_name, s_name, None, MODEL)
             total_classified += 1
             log.info(f"  [{tag}] {t['id']} -> {p_name} / {s_name or '—'}")
+
+        if objections:
+            reviewer.hold([(t, p, s, objections[t["id"]]) for t, p, s, _ in placements if t["id"] in objections])
 
         # ── Pass 3: propose a few alternative placements for each novel group ──
         if novel_groups:

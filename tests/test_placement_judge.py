@@ -553,7 +553,11 @@ class TestRunUsesTheJudge:
             return reject("Bills & Utilities", "Rent Deposit")
         return APPROVE
 
-    def test_the_questioned_placement_is_held_and_the_rest_are_written(self, db, monkeypatch):
+    def test_the_questioned_placement_is_held_but_stays_classified_where_it_was(self, db, monkeypatch):
+        """The point: a held placement must not become invisible in the
+        dashboard's unclassified view for as long as its card sits unanswered
+        -- it stays exactly where the classifier put it, same as history
+        reviewed by judge_backlog.py, and only the card is new."""
         self._seed(db)
         client = FakeClient(self._judge)
         self._stub_passes(monkeypatch, client)
@@ -564,13 +568,27 @@ class TestRunUsesTheJudge:
 
         assert txn(db, "rent")["llm_subcategory"] == "Rent"
         deposit = txn(db, "deposit")
-        assert deposit["llm_category"] is None and deposit["pending_category_proposal_id"] is not None
+        assert deposit["llm_category"] == "Bills & Utilities" and deposit["llm_subcategory"] == "Rent", \
+            "still classified as the classifier's own first choice, not NULL, while the card waits"
+        assert deposit["pending_category_proposal_id"] is not None
         assert synced == [deposit["pending_category_proposal_id"]]
         options = json.loads(db.execute("SELECT options FROM category_proposals").fetchone()[0])
         assert options[0]["subcategory_name"] == "Rent Deposit" and options[1]["is_original"]
         assert db.execute("SELECT COUNT(*) FROM subcategories WHERE name = 'Rent Deposit'").fetchone()[0] == 0, \
             "the suggested subcategory must not exist until it is chosen"
         assert outcome(db, "rent") == "approved" and outcome(db, "deposit") == "held"
+
+    def test_choosing_the_suggestion_or_keeping_it_both_work_on_a_live_held_placement(self, db, monkeypatch):
+        self._seed(db)
+        self._stub_passes(monkeypatch, FakeClient(self._judge))
+        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
+        ll.run()
+        pid = txn(db, "deposit")["pending_category_proposal_id"]
+
+        assert cp.apply_selected(pid, 0) == 1
+        deposit = txn(db, "deposit")
+        assert (deposit["llm_subcategory"], deposit["pending_category_proposal_id"]) == ("Rent Deposit", None)
+        assert outcome(db, "deposit") == "changed"
 
     def test_an_approving_judge_changes_nothing(self, db, monkeypatch):
         self._seed(db)
