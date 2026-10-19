@@ -302,7 +302,7 @@ Run it from the project root so `$PWD` resolves to the right path. You can then 
 
 | Tab | Description |
 |-----|-------------|
-| Overview | Standard vs Actual metric cards (income, spend, net, savings rate, invested, transferred/excluded), each with a delta vs the previous period |
+| Overview | Standard vs Actual metric cards (income, spend, net, savings rate, invested, saved, transferred/excluded), each with a delta vs the previous period |
 | Over Time | Monthly trend charts by category and subcategory, a savings & investing chart, and a monthly totals table |
 | Transactions | Full filterable/searchable table — edit Category, Subcategory, Date, and Context inline |
 | Category Drill-Down | Pick a parent category to see subcategory breakdowns and transactions |

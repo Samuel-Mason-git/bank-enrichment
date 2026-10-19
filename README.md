@@ -99,23 +99,43 @@ Each rule specifies:
 | Field | Description |
 |---|---|
 | Name | A label for the rule (e.g. "Wifi Bill") |
-| Match field | What to check — merchant name, description, counterparty name, category, or amount |
-| Match type | How to compare — `contains`, `exact`, `regex`, `amount_range`, or `amount_exact` |
-| Match value | The value to match against (e.g. `EE`, `490-510` for a £ range, or `9.99` for exact) |
+| Match field | What to check — merchant name, description, counterparty name, category, payment scheme, or amount |
+| Match type | How to compare — `contains`, `exact`, `regex`, `amount_range`, `amount_exact`, or (amount field only) `amount_negative`/`amount_positive` for direction alone |
+| Match value | The value to match against (e.g. `EE`, `490-510` for a £ range, `9.99` for exact) — not needed for `amount_negative`/`amount_positive`, which only look at the sign |
 | Auto context | The context sentence to store (e.g. "Monthly wifi bill") — optional if Auto Skip is on |
 | Auto Skip | If checked, the transaction is marked as skipped automatically — no Telegram notification, no manual enrichment needed |
 | Second condition | Optional — a second match field/type/value that must also pass (AND logic) |
 
 Rules can be enabled or disabled at any time from the dashboard without deleting them.
 Amount ranges and exact amounts are specified in pounds and matched against the absolute
-transaction value. A rule with two conditions only fires if both match — useful for
-cases like a specific merchant at a specific amount.
+transaction value, regardless of direction — `amount_negative`/`amount_positive` exist
+specifically for when direction itself is what you need to match on (see the Savings
+example below). A rule with two conditions only fires if both match — useful for cases
+like a specific merchant at a specific amount, or a payment scheme in one direction only.
+
+**Payment scheme** is Monzo's own classification of how money moved (e.g. `uk_retail_pot`
+for a transfer to or from a pot) — matching on it is exact by nature, unlike a text match
+on the description, which for a pot transfer is just the pot's internal ID and can
+coincidentally contain another merchant's name as a substring.
 
 **Auto Skip** is useful for transactions you never want to see — internal transfers, 
 refunds from known merchants, or any recurring charge you're confident needs no context. 
 The transaction is still stored and will appear in your local database; it just won't 
 interrupt you via Telegram. You can combine Auto Skip with an Auto Context if you want 
 the transaction labelled but not notified.
+
+**A card payment's amount isn't always final.** A provisional authorisation hold (the
+classic UK fuel-pump pattern — a flat ~£99/£100 hold before the pump knows how much fuel
+was actually taken) is detected automatically and auto-skipped, the same way a declined
+payment is: no Telegram card, since the amount was never going to be the real charge. The
+real, final amount still arrives normally, as its own separate transaction.
+
+**Worked example — tracking a Monzo savings pot separately from real investing:** two
+rules, both matching **Payment scheme** `exact` `uk_retail_pot`, with a second condition
+of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") and
+`amount_positive` on the other ("Moved out of savings pot"). Once a few transactions have
+gone through each, set that subcategory's Role to **Saving** in the Settings tab — see
+[Category Roles & Standard vs Actual](#category-roles--standard-vs-actual).
 
 ## Quick Categories
 
@@ -212,19 +232,29 @@ is safe: the defaults won't quietly get added back in alongside it on a later re
 
 ### Category Roles & Standard vs Actual
 
-Every category has a **Role** — Income, Spend, Investment, Transfer, or Excluded — set from
-the Settings tab, at the parent level (subcategories inherit it, or can override it
+Every category has a **Role** — Income, Spend, Investment, Saving, Transfer, or Excluded —
+set from the Settings tab, at the parent level (subcategories inherit it, or can override it
 individually, e.g. a "Refunds" subcategory under "Income" is Excluded rather than Income).
-Roles drive what actually counts as income or spend in the weekly/monthly Telegram summaries
-and throughout the dashboard, so a refund or an internal transfer between your own accounts
-doesn't inflate your real income or spend.
+Roles drive what actually counts as income or spend throughout the dashboard, so a refund or
+an internal transfer between your own accounts doesn't inflate your real income or spend.
 
 This is why most of the dashboard shows two versions of the same figures:
 
 - **Standard** — every £ counted by amount sign alone (money in = income, money out = spend),
   regardless of category.
 - **Actual** — the same figures computed from each category's Role instead, so refunds,
-  transfers, and investment movements are correctly excluded or reclassified.
+  transfers, and investment/saving movements are correctly excluded or reclassified.
+
+**Investment vs Saving** are mechanically identical (money moving in is tracked as its own
+outgoing-only figure and excluded from Actual Income/Spend/Net — a withdrawal can't cancel out
+a contribution, and a deposit can't be miscounted as real spend) but are kept as two separate
+roles rather than one, so a genuine investment contribution (stocks, ISA, pension) is never
+silently combined with money moved into a savings pot under one figure. Use whichever fits —
+e.g. a Monzo savings pot as Saving, a Trading 212/stocks & shares contribution as Investment.
+
+> **Known gap:** the weekly/monthly Telegram summaries currently only read the Investment
+> total, not Saving — money under a Saving-role category won't appear in those messages yet,
+> only in the dashboard itself.
 
 ### New Category Approval
 
@@ -315,10 +345,10 @@ excluding something hides it from view, it does not delete or reclassify it.
 
 | Tab | Description |
 |-----|-------------|
-| Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
-| Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
+| Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Saved, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
+| Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); standalone Invested and Saved trend charts; Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
 | Transactions | Full filterable table with a few "fun fact" stat cards up top (unique merchants, biggest transaction, busiest day, etc). Category and Subcategory are edited via dropdowns restricted to your existing taxonomy, so labels stay consistent; Date and Context are also editable; Merchant and Description are read-only. |
-| Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Transferred-Excluded, split into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
+| Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved/Transferred-Excluded, split into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
 | Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
 | Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
 | Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Backups section (see below). |
