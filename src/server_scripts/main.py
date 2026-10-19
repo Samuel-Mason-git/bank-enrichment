@@ -147,6 +147,13 @@ class MonzoInner(BaseModel):
     # Present only when the payment was refused (e.g. 'INSUFFICIENT_FUNDS').
     # Monzo still fires a webhook for these even though no money moved.
     decline_reason: Optional[str] = None
+    # True while the amount is a provisional hold, not the final charge -- the
+    # classic UK fuel-pump pattern, where the pump authorises a flat ~£99/£100
+    # before it knows how much fuel was actually taken. The real amount arrives
+    # as its OWN separate transaction (its own id), not a correction to this
+    # one, so there is nothing to reconcile here -- only to not alarm the user
+    # with a number that was never going to be the real charge.
+    amount_is_pending: Optional[bool] = None
     # Monzo's own payment scheme -- 'uk_retail_pot' for a pot transfer, and
     # distinct values for card payments, direct debits and faster payments.
     # A rule keyed on this cannot be fooled by a merchant whose name happens to
@@ -306,6 +313,26 @@ async def recieve_monzo(request: Request):
         except Exception as e:
             log.error(f"Failed to auto-skip declined {transaction_id}: {e}", exc_info=True)
         return {"status": "declined"}
+
+    # A provisional hold (see MonzoInner.amount_is_pending) shown to the user as
+    # a real charge would be a false alarm -- a UK fuel pre-auth often sits at
+    # ~£99/£100 regardless of how much fuel is actually taken. The real, final
+    # amount is on its way as a separate transaction with its own id, so this
+    # one is auto-skipped the same way a decline is: recorded (keeps its id in
+    # the dedup buffer) but never surfaced.
+    if is_new and monzo_data.data.amount_is_pending:
+        try:
+            con.execute(
+                """UPDATE webhook_queue
+                   SET status = 'enriched', skipped = TRUE, user_context = ?, enriched_at = ?
+                   WHERE id = ?""",
+                ["Pending authorisation hold (amount not final)",
+                 time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
+            )
+            log.info(f"Pending-amount transaction auto-skipped: {transaction_id} — no notification sent")
+        except Exception as e:
+            log.error(f"Failed to auto-skip pending-amount {transaction_id}: {e}", exc_info=True)
+        return {"status": "pending_hold"}
 
     # Check rules for auto-enrichment / auto-skip
     rule_context, rule_skip = (None, False)

@@ -226,7 +226,13 @@ const TEXT_TYPES = [
 const AMOUNT_TYPES = [
     { value: "amount_range", label: "Amount range" },
     { value: "amount_exact", label: "Exact amount" },
+    { value: "amount_negative", label: "Money out (negative)" },
+    { value: "amount_positive", label: "Money in (positive)" },
 ];
+// These two don't take a value -- only the sign of the amount matters -- but
+// match_value is a required column, so a placeholder is filled in and the
+// input hidden rather than left for the user to make something up.
+const DIRECTION_TYPES = ["amount_negative", "amount_positive"];
 const RULES_DATA = {{ rules | tojson }};
 
 function updateMatchType() {
@@ -282,30 +288,40 @@ function updateMatchType2() {
     }
 }
 
-function updateAmountHint2() {
-    const typeSelect = document.getElementById("match_type_2");
-    const valueInput = document.getElementById("match_value_2");
-    const hint = document.getElementById("match_value_hint_2");
-    if (typeSelect.value === "amount_exact") {
+function _applyAmountHint(typeSelect, valueInput, hint) {
+    // readOnly, not disabled: a disabled input is left out of the submitted
+    // form entirely, and match_value[_2] being empty isn't "match anything" --
+    // it's "there is no second condition" (see check_rules.py), so the second
+    // condition would silently stop being enforced at all.
+    if (DIRECTION_TYPES.includes(typeSelect.value)) {
+        valueInput.value = "any";
+        valueInput.readOnly = true;
+        hint.textContent = "No value needed — only whether money went in or out.";
+    } else if (typeSelect.value === "amount_exact") {
+        valueInput.readOnly = false;
         valueInput.placeholder = "e.g. 9.99";
         hint.textContent = "Enter an exact £ amount — e.g. 9.99";
     } else {
+        valueInput.readOnly = false;
         valueInput.placeholder = "e.g. 490-510";
         hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
     }
 }
 
+function updateAmountHint2() {
+    _applyAmountHint(
+        document.getElementById("match_type_2"),
+        document.getElementById("match_value_2"),
+        document.getElementById("match_value_hint_2"),
+    );
+}
+
 function updateAmountHint() {
-    const typeSelect = document.getElementById("match_type");
-    const valueInput = document.getElementById("match_value");
-    const hint = document.getElementById("match_value_hint");
-    if (typeSelect.value === "amount_exact") {
-        valueInput.placeholder = "e.g. 9.99";
-        hint.textContent = "Enter an exact £ amount — e.g. 9.99";
-    } else {
-        valueInput.placeholder = "e.g. 490-510";
-        hint.textContent = "Enter a £ range — e.g. 490-510 matches any amount between £490 and £510";
-    }
+    _applyAmountHint(
+        document.getElementById("match_type"),
+        document.getElementById("match_value"),
+        document.getElementById("match_value_hint"),
+    );
 }
 
 function toggleAutoSkip() {
@@ -324,11 +340,16 @@ function editRule(id) {
 
     document.getElementById("name").value = rule.name;
 
-    // Set field first so updateMatchType() populates the right options, then set value
+    // Set field first so updateMatchType() populates the right options, then set
+    // value -- and re-run the hint/readonly logic, since setting .value doesn't
+    // fire a "change" event, so a saved amount_negative/amount_positive rule
+    // would otherwise show the wrong hint and an editable value box until the
+    // dropdown was touched by hand.
     document.getElementById("match_field").value = rule.match_field;
     updateMatchType();
     document.getElementById("match_type").value = rule.match_type;
     document.getElementById("match_value").value = rule.match_value;
+    if (rule.match_field === "amount") updateAmountHint();
 
     document.getElementById("auto_context").value = rule.auto_context || "";
     document.getElementById("auto_skip").checked = !!rule.auto_skip;
@@ -339,6 +360,7 @@ function editRule(id) {
     if (rule.match_field_2) {
         document.getElementById("match_type_2").value = rule.match_type_2 || "";
         document.getElementById("match_value_2").value = rule.match_value_2 || "";
+        if (rule.match_field_2 === "amount") updateAmountHint2();
     }
 
     document.getElementById("form-section-label").textContent = `Edit Rule: ${rule.name}`;
