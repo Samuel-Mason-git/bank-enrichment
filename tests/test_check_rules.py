@@ -86,6 +86,33 @@ class TestMatchesAmountExact:
         assert _matches(-999, "amount_exact", "9.99") is True
 
 
+class TestMatchesAmountDirection:
+    """amount_negative/amount_positive: direction only, no magnitude -- e.g. a
+    pot transfer's description is just its pot id, so sign is the only way to
+    tell a deposit from a withdrawal. match_value is unused by these."""
+
+    def test_negative_matches_amount_negative(self):
+        assert _matches(-1000, "amount_negative", "any") is True
+
+    def test_positive_does_not_match_amount_negative(self):
+        assert _matches(1000, "amount_negative", "any") is False
+
+    def test_positive_matches_amount_positive(self):
+        assert _matches(1000, "amount_positive", "any") is True
+
+    def test_negative_does_not_match_amount_positive(self):
+        assert _matches(-1000, "amount_positive", "any") is False
+
+    def test_zero_matches_neither(self):
+        """Zero is neither money in nor money out."""
+        assert _matches(0, "amount_negative", "any") is False
+        assert _matches(0, "amount_positive", "any") is False
+
+    def test_match_value_content_is_irrelevant(self):
+        assert _matches(-1000, "amount_negative", "") is True
+        assert _matches(-1000, "amount_negative", "ignored") is True
+
+
 class TestMatchesUnknownType:
     def test_unknown_type_returns_false(self):
         assert _matches("anything", "unknown_type", "value") is False
