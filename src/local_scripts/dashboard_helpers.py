@@ -12,6 +12,7 @@ ROLE_METRICS = {
     "Spend": ("spend",),
     "Income": ("income",),
     "Invested": ("investment",),
+    "Saved": ("saving",),
     "Transferred / Excluded": ("transfer", "excluded"),
 }
 

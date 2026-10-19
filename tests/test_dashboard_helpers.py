@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from dashboard_helpers import (
-    FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
+    FREQ_MONTHLY, ROLE_METRICS, pct_delta, detect_subscriptions, should_deactivate_subscription,
     sanitize_classification_edit, role_breakdown, merchant_display_name,
     backup_label, backup_reason, backup_coverage, format_bytes,
 )
@@ -236,6 +236,30 @@ class TestShouldDeactivateSubscription:
         cutoff = pd.Timestamp("2026-06-01")
         sub = {"merchant_name": "NETFLIX.COM", "name": "Netflix"}
         assert should_deactivate_subscription(sub, df, cutoff) is False
+
+
+class TestSavingIsItsOwnRole:
+    """'saving' is mechanically identical to 'investment' (role_breakdown
+    doesn't care which role name it's given) but must never be the SAME role
+    -- a real investment contribution and a savings-pot deposit have to stay
+    numerically separate, not combined under one figure."""
+
+    def test_saved_role_metric_maps_to_the_saving_role_only(self):
+        assert ROLE_METRICS["Saved"] == ("saving",)
+
+    def test_investment_and_saving_are_distinct_roles(self):
+        assert "investment" not in ROLE_METRICS["Saved"]
+        assert "saving" not in ROLE_METRICS["Invested"]
+
+    def test_an_investment_and_a_saving_transaction_do_not_sum_together(self):
+        df = _role_df([
+            {"role": "investment", "amount": -250.0, "llm_category": "Investments"},
+            {"role": "saving", "amount": -500.0, "llm_category": "Savings"},
+        ])
+        invested = role_breakdown(df, ROLE_METRICS["Invested"], "llm_category", sign="negative")
+        saved = role_breakdown(df, ROLE_METRICS["Saved"], "llm_category", sign="negative")
+        assert invested["Amount"].sum() == 250.0
+        assert saved["Amount"].sum() == 500.0
 
 
 def _role_df(rows: list[dict]) -> pd.DataFrame:
