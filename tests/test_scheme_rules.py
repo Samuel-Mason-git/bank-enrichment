@@ -22,12 +22,13 @@ def _txn(scheme="uk_retail_pot", description="pot_0000B7cenLixHWSDlwwxKD",
 
 def _add_rule(con, match_field="scheme", match_type="exact",
               match_value="uk_retail_pot", context="Moved between Monzo pot and account",
-              skip=False):
+              skip=False, match_field_2=None, match_type_2=None, match_value_2=None, rule_id=1):
     con.execute(
         """INSERT INTO rules (id, name, match_field, match_type, match_value,
-                              auto_context, enabled, auto_skip)
-           VALUES (1, 'Monzo pot transfer', ?, ?, ?, ?, TRUE, ?)""",
-        [match_field, match_type, match_value, context, skip])
+                              auto_context, enabled, auto_skip, match_field_2, match_type_2, match_value_2)
+           VALUES (?, 'Monzo pot transfer', ?, ?, ?, ?, TRUE, ?, ?, ?, ?)""",
+        [rule_id, match_field, match_type, match_value, context, skip,
+         match_field_2, match_type_2, match_value_2])
 
 
 class TestSchemeIsExtractable:
@@ -129,3 +130,43 @@ class TestTheRuleTesterCanExerciseSchemeRules:
                                    "description": "OLD", "category": "general"}})],
         )
         assert main._get_test_transactions(server_con)[0]["scheme"] == ""
+
+
+class TestDirectionDistinguishesDepositsFromWithdrawals:
+    """A pot transfer's description is just its pot id -- scheme alone can't
+    tell a deposit from a withdrawal, only the amount's sign can. Two rules,
+    each scheme=uk_retail_pot plus a direction second condition, is how the
+    dashboard's existing Rules page can finally tell the two apart without any
+    backend classifier change."""
+
+    def test_money_leaving_the_account_into_the_pot_matches_the_deposit_rule(self, server_con):
+        _add_rule(server_con, context="Moved into savings pot",
+                  match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
+        assert check_rules(_txn(amount=-100000)) == ("Moved into savings pot", False)
+
+    def test_money_arriving_back_from_the_pot_does_not_match_the_deposit_rule(self, server_con):
+        _add_rule(server_con, context="Moved into savings pot",
+                  match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
+        assert check_rules(_txn(amount=20000)) == (None, False)
+
+    def test_money_arriving_back_from_the_pot_matches_the_withdrawal_rule(self, server_con):
+        _add_rule(server_con, context="Moved out of savings pot",
+                  match_field_2="amount", match_type_2="amount_positive", match_value_2="any")
+        assert check_rules(_txn(amount=20000)) == ("Moved out of savings pot", False)
+
+    def test_both_rules_together_route_each_direction_to_its_own_context(self, server_con):
+        """The realistic setup: deposit rule first, withdrawal rule second --
+        first match wins, so each transaction must hit exactly one."""
+        _add_rule(server_con, rule_id=1, context="Moved into savings pot",
+                  match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
+        _add_rule(server_con, rule_id=2, context="Moved out of savings pot",
+                  match_field_2="amount", match_type_2="amount_positive", match_value_2="any")
+        assert check_rules(_txn(amount=-50000))[0] == "Moved into savings pot"
+        assert check_rules(_txn(amount=50000))[0] == "Moved out of savings pot"
+
+    def test_a_card_payment_matches_neither_direction_rule(self, server_con):
+        _add_rule(server_con, context="Moved into savings pot",
+                  match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
+        card = _txn(scheme="mastercard", description="MORRISONS MILTON KEYNES",
+                    merchant="Morrisons", amount=-891)
+        assert check_rules(card) == (None, False)

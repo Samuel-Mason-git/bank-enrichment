@@ -37,6 +37,15 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
         return round(float(low) * 100) <= abs(int(field_value)) <= round(float(high) * 100)
     if match_type == "amount_exact":
         return abs(int(field_value)) == round(float(match_value) * 100)
+    # Direction, not magnitude -- e.g. a pot transfer's description is just its
+    # pot id (no useful merchant/counterparty name), and the only way to tell a
+    # deposit from a withdrawal is the sign of the amount. match_value is
+    # unused; these need only ever be paired with a first condition that picks
+    # out which transactions to look at (scheme, description, ...).
+    if match_type == "amount_negative":
+        return int(field_value) < 0
+    if match_type == "amount_positive":
+        return int(field_value) > 0
     return False
 
 def check_rules(data) -> tuple[str | None, bool]:
