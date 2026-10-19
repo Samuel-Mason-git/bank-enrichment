@@ -644,6 +644,14 @@ class TestDateRangeFilter:
         assert _txn_count(at) == "2 transactions"
 
     def test_changing_the_preset_updates_both_boxes(self, tmp_path):
+        """"This month" is computed from the real date.today(), not the seed
+        data's fixed range, so its exact value depends on when this test
+        happens to run -- but it must always end up clamped into
+        [min_date, max_date] rather than crashing (regression: date_input
+        rejects a default value outside its own min/max, which "This month"
+        hits every time the real calendar rolls past the latest transaction
+        actually on record -- i.e. the start of every month, until that
+        month's first transaction lands)."""
         _seed_date_spread(tmp_path)
         at = AppTest.from_file(_DASHBOARD_PATH).run()
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
@@ -653,7 +661,10 @@ class TestDateRangeFilter:
         at.sidebar.radio(key="date_preset").set_value("This month").run()
 
         assert not at.exception
-        assert at.sidebar.date_input(key="date_from").value == date(2026, 9, 1)
+        min_date, max_date = date(2026, 1, 5), date(2026, 9, 25)  # _seed_date_spread's range
+        expected_from = min(max(date.today().replace(day=1), min_date), max_date)
+        assert at.sidebar.date_input(key="date_from").value == expected_from
+        assert min_date <= at.sidebar.date_input(key="date_to").value <= max_date
 
     def test_reset_button_reverts_manual_edits_to_the_current_preset(self, tmp_path):
         _seed_date_spread(tmp_path)

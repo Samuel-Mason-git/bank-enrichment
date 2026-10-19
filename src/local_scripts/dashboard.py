@@ -119,8 +119,14 @@ preset = st.sidebar.radio("Quick Date Filter", list(presets.keys()), horizontal=
 # When the preset changes, push the new dates into the date inputs' session state
 # keys so they actually update (date_input ignores value= after first render)
 preset_from, preset_to = presets[preset]
-preset_from = max(preset_from, min_date)
-preset_to = min(preset_to, max_date)
+# Clamped into [min_date, max_date] on BOTH ends, not just the obvious one:
+# "This month"/"YTD" compute preset_from from today's real-world date, which
+# silently drifts past max_date (the latest transaction actually on record)
+# every time the calendar rolls into a new month/year before that month's
+# first transaction has landed -- date_input then rejects a default value
+# outside its own min/max and crashes the whole dashboard.
+preset_from = min(max(preset_from, min_date), max_date)
+preset_to = max(min(preset_to, max_date), min_date)
 
 if st.session_state.get("_last_preset") != preset:
     st.session_state["_last_preset"] = preset
