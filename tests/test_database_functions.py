@@ -333,9 +333,9 @@ class TestGetTotalsByRole:
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
         assert totals["transfer"] == pytest.approx(674.0)
 
-    def test_all_five_roles_always_present(self, db):
+    def test_all_roles_always_present(self, db):
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
-        assert set(totals.keys()) == {"income", "spend", "investment", "transfer", "excluded"}
+        assert set(totals.keys()) == {"income", "spend", "investment", "saving", "transfer", "excluded"}
 
     def test_positive_amount_under_ordinary_category_is_not_outgoing_or_income(self, db):
         """Regression test: a real category with no role set at all (not one

@@ -678,3 +678,87 @@ class TestDateRangeFilter:
 
         assert not at.exception
         assert _txn_count(at) == "4 transactions"
+
+
+def _seed_investment_and_saving(tmp_path):
+    """One real investment contribution and one savings-pot deposit, same
+    month, same magnitude-adjacent but distinct amounts so a sum-together bug
+    is unmistakable (£250 + £500 = £750, nothing in the real figures)."""
+    database_functions.DB_PATH = str(tmp_path / "test_dashboard.db")
+    database_functions.init_db()
+    database_functions.write_to_db([
+        {"id": "tx_invest", "payload": {"data": {
+            "amount": -25000, "currency": "GBP", "description": "212TRW2R2212T",
+            "category": "general", "merchant": None, "counterparty": {"name": "Trading 212"},
+            "is_load": False, "created": "2026-10-19T12:13:26", "settled": "2026-10-19T12:13:26",
+        }}, "user_context": "Invested into HSBC MSCI world", "skipped": False,
+         "received_at": "2026-10-19T12:13:27", "enriched_at": "2026-10-19T12:14:32"},
+        {"id": "tx_save", "payload": {"data": {
+            "amount": -50000, "currency": "GBP", "description": "pot_0000B7cenLixHWSDlwwxKD",
+            "category": "general", "merchant": None, "counterparty": {}, "scheme": "uk_retail_pot",
+            "is_load": False, "created": "2026-10-15T09:44:43", "settled": "2026-10-15T09:44:43",
+        }}, "user_context": "Moved into savings pot", "skipped": False,
+         "received_at": "2026-10-15T09:44:44", "enriched_at": "2026-10-15T09:45:00"},
+    ])
+    invest_parent = database_functions.upsert_parent("Investments")
+    invest_sub = database_functions.upsert_subcategory("General Investment Account Contributions", invest_parent)
+    database_functions.set_parent_role(invest_parent, "investment")
+    save_parent = database_functions.upsert_parent("Savings")
+    save_sub = database_functions.upsert_subcategory("Deposit", save_parent)
+    database_functions.set_parent_role(save_parent, "saving")
+    database_functions.update_classification("tx_invest", "Investments", "General Investment Account Contributions", None, "test")
+    database_functions.update_classification("tx_save", "Savings", "Deposit", None, "test")
+
+
+class TestInvestedAndSavedStayNumericallySeparate:
+    """The exact regression this role exists to prevent: a real investment
+    contribution and a savings-pot deposit must never be combined under one
+    figure, even though they're mechanically identical (both excluded from
+    Actual Spend/Income, both tracked as their own outgoing-only total)."""
+
+    def test_overview_cards_show_each_figure_separately_not_summed(self, tmp_path):
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        assert not at.exception
+        overview = at.tabs[0]
+        assert _has_card(overview, "Invested", "£250.00")
+        assert _has_card(overview, "Saved", "£500.00")
+        assert not _has_card(overview, "Invested", "£750.00")
+        assert not _has_card(overview, "Saved", "£750.00")
+
+    def test_actual_spend_and_net_are_unaffected_by_either(self, tmp_path):
+        """Both roles are excluded from Actual Spend/Income/Net entirely --
+        neither a contribution nor a pot deposit is real spend."""
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        overview = at.tabs[0]
+        assert _has_card(overview, "Spend", "£0.00")
+        assert _has_card(overview, "Net", "£0.00")
+
+    def test_category_drill_down_keeps_them_on_separate_cards(self, tmp_path):
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        drill = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+        drill.selectbox(key="drill_selected_category").set_value("Investments").run()
+        assert _has_card(at.tabs[3], "Invested", "£250.00")
+        assert not _has_card(at.tabs[3], "Saved", "£500.00"), \
+            "the Investments drill-down must not show the Savings figure at all"
+
+        drill.selectbox(key="drill_selected_category").set_value("Savings").run()
+        assert _has_card(at.tabs[3], "Saved", "£500.00")
+        assert not _has_card(at.tabs[3], "Invested", "£250.00"), \
+            "the Savings drill-down must not show the Investments figure at all"
+
+    def test_the_outgoing_breakdown_dropdown_offers_saved_as_its_own_metric(self, tmp_path):
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        options = at.tabs[0].selectbox(key="overview_outgoing_metric").options
+        assert "Saved" in options and "Invested" in options
+
+    def test_monthly_breakdown_table_has_both_as_separate_columns(self, tmp_path):
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        df = at.tabs[0].dataframe[0].value
+        assert "Invested (£)" in df.columns and "Saved (£)" in df.columns
+        row = df.iloc[0]
+        assert row["Invested (£)"] == "£250.00" and row["Saved (£)"] == "£500.00"

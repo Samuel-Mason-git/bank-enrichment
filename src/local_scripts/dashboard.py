@@ -336,11 +336,13 @@ with tab_overview:
     income_mask = (filtered["role"] == "income") & (filtered["amount"] > 0)
     spend_mask = (filtered["role"] == "spend") & (filtered["amount"] < 0)
     invest_mask = (filtered["role"] == "investment") & (filtered["amount"] < 0)
+    saving_mask = (filtered["role"] == "saving") & (filtered["amount"] < 0)
     excluded_mask = filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)
 
     actual_income = filtered.loc[income_mask, "amount"].sum()
     actual_spend = abs(filtered.loc[spend_mask, "amount"].sum())
     invested = abs(filtered.loc[invest_mask, "amount"].sum())
+    saved = abs(filtered.loc[saving_mask, "amount"].sum())
     excluded_total = abs(filtered.loc[excluded_mask, "amount"].sum())
 
     actual_net = actual_income - actual_spend
@@ -349,11 +351,13 @@ with tab_overview:
     prev_income_mask = (prev_filtered["role"] == "income") & (prev_filtered["amount"] > 0)
     prev_spend_mask = (prev_filtered["role"] == "spend") & (prev_filtered["amount"] < 0)
     prev_invest_mask = (prev_filtered["role"] == "investment") & (prev_filtered["amount"] < 0)
+    prev_saving_mask = (prev_filtered["role"] == "saving") & (prev_filtered["amount"] < 0)
     prev_excluded_mask = prev_filtered["role"].isin(["transfer", "excluded"]) & (prev_filtered["amount"] < 0)
 
     prev_actual_income = prev_filtered.loc[prev_income_mask, "amount"].sum()
     prev_actual_spend = abs(prev_filtered.loc[prev_spend_mask, "amount"].sum())
     prev_invested = abs(prev_filtered.loc[prev_invest_mask, "amount"].sum())
+    prev_saved = abs(prev_filtered.loc[prev_saving_mask, "amount"].sum())
     prev_excluded_total = abs(prev_filtered.loc[prev_excluded_mask, "amount"].sum())
     prev_actual_net = prev_actual_income - prev_actual_spend
     prev_actual_savings_rate = (prev_actual_net / prev_actual_income * 100) if prev_actual_income > 0 else None
@@ -361,6 +365,7 @@ with tab_overview:
     actual_income_d = pct_delta(actual_income, prev_actual_income)
     actual_spend_d = pct_delta(actual_spend, prev_actual_spend)
     invested_d = pct_delta(invested, prev_invested)
+    saved_d = pct_delta(saved, prev_saved)
     excluded_d = pct_delta(excluded_total, prev_excluded_total)
     actual_net_d = pct_delta(actual_net, prev_actual_net)
     actual_sr_d = (
@@ -424,11 +429,13 @@ with tab_overview:
         "Net": "rgba(52, 152, 219, 0.16)",
         "Savings Rate": "rgba(52, 152, 219, 0.16)",
         "Invested": "rgba(155, 89, 182, 0.14)",
+        "Saved": "rgba(52, 219, 193, 0.14)",
         "Transferred / Excluded": "rgba(149, 165, 166, 0.14)",
     }
     delta_direction = {
         "Income": "normal", "Spend": "inverse", "Net": "normal",
-        "Savings Rate": "normal", "Invested": "normal", "Transferred / Excluded": "neutral",
+        "Savings Rate": "normal", "Invested": "normal", "Saved": "normal",
+        "Transferred / Excluded": "neutral",
     }
     standard_tooltips = {
         "Income": "Every transaction with a positive amount, regardless of category.",
@@ -436,6 +443,7 @@ with tab_overview:
         "Net": "Standard Income minus Standard Spend.",
         "Savings Rate": "Standard Net as a percentage of Standard Income.",
         "Invested": "Not tracked separately here — investment transactions are just counted within Standard Income/Spend by amount sign.",
+        "Saved": "Not tracked separately here — savings transactions are just counted within Standard Income/Spend by amount sign.",
         "Transferred / Excluded": "Not tracked separately here — transfers and refunds are just counted within Standard Income/Spend by amount sign.",
     }
     actual_static_tooltips = {
@@ -450,6 +458,7 @@ with tab_overview:
         ("Net", net, net_d, actual_net, actual_net_d, None, False),
         ("Savings Rate", savings_rate, sr_d, actual_savings_rate, actual_sr_d, None, True),
         ("Invested", None, None, invested, invested_d, invest_mask, False),
+        ("Saved", None, None, saved, saved_d, saving_mask, False),
         ("Transferred / Excluded", None, None, excluded_total, excluded_d, excluded_mask, False),
     ]
 
@@ -462,7 +471,7 @@ with tab_overview:
         ),
         unsafe_allow_html=True,
     )
-    std_cols = st.columns(6)
+    std_cols = st.columns(7)
     for col, (label, std_val, std_d, _, _, _, is_pct) in zip(std_cols, metrics_row):
         badge = _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label])
         with col:
@@ -478,7 +487,7 @@ with tab_overview:
         ),
         unsafe_allow_html=True,
     )
-    act_cols = st.columns(6)
+    act_cols = st.columns(7)
     for col, (label, _, _, act_val, act_d, mask, is_pct) in zip(act_cols, metrics_row):
         badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[label])
         tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[label]
@@ -544,31 +553,39 @@ with tab_overview:
             _spend_roles = ROLE_METRICS.get("Spend", [])
             _income_roles = ROLE_METRICS.get("Income", [])
             _invest_roles = ROLE_METRICS.get("Invested", [])
+            _saving_roles = ROLE_METRICS.get("Saved", [])
             _mdf["_income"] = _mdf.apply(
                 lambda r: r["amount"] if r["role"] in _income_roles and r["amount"] > 0 else 0, axis=1)
             _mdf["_spend"] = _mdf.apply(
                 lambda r: abs(r["amount"]) if r["role"] in _spend_roles and r["amount"] < 0 else 0, axis=1)
             _mdf["_invested"] = _mdf.apply(
                 lambda r: abs(r["amount"]) if r["role"] in _invest_roles and r["amount"] < 0 else 0, axis=1)
+            _mdf["_saved"] = _mdf.apply(
+                lambda r: abs(r["amount"]) if r["role"] in _saving_roles and r["amount"] < 0 else 0, axis=1)
             _monthly = (
                 _mdf.groupby("_month")
-                .agg(_income=("_income", "sum"), _spend=("_spend", "sum"), _invested=("_invested", "sum"))
+                .agg(_income=("_income", "sum"), _spend=("_spend", "sum"),
+                     _invested=("_invested", "sum"), _saved=("_saved", "sum"))
                 .reset_index()
                 .sort_values("_month", ascending=False)
             )
             _monthly["Net"] = (_monthly["_income"] - _monthly["_spend"]).round(2)
             _monthly["Savings Rate"] = _monthly.apply(
                 lambda r: f"{(r['Net'] / r['_income'] * 100):.1f}%" if r["_income"] > 0 else "—", axis=1)
+            _monthly["Saved Rate"] = _monthly.apply(
+                lambda r: f"{(r['_saved'] / r['_income'] * 100):.1f}%" if r["_income"] > 0 else "—", axis=1)
             _monthly = _monthly.rename(columns={
                 "_month": "Month", "_income": "Income (£)",
-                "_spend": "Spend (£)", "_invested": "Invested (£)",
+                "_spend": "Spend (£)", "_invested": "Invested (£)", "_saved": "Saved (£)",
             })
             _monthly["Income (£)"] = _monthly["Income (£)"].map("£{:.2f}".format)
             _monthly["Spend (£)"] = _monthly["Spend (£)"].map("£{:.2f}".format)
             _monthly["Invested (£)"] = _monthly["Invested (£)"].map("£{:.2f}".format)
+            _monthly["Saved (£)"] = _monthly["Saved (£)"].map("£{:.2f}".format)
             _monthly["Net"] = _monthly["Net"].map(lambda v: f"£{v:.2f}")
             st.dataframe(
-                _monthly[["Month", "Income (£)", "Spend (£)", "Invested (£)", "Net", "Savings Rate"]],
+                _monthly[["Month", "Income (£)", "Spend (£)", "Invested (£)", "Saved (£)",
+                          "Net", "Savings Rate", "Saved Rate"]],
                 hide_index=True, width="stretch",
             )
         else:
@@ -664,9 +681,10 @@ with tab_time:
         monthly_spend = filtered[(filtered["role"] == "spend") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Spend")
         monthly_income = filtered[(filtered["role"] == "income") & (filtered["amount"] > 0)].groupby("month")["amount"].sum().rename("Income")
         monthly_invested = filtered[(filtered["role"] == "investment") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Invested")
+        monthly_saved = filtered[(filtered["role"] == "saving") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Saved")
         monthly_transferred = filtered[filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Transferred")
         monthly_totals_raw = (
-            pd.concat([monthly_spend, monthly_income, monthly_invested, monthly_transferred], axis=1)
+            pd.concat([monthly_spend, monthly_income, monthly_invested, monthly_saved, monthly_transferred], axis=1)
             .fillna(0).reset_index()
             .rename(columns={"month": "Month"})
             .sort_values("Month")
@@ -675,7 +693,7 @@ with tab_time:
         # raw values with no zero-guard, and Decimal division by zero raises
         # (unlike float, which would just produce inf/nan), so cast to float
         # before any of the derived-ratio columns below.
-        for _col in ["Spend", "Income", "Invested", "Transferred"]:
+        for _col in ["Spend", "Income", "Invested", "Saved", "Transferred"]:
             monthly_totals_raw[_col] = monthly_totals_raw[_col].astype(float)
         monthly_totals_raw["Net"] = monthly_totals_raw["Income"] - monthly_totals_raw["Spend"]
         monthly_totals_raw["Savings Rate"] = (
@@ -683,6 +701,14 @@ with tab_time:
         ).round(1)
         monthly_totals_raw["Investment Rate"] = (
             monthly_totals_raw["Invested"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
+        ).round(1)
+        # Not plotted alongside Savings Rate/Investment Rate on the combined
+        # chart below (that chart is already three lines on two axes) -- it's
+        # still computed and shown in the Monthly Totals table, same as
+        # Investment Rate itself only ever appears as a chart line and nowhere
+        # else as a number.
+        monthly_totals_raw["Saved Rate"] = (
+            monthly_totals_raw["Saved"] / monthly_totals_raw["Income"].replace(0, float("nan")) * 100
         ).round(1)
         # A previous month of exactly £0 makes pct_change() produce +inf rather
         # than a crash now that the Decimal cast above is in place -- but
@@ -702,9 +728,10 @@ with tab_time:
             "Net": (monthly_totals_raw["Net"].mean(), False),
             "Savings Rate": (monthly_totals_raw["Savings Rate"].mean(), True),
             "Invested": (monthly_totals_raw["Invested"].mean(), False),
+            "Saved": (monthly_totals_raw["Saved"].mean(), False),
             "Transferred / Excluded": (monthly_totals_raw["Transferred"].mean(), False),
         }
-        avg_cols = st.columns(6)
+        avg_cols = st.columns(7)
         for col, (label, (val, is_pct)) in zip(avg_cols, avg_values.items()):
             with col:
                 st.markdown(
@@ -751,6 +778,19 @@ with tab_time:
             fig_inv.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
                                   xaxis_type="category", xaxis_categoryorder="category ascending")
             st.plotly_chart(fig_inv, width="stretch", key="invested_over_time_chart")
+
+        # Its own standalone chart, same as Invested above, rather than a
+        # fourth line on the combined Savings & Investing chart -- that chart
+        # is already three lines across two axes, and a Saved Rate line there
+        # would make it harder to read, not more useful.
+        saved_chart = monthly_totals_raw[monthly_totals_raw["Saved"] > 0]
+        if len(saved_chart) > 1:
+            fig_saved = px.line(saved_chart, x="Month", y="Saved",
+                                labels={"Saved": "Saved (£)"}, markers=True)
+            fig_saved.update_traces(line_color="#2ab0a0", marker_color="#2ab0a0")
+            fig_saved.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
+                                    xaxis_type="category", xaxis_categoryorder="category ascending")
+            st.plotly_chart(fig_saved, width="stretch", key="saved_over_time_chart")
     else:
         st.info("No transactions in the selected range.")
 
@@ -771,7 +811,8 @@ with tab_time:
             st.dataframe(
                 monthly_totals[[
                     "Month", "Income", "Spend", "Net", "Savings Rate",
-                    "Invested", "Investment Rate", "Transferred", "Income MoM", "Spend MoM",
+                    "Invested", "Investment Rate", "Saved", "Saved Rate",
+                    "Transferred", "Income MoM", "Spend MoM",
                 ]],
                 width="stretch", hide_index=True,
                 column_config={
@@ -795,6 +836,14 @@ with tab_time:
                     "Investment Rate": st.column_config.NumberColumn(
                         "Investment Rate", format="%.1f%%",
                         help="Invested as a percentage of Income. Blank when there was no income that month."),
+                    "Saved": st.column_config.NumberColumn(
+                        "Saved", format="£%.2f",
+                        help="Money moved into savings categories (outgoing side only, so a "
+                             "withdrawal can't cancel out a contribution) -- mechanically identical "
+                             "to Invested, kept separate so it isn't mixed with genuine investing."),
+                    "Saved Rate": st.column_config.NumberColumn(
+                        "Saved Rate", format="%.1f%%",
+                        help="Saved as a percentage of Income. Blank when there was no income that month."),
                     "Transferred": st.column_config.NumberColumn(
                         "Transferred", format="£%.2f",
                         help="Money moved to transfer or excluded categories (outgoing side only)."),
@@ -989,21 +1038,24 @@ with tab_drill:
         # means summing signed amounts can never let an inflow cancel an
         # outflow, matching how Overview computes these same totals.
         role_sign = {"income": "positive", "spend": "negative", "investment": "negative",
-                     "transfer": "negative", "excluded": "negative"}
+                     "saving": "negative", "transfer": "negative", "excluded": "negative"}
         income_cat = cat_df.loc[(cat_df["role"] == "income") & (cat_df["amount"] > 0), "amount"].sum()
         spend_cat = abs(cat_df.loc[(cat_df["role"] == "spend") & (cat_df["amount"] < 0), "amount"].sum())
         invested_cat = abs(cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] < 0), "amount"].sum())
+        saved_cat = abs(cat_df.loc[(cat_df["role"] == "saving") & (cat_df["amount"] < 0), "amount"].sum())
         excluded_cat = abs(cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] < 0), "amount"].sum())
         net_cat = income_cat - spend_cat
 
-        # Invested/Transferred-Excluded only show their outgoing side above --
-        # but since both can also carry an incoming side under the same role
-        # (e.g. an investment withdrawal, or an inbound transfer/refund), a
-        # category with ONLY incoming activity would otherwise show £0.00 here
-        # while the subcategory chart below it shows a real, nonzero amount.
-        # Surface the incoming side as its own card whenever it's nonzero so
-        # the cards never disagree with what the charts are showing.
+        # Invested/Saved/Transferred-Excluded only show their outgoing side
+        # above -- but since each can also carry an incoming side under the
+        # same role (e.g. an investment withdrawal, or an inbound transfer/
+        # refund), a category with ONLY incoming activity would otherwise show
+        # £0.00 here while the subcategory chart below it shows a real,
+        # nonzero amount. Surface the incoming side as its own card whenever
+        # it's nonzero so the cards never disagree with what the charts are
+        # showing.
         invested_in_cat = cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] > 0), "amount"].sum()
+        saved_in_cat = cat_df.loc[(cat_df["role"] == "saving") & (cat_df["amount"] > 0), "amount"].sum()
         excluded_in_cat = cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] > 0), "amount"].sum()
 
         stat_color = "rgba(127, 140, 141, 0.16)"
@@ -1023,6 +1075,7 @@ with tab_drill:
 
         # (display label, color key into row_colors, value, tooltip)
         invested_label = "Invested (Outgoing)" if invested_in_cat > 0 else "Invested"
+        saved_label = "Saved (Outgoing)" if saved_in_cat > 0 else "Saved"
         excluded_label = "Transferred / Excluded (Outgoing)" if excluded_in_cat > 0 else "Transferred / Excluded"
         role_cards = [
             ("Income", "Income", income_cat,
@@ -1031,12 +1084,18 @@ with tab_drill:
              "Every transaction in this category whose role is Spend (outgoing side only)."),
             (invested_label, "Invested", invested_cat,
              "Money moved into investment categories here (outgoing side only, so a withdrawal can't cancel a contribution)."),
+            (saved_label, "Saved", saved_cat,
+             "Money moved into savings categories here (outgoing side only, so a withdrawal can't cancel a contribution)."),
             (excluded_label, "Transferred / Excluded", excluded_cat,
              "Money moved to transfer or excluded categories here (outgoing side only)."),
         ]
         if invested_in_cat > 0:
             role_cards.append(("Invested (Incoming)", "Invested", invested_in_cat,
                 "Money that came back out of investment categories here (e.g. a withdrawal or sale) -- "
+                "kept separate so it can't cancel out the outgoing figure."))
+        if saved_in_cat > 0:
+            role_cards.append(("Saved (Incoming)", "Saved", saved_in_cat,
+                "Money that came back out of savings categories here (e.g. a withdrawal) -- "
                 "kept separate so it can't cancel out the outgoing figure."))
         if excluded_in_cat > 0:
             role_cards.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in_cat,
@@ -1060,11 +1119,11 @@ with tab_drill:
         # actually has data, labeling which side it is whenever a role could
         # go either way.
         role_labels = {"income": "Income", "spend": "Spend", "investment": "Invested",
-                       "transfer": "Transferred", "excluded": "Excluded"}
+                       "saving": "Saved", "transfer": "Transferred", "excluded": "Excluded"}
         role_colors = {"income": "Greens", "spend": "Reds", "investment": "Purples",
-                       "transfer": "Blues", "excluded": "Greys"}
+                       "saving": "Teal", "transfer": "Blues", "excluded": "Greys"}
         bidirectional = {"income": False, "spend": False, "investment": True,
-                          "transfer": True, "excluded": True}
+                          "saving": True, "transfer": True, "excluded": True}
         chart_specs = []
         for role, label in role_labels.items():
             signs = ["negative", "positive"] if bidirectional[role] else [role_sign[role]]
@@ -1158,7 +1217,7 @@ with tab_drill:
 
 with tab_merchants:
     st.caption(
-        "Actual Spend only — investments, transfers, and refunds aren't counted as merchant spend."
+        "Actual Spend only — investments, savings, transfers, and refunds aren't counted as merchant spend."
     )
     stat_color = "rgba(127, 140, 141, 0.16)"
     # Same direction-restriction used everywhere else: a "spend"-role category

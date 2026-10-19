@@ -152,11 +152,54 @@ def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
     return added
 
 
+def _category_roles_check_constraint(con) -> str | None:
+    """The live text of category_roles' role CHECK constraint, e.g.
+    "CHECK((\"role\" IN ('income', 'spend', ...)))" -- or None if the table
+    doesn't exist yet (a brand-new database: the schema file above already
+    created it with every current role, nothing to migrate)."""
+    row = con.execute(
+        "SELECT constraint_text FROM duckdb_constraints() "
+        "WHERE table_name = 'category_roles' AND constraint_type = 'CHECK'"
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _migrate_category_roles_roles() -> None:
+    """Add 'saving' to category_roles' role CHECK constraint on a database
+    created before that role existed.
+
+    Unlike MIGRATIONS/_apply_migrations above (ADD COLUMN only), DuckDB has no
+    ALTER TABLE support for modifying a CHECK constraint at all -- confirmed by
+    trying it (ALTER TABLE ... DROP CONSTRAINT raises "No support for that
+    ALTER TABLE option yet!" in the DuckDB version this project uses). The only
+    way to widen it is the classic SQLite-style dance: rename the table aside,
+    create a new one with the constraint this file now specifies, copy every
+    row across, drop the old one. Every existing role value already satisfies
+    the new (strictly wider) constraint, so the copy can't fail on old data."""
+    con = _con
+    constraint = _category_roles_check_constraint(con)
+    if constraint is None or "'saving'" in constraint:
+        return  # new database, or already migrated
+    con.execute("ALTER TABLE category_roles RENAME TO category_roles_pre_saving_role")
+    con.execute(
+        """CREATE TABLE category_roles (
+               parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
+               subcategory_id INTEGER REFERENCES subcategories(id),
+               role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'saving', 'transfer', 'excluded')),
+               UNIQUE (parent_id, subcategory_id)
+           )"""
+    )
+    con.execute("INSERT INTO category_roles SELECT * FROM category_roles_pre_saving_role")
+    con.execute("DROP TABLE category_roles_pre_saving_role")
+    log.info("Migrated category_roles: added 'saving' to the allowed roles")
+
+
 def _migrate() -> None:
     """Additive schema migrations — safe to run on every startup."""
     added = _apply_migrations(_con, MIGRATIONS)
     if added:
         log.info(f"Applied schema migrations: {', '.join(added)}")
+    _migrate_category_roles_roles()
 
 
 def _seed_taxonomy() -> None:
@@ -552,7 +595,7 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     return next_id
 
 
-ROLES = ("income", "spend", "investment", "transfer", "excluded")
+ROLES = ("income", "spend", "investment", "saving", "transfer", "excluded")
 
 
 def _validate_role(role: str) -> None:
@@ -563,8 +606,8 @@ def _validate_role(role: str) -> None:
 def get_totals_by_role(date_from: str, date_to: str) -> dict[str, float]:
     """Directional totals per role in [date_from, date_to] -- income sums its
     positive (incoming) side, every other role sums its negative (outgoing)
-    side as a positive magnitude. Always returns all 5 keys (0.0 default) so
-    callers never need a .get() guard.
+    side as a positive magnitude. Always returns all of ROLES as keys (0.0
+    default) so callers never need a .get() guard.
 
     Roles like "transfer" are bidirectional (an Inbound and an Outbound
     Transfer subcategory can both carry that role) -- summing every sign

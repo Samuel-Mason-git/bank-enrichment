@@ -151,12 +151,17 @@ CREATE TABLE IF NOT EXISTS judge_reviews (
     reviewed_at  TIMESTAMP NOT NULL
 );
 
--- User-set Income/Spend/Investment/Transfer/Excluded role per category.
+-- User-set Income/Spend/Investment/Saving/Transfer/Excluded role per category.
 -- subcategory_id NULL = applies to the whole parent. Empty until edited in Settings.
+-- 'saving' is mechanically identical to 'investment' (outgoing side tracked,
+-- excluded from Actual Income/Spend/Net) but kept as its own role so money set
+-- aside in a savings pot is never silently combined with genuine investment
+-- contributions (stocks, ISA, pension) under one figure -- see dashboard.py's
+-- "Saved" card/chart, parallel to "Invested" throughout.
 CREATE TABLE IF NOT EXISTS category_roles (
     parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
     subcategory_id INTEGER REFERENCES subcategories(id),
-    role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'transfer', 'excluded')),
+    role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'saving', 'transfer', 'excluded')),
     UNIQUE (parent_id, subcategory_id)
 );
 

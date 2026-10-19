@@ -7,6 +7,8 @@ the .sql file never reached a database that already had that table -- on the
 server that meant a deploy appearing to succeed and the app then failing at
 runtime against live webhooks.
 """
+from pathlib import Path
+
 import duckdb
 import pytest
 
@@ -109,3 +111,83 @@ class TestAdditiveMigrations:
                 [table]).fetchall()]
             assert cols, f"{table} is not created by tables.sql"
             assert column in cols, f"{table}.{column} is missing from tables.sql"
+
+
+class TestCategoryRolesCheckConstraintMigration:
+    """DuckDB has no ALTER TABLE support for modifying a CHECK constraint at
+    all (confirmed directly: ALTER TABLE ... DROP CONSTRAINT raises "No
+    support for that ALTER TABLE option yet!" on the DuckDB version this
+    project uses) -- so adding the 'saving' role needed a different mechanism
+    than MIGRATIONS/_apply_migrations (ADD COLUMN only): rename the table
+    aside, create a new one with the wider constraint, copy every row across,
+    drop the old one."""
+
+    def _old_schema_db(self):
+        """A database shaped like one created before 'saving' existed --
+        category_roles with the original 5-role CHECK constraint."""
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE parent_categories (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL UNIQUE, created_at TIMESTAMP NOT NULL);
+            CREATE TABLE subcategories (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, parent_id INTEGER NOT NULL REFERENCES parent_categories(id), created_at TIMESTAMP NOT NULL, UNIQUE (name, parent_id));
+            CREATE TABLE category_roles (
+                parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
+                subcategory_id INTEGER REFERENCES subcategories(id),
+                role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'transfer', 'excluded')),
+                UNIQUE (parent_id, subcategory_id)
+            );
+            INSERT INTO parent_categories VALUES (1, 'Investments', NOW());
+            INSERT INTO category_roles VALUES (1, NULL, 'investment');
+        """)
+        return con
+
+    def _migrate(self, con):
+        database_functions._con = con
+        database_functions._migrate_category_roles_roles()
+
+    def test_a_pre_saving_role_database_is_migrated(self):
+        con = self._old_schema_db()
+        self._migrate(con)
+        con.execute("INSERT INTO parent_categories VALUES (2, 'Savings', NOW())")
+        con.execute("INSERT INTO category_roles VALUES (2, NULL, 'saving')")  # must not raise
+        assert con.execute("SELECT role FROM category_roles WHERE parent_id = 2").fetchone()[0] == "saving"
+
+    def test_existing_role_data_survives_untouched(self):
+        con = self._old_schema_db()
+        self._migrate(con)
+        assert con.execute("SELECT parent_id, subcategory_id, role FROM category_roles").fetchall() == [
+            (1, None, "investment")]
+
+    def test_an_invalid_role_is_still_rejected_after_migrating(self):
+        con = self._old_schema_db()
+        self._migrate(con)
+        con.execute("INSERT INTO parent_categories VALUES (3, 'Nonsense', NOW())")
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute("INSERT INTO category_roles VALUES (3, NULL, 'not_a_real_role')")
+
+    def test_running_twice_is_a_no_op(self):
+        con = self._old_schema_db()
+        self._migrate(con)
+        self._migrate(con)  # must not raise, and must not touch data again
+        assert con.execute("SELECT parent_id, subcategory_id, role FROM category_roles").fetchall() == [
+            (1, None, "investment")]
+        assert con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'category_roles_pre_saving_role'"
+        ).fetchone()[0] == 0, "the temporary rename target must never be left lying around"
+
+    def test_a_fresh_database_from_tables_sql_already_accepts_saving_and_needs_no_migration(self):
+        """tables.sql's own CREATE TABLE already lists 'saving' -- a brand new
+        database is already correct, and the migration must recognise that and
+        do nothing rather than attempt a pointless rename/copy."""
+        con = duckdb.connect(":memory:")
+        for statement in database_functions.split_sql_statements(
+                (Path(__file__).parent.parent / "sql" / "tables.sql").read_text()):
+            con.execute(statement)
+        database_functions._con = con
+        database_functions._migrate_category_roles_roles()
+        con.execute("INSERT INTO parent_categories (id, name, created_at) VALUES (99, 'X', NOW())")
+        con.execute("INSERT INTO category_roles VALUES (99, NULL, 'saving')")  # already worked before migrate() ran
+        assert con.execute("SELECT COUNT(*) FROM category_roles WHERE role = 'saving'").fetchone()[0] == 1
+
+    def test_the_constraint_reader_returns_none_when_the_table_does_not_exist(self):
+        con = duckdb.connect(":memory:")
+        assert database_functions._category_roles_check_constraint(con) is None
