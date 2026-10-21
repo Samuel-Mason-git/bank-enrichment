@@ -333,6 +333,34 @@ class TestGetTotalsByRole:
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
         assert totals["transfer"] == pytest.approx(674.0)
 
+    def test_saving_and_investment_net_a_withdrawal_against_a_deposit(self, db):
+        """Unlike "transfer" above, "saving"/"investment" deliberately DO net
+        their two sides -- a deposit and a later withdrawal are the same pot
+        or investment account, so £500 in then £200 back out is genuinely
+        £300 net saved, not two unrelated amounts that must stay separate."""
+        save_pid = upsert_parent("Savings")
+        upsert_subcategory("Deposit", save_pid)
+        upsert_subcategory("Withdrawal", save_pid)
+        set_parent_role(save_pid, "saving")
+        invest_pid = upsert_parent("Investments")
+        upsert_subcategory("Contribution", invest_pid)
+        upsert_subcategory("Withdrawal", invest_pid)
+        set_parent_role(invest_pid, "investment")
+        write_to_db([
+            _txn(id="t1", amount_pence=-50000, description="Deposit", created="2026-01-05T10:00:00"),
+            _txn(id="t2", amount_pence=20000, description="Withdrawal", created="2026-01-06T10:00:00"),
+            _txn(id="t3", amount_pence=-30000, description="Contribution", created="2026-01-07T10:00:00"),
+            _txn(id="t4", amount_pence=10000, description="Withdrawal", created="2026-01-08T10:00:00"),
+        ])
+        update_classification("t1", "Savings", "Deposit", 1.0, "test")
+        update_classification("t2", "Savings", "Withdrawal", 1.0, "test")
+        update_classification("t3", "Investments", "Contribution", 1.0, "test")
+        update_classification("t4", "Investments", "Withdrawal", 1.0, "test")
+
+        totals = get_totals_by_role("2026-01-01", "2026-01-31")
+        assert totals["saving"] == pytest.approx(300.0)
+        assert totals["investment"] == pytest.approx(200.0)
+
     def test_all_roles_always_present(self, db):
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
         assert set(totals.keys()) == {"income", "spend", "investment", "saving", "transfer", "excluded"}

@@ -762,3 +762,99 @@ class TestInvestedAndSavedStayNumericallySeparate:
         assert "Invested (£)" in df.columns and "Saved (£)" in df.columns
         row = df.iloc[0]
         assert row["Invested (£)"] == "£250.00" and row["Saved (£)"] == "£500.00"
+
+    def test_standard_row_omits_the_roles_it_never_populates(self, tmp_path):
+        """Invested/Saved/Transferred have no Standard-side value at all (that
+        money is just folded into Standard Spend by amount sign), so the
+        Standard row shows only Income/Spend/Net/Savings Rate -- it must not
+        render a dead card stuck permanently on '—'."""
+        _seed_investment_and_saving(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        overview = at.tabs[0]
+        assert not _has_card(overview, "Invested", "—")
+        assert not _has_card(overview, "Saved", "—")
+        assert not _has_card(overview, "Transferred / Excluded", "—")
+        assert _has_card(overview, "Invested", "£250.00")
+        assert _has_card(overview, "Saved", "£500.00")
+
+
+def _seed_saving_deposit_and_withdrawal(tmp_path):
+    """A £500 pot deposit and a later £200 withdrawal, same role -- the same
+    pot cycling, so Saved should report the net £300.00, not vanish or split
+    into separate Outgoing/Incoming cards."""
+    database_functions.DB_PATH = str(tmp_path / "test_dashboard.db")
+    database_functions.init_db()
+    database_functions.write_to_db([
+        {"id": "tx_deposit", "payload": {"data": {
+            "amount": -50000, "currency": "GBP", "description": "pot_0000B7cenLixHWSDlwwxKD",
+            "category": "general", "merchant": None, "counterparty": {}, "scheme": "uk_retail_pot",
+            "is_load": False, "created": "2026-10-15T09:44:43", "settled": "2026-10-15T09:44:43",
+        }}, "user_context": "Moved into savings pot", "skipped": False,
+         "received_at": "2026-10-15T09:44:44", "enriched_at": "2026-10-15T09:45:00"},
+        {"id": "tx_withdrawal", "payload": {"data": {
+            "amount": 20000, "currency": "GBP", "description": "pot_0000B7cenLixHWSDlwwxKD",
+            "category": "general", "merchant": None, "counterparty": {}, "scheme": "uk_retail_pot",
+            "is_load": False, "created": "2026-10-20T09:44:43", "settled": "2026-10-20T09:44:43",
+        }}, "user_context": "Moved out of savings pot", "skipped": False,
+         "received_at": "2026-10-20T09:44:44", "enriched_at": "2026-10-20T09:45:00"},
+    ])
+    save_parent = database_functions.upsert_parent("Savings")
+    deposit_sub = database_functions.upsert_subcategory("Deposit", save_parent)
+    withdrawal_sub = database_functions.upsert_subcategory("Withdrawal", save_parent)
+    database_functions.set_parent_role(save_parent, "saving")
+    database_functions.update_classification("tx_deposit", "Savings", "Deposit", None, "test")
+    database_functions.update_classification("tx_withdrawal", "Savings", "Withdrawal", None, "test")
+
+
+def _seed_transfer_in_and_out(tmp_path):
+    """An unrelated £300 inbound transfer and £120 outbound transfer, same
+    role -- these are NOT the same pot cycling (could be a friend repaying
+    you and an unrelated bill payment), so Transferred/Excluded must keep
+    showing them as separate Outgoing/Incoming cards rather than netting."""
+    database_functions.DB_PATH = str(tmp_path / "test_dashboard.db")
+    database_functions.init_db()
+    database_functions.write_to_db([
+        {"id": "tx_transfer_in", "payload": {"data": {
+            "amount": 30000, "currency": "GBP", "description": "FROM A FRIEND",
+            "category": "general", "merchant": None, "counterparty": {"name": "A Friend"},
+            "is_load": False, "created": "2026-10-15T09:44:43", "settled": "2026-10-15T09:44:43",
+        }}, "user_context": "Friend repaid me", "skipped": False,
+         "received_at": "2026-10-15T09:44:44", "enriched_at": "2026-10-15T09:45:00"},
+        {"id": "tx_transfer_out", "payload": {"data": {
+            "amount": -12000, "currency": "GBP", "description": "TO LANDLORD",
+            "category": "general", "merchant": None, "counterparty": {"name": "Landlord"},
+            "is_load": False, "created": "2026-10-16T09:44:43", "settled": "2026-10-16T09:44:43",
+        }}, "user_context": "Rent transfer", "skipped": False,
+         "received_at": "2026-10-16T09:44:44", "enriched_at": "2026-10-16T09:45:00"},
+    ])
+    parent = database_functions.upsert_parent("Transfers")
+    database_functions.upsert_subcategory("Inbound Transfer", parent)
+    database_functions.upsert_subcategory("Outbound Transfer", parent)
+    database_functions.set_parent_role(parent, "transfer")
+    database_functions.update_classification("tx_transfer_in", "Transfers", "Inbound Transfer", None, "test")
+    database_functions.update_classification("tx_transfer_out", "Transfers", "Outbound Transfer", None, "test")
+
+
+class TestOverviewNetsSavingAndInvestmentButNotTransfers:
+    """Saved/Invested net their two directions together into one card (a
+    deposit and a later withdrawal are the same pot or account). Transferred/
+    Excluded stays split into separate Outgoing/Incoming cards, since that
+    bucket can mix genuinely unrelated inbound and outbound movements that
+    would net into a misleading number."""
+
+    def test_saved_nets_deposit_and_withdrawal_into_one_card(self, tmp_path):
+        _seed_saving_deposit_and_withdrawal(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        overview = at.tabs[0]
+        assert _has_card(overview, "Saved", "£300.00")
+        assert not _has_card(overview, "Saved (Outgoing)", "£500.00")
+        assert not _has_card(overview, "Saved (Incoming)", "£200.00")
+
+    def test_transferred_excluded_still_splits_into_outgoing_and_incoming(self, tmp_path):
+        _seed_transfer_in_and_out(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        overview = at.tabs[0]
+        assert _has_card(overview, "Transferred / Excluded (Outgoing)", "£120.00")
+        assert _has_card(overview, "Transferred / Excluded (Incoming)", "£300.00")
+        assert not _has_card(overview, "Transferred / Excluded", "£180.00"), \
+            "unrelated inbound/outbound transfers must not net into a single figure"
