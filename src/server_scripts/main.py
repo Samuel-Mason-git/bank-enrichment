@@ -115,6 +115,18 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
+@app.get("/oauth/callback", response_class=HTMLResponse)
+async def oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Monzo's OAuth authorization redirect lands here. One-time manual setup
+    step (exchanging `code` for a refresh token) -- there's no ongoing session
+    to protect, and the code is single-use and short-lived, so this is
+    deliberately unauthenticated rather than behind the dashboard login."""
+    log.info(f"OAuth callback received: code={code!r} state={state!r} error={error!r}")
+    if error:
+        return f"<p>OAuth error: {error}</p>"
+    return f"<p>code: {code}</p><p>state: {state}</p>"
+
+
 @app.get("/dashboard/logout", response_class=HTMLResponse)
 async def logout(request: Request):
     """HTTP Basic auth has no real server-side session to end, and forcing a
