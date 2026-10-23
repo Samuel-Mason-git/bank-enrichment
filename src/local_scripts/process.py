@@ -8,7 +8,7 @@ import requests
 
 from database_functions import (
     init_db, write_to_db, get_top_subcategories, get_top_merchant_subcategories,
-    apply_quick_tap_classifications,
+    apply_quick_tap_classifications, apply_rule_classifications, get_subcategories,
 )
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
@@ -79,6 +79,20 @@ def sync_quick_categories():
     return response.json()
 
 
+def sync_taxonomy():
+    """Every (category, subcategory) name pair, for the server's Rules page
+    dropdowns -- names only, no transactions or amounts."""
+    entries = [{"category": s["parent_name"], "subcategory": s["name"]} for s in get_subcategories()]
+    response = requests.post(
+        f"{SERVER_URL}/sync-taxonomy",
+        headers=HEADERS,
+        json={"entries": entries},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 if __name__ == "__main__":
     run_start = time.time()
     log.info("--- Process run started ---")
@@ -115,6 +129,13 @@ if __name__ == "__main__":
             t0 = time.time()
             write_to_db(enriched)
             log.info(f"Stored {len(enriched)} transactions ({time.time() - t0:.2f}s)")
+
+            try:
+                filed = apply_rule_classifications(enriched)
+                if filed:
+                    log.info(f"Filed {filed} transaction(s) by fixed-category rule, skipping the classifier")
+            except Exception as e:
+                log.error(f"Applying fixed-category rules failed: {e}", exc_info=True)
 
             t0 = time.time()
             ids = [r["id"] for r in enriched]
@@ -204,3 +225,14 @@ if __name__ == "__main__":
         log.info(f"Synced {result.get('synced', 0)} quick categories to server ({time.time() - t0:.2f}s)")
     except Exception as e:
         log.error(f"Failed to sync quick categories: {e}", exc_info=True)
+
+    try:
+        result = sync_taxonomy()
+        log.info(f"Synced {result.get('synced', 0)} taxonomy entries to server")
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            log.info("Server has no /sync-taxonomy endpoint yet — skipping until it is deployed")
+        else:
+            log.error(f"Failed to sync taxonomy: {e}", exc_info=True)
+    except Exception as e:
+        log.error(f"Failed to sync taxonomy: {e}", exc_info=True)

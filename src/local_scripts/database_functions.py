@@ -457,6 +457,42 @@ def write_to_db(transactions: list[dict]) -> None:
         log.info(f"  Stored {t['id']} | £{amount:.2f} | {desc} | {t['user_context']}")
 
 
+def apply_rule_classifications(transactions: list[dict]) -> int:
+    """File each transaction a fixed-category rule matched straight into that
+    category, so the classifier never sees it. Returns how many were filed.
+
+    Only a pair that still exists in the local taxonomy is applied: the
+    server's dropdown can be up to one run stale, and filing into a name you
+    have since renamed or deleted would quietly recreate it. Those are left
+    unclassified instead, so the normal pipeline picks them up. Never
+    overwrites a transaction that is already classified."""
+    con = get_con()
+    applied = 0
+    for t in transactions:
+        # .get(): an older server, deployed behind this local side, doesn't
+        # send these keys at all.
+        category, subcategory = t.get("rule_category"), t.get("rule_subcategory")
+        if not (category and subcategory):
+            continue
+        exists = con.execute(
+            """SELECT 1 FROM subcategories s JOIN parent_categories p ON p.id = s.parent_id
+               WHERE p.name = ? AND s.name = ?""",
+            [category, subcategory],
+        ).fetchone()
+        if not exists:
+            log.warning(
+                f"Rule placement '{category} / {subcategory}' for {t['id']} is no longer in the "
+                "taxonomy -- leaving it for the classifier"
+            )
+            continue
+        row = con.execute("SELECT llm_category FROM transactions WHERE id = ?", [t["id"]]).fetchone()
+        if not row or row[0] is not None:
+            continue
+        update_classification(t["id"], category, subcategory, None, "rule")
+        applied += 1
+    return applied
+
+
 def apply_quick_tap_classifications(review=None) -> int:
     """Classify transactions whose user_context exactly matches an existing
     'Category - Subcategory' pair (written by a Telegram quick-tap button),

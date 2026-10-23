@@ -23,6 +23,10 @@ def get_con() -> duckdb.DuckDBPyConnection:
 # against live webhooks. Every column added to an EXISTING table goes here.
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("category_proposals", "regenerate_requested", "BOOLEAN DEFAULT FALSE"),
+    ("rules", "category", "VARCHAR(255)"),
+    ("rules", "subcategory", "VARCHAR(255)"),
+    ("webhook_queue", "rule_category", "VARCHAR(255)"),
+    ("webhook_queue", "rule_subcategory", "VARCHAR(255)"),
 ]
 
 
