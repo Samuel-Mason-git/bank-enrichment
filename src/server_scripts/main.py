@@ -754,32 +754,55 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
         "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
     ).fetchall()
 
-    results = []
-    for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
+    def get_field(field):
+        if field == "merchant_name": return test_data["merchant_name"] or None
+        if field == "description": return test_data["description"] or None
+        if field == "counterparty_name": return test_data["counterparty_name"] or None
+        if field == "category": return test_data["category"] or None
+        if field == "scheme": return test_data["scheme"] or None
+        if field == "amount": return amount_pence
+        return None
 
-        def get_field(field):
-            if field == "merchant_name": return test_data["merchant_name"] or None
-            if field == "description": return test_data["description"] or None
-            if field == "counterparty_name": return test_data["counterparty_name"] or None
-            if field == "category": return test_data["category"] or None
-            if field == "scheme": return test_data["scheme"] or None
-            if field == "amount": return amount_pence
-            return None
-
+    def evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled) -> bool:
         try:
             v1 = get_field(match_field)
-            cond1 = v1 is not None and _matches(v1, match_type, match_value)
+            cond1 = v1 is not None and match_field and match_type and match_value and _matches(v1, match_type, match_value)
             cond2 = True
             if match_field_2 and match_type_2 and match_value_2:
                 v2 = get_field(match_field_2)
                 cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
-            matched = bool(enabled) and cond1 and cond2
-        except Exception as e:
-            matched = False
+            return bool(enabled) and cond1 and cond2
+        except Exception:
+            return False
 
+    results = []
+
+    # A not-yet-saved rule, carried over from the Add Rule form by the "Test
+    # this rule" button -- lets you confirm it actually matches the picked
+    # transaction before committing to it, same as any saved rule above it.
+    candidate_field = (form.get("candidate_match_field") or "").strip()
+    if candidate_field:
+        candidate_matched = evaluate(
+            candidate_field,
+            (form.get("candidate_match_type") or "").strip(),
+            (form.get("candidate_match_value") or "").strip(),
+            (form.get("candidate_match_field_2") or "").strip() or None,
+            (form.get("candidate_match_type_2") or "").strip() or None,
+            (form.get("candidate_match_value_2") or "").strip() or None,
+            enabled=True,
+        )
         results.append({
-            "id": rule_id, "name": name, "enabled": enabled,
+            "id": None, "name": "🆕 Your new rule (not saved)", "enabled": True,
+            "matched": candidate_matched, "is_candidate": True,
+            "auto_context": (form.get("candidate_auto_context") or "").strip(),
+            "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
+        })
+
+    for rule in rules:
+        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
+        matched = evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled)
+        results.append({
+            "id": rule_id, "name": name, "enabled": enabled, "is_candidate": False,
             "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
         })
 
@@ -854,7 +877,7 @@ def _get_rules(con):
 
 def _get_test_transactions(con):
     rows = con.execute(
-        "SELECT id, payload, received_at FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
+        "SELECT id, payload, received_at, user_context FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
     ).fetchall()
     txns = []
     for row in rows:
@@ -864,7 +887,8 @@ def _get_test_transactions(con):
         counterparty = (data.get("counterparty") or {}).get("name") or ""
         description = data.get("description") or ""
         display = merchant or counterparty or description or row[0]
-        amount_str = f"£{abs(amount_pence) / 100:.2f}"
+        sign = "-" if amount_pence < 0 else "+"
+        amount_str = f"{sign}£{abs(amount_pence) / 100:.2f}"
         date_str = str(row[2])[:10]
         txns.append({
             "id": row[0],
@@ -874,7 +898,11 @@ def _get_test_transactions(con):
             "counterparty_name": counterparty,
             "category": data.get("category") or "",
             "scheme": data.get("scheme") or "",
-            "amount": round(abs(amount_pence) / 100, 2),
+            # Signed, not abs() -- a candidate amount_negative/amount_positive
+            # rule can only be tested meaningfully against the real direction
+            # the money moved.
+            "amount": round(amount_pence / 100, 2),
+            "user_context": row[3] or "",
         })
     return txns
 
