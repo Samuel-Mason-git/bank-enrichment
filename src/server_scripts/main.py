@@ -286,6 +286,9 @@ class RuleSuggestionCandidate(BaseModel):
     subcategory: str
     txn_count: int = 0
     auto_context: str = ""
+    # Not persisted -- only ever shown on the initial card, not needed again
+    # once a decision is made.
+    llm_reasoning: str = ""
 
 class SyncRuleSuggestionsRequest(BaseModel):
     candidates: list[RuleSuggestionCandidate]

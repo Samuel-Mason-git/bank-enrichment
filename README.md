@@ -151,13 +151,25 @@ matches before committing to it.
 Each local pipeline run also scans your already-classified transactions for a merchant or
 counterparty that has shown up 5+ times with the *exact same* category/subcategory every
 single time — one disagreement anywhere in its history disqualifies it, since the whole
-point is a pattern reliable enough to automate. A qualifying one that isn't already
-covered by an existing enabled rule gets a Telegram card of its own: **💡 Rule
-suggestion**, with the suggested context pre-filled from whichever context sentence
-you've typed most often for that merchant (falling back to a generic "`<merchant>`
-purchase" if your wording has never settled on one). Tapping **Create rule** adds it
-immediately — no local round trip needed, since Rules already live entirely on the
-server. Tapping **No thanks** means that exact pattern is never suggested again.
+point is a pattern reliable enough to automate.
+
+Statistical consistency in your own history isn't the same as a merchant being safe to
+automate, though — a supermarket that's happened to be Groceries every time so far could
+just as easily be something else next time, while a single-purpose merchant (a phone
+bill, a subscription) realistically never will be. Every qualifying pattern is checked by
+Claude for exactly this before anything is suggested — one small batched call per run, 
+only when there's a new pattern to check — and anything judged a general-purpose
+retailer/marketplace is dropped rather than suggested. (Fails closed: if that check
+itself fails, nothing is suggested that run rather than risk suggesting something
+unverified — it's simply reconsidered next time.)
+
+A pattern that survives both checks, and isn't already covered by an existing enabled
+rule, gets a Telegram card of its own: **💡 Rule suggestion**, with the suggested context
+pre-filled from whichever context sentence you've typed most often for that merchant
+(falling back to a generic "`<merchant>` purchase" if your wording has never settled on
+one) and Claude's own reasoning for why it's safe to automate. Tapping **Create rule**
+adds it immediately — no local round trip needed, since Rules already live entirely on
+the server. Tapping **No thanks** means that exact pattern is never suggested again.
 
 ## Quick Categories
 

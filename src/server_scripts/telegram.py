@@ -219,9 +219,10 @@ class TelegramBot:
             f"<b>{html.escape(suggestion['category'])} › {html.escape(suggestion['subcategory'])}</b>.",
             "",
             f'Suggested context: "{html.escape(suggestion["auto_context"])}"',
-            "",
-            "Create a rule so future ones skip the card entirely?",
         ]
+        if suggestion.get("llm_reasoning"):
+            lines += ["", f"🤖 {html.escape(suggestion['llm_reasoning'])}"]
+        lines += ["", "Create a rule so future ones skip the card entirely?"]
         return self._post("sendMessage", {
             "chat_id": chat_id,
             "text": "\n".join(lines),

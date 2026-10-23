@@ -110,7 +110,16 @@ class TestDominantContext:
 
 
 class TestSyncCandidates:
-    def test_posts_every_candidate_and_returns_the_count(self, db):
+    """filter_worth_a_rule is patched to a pass-through in every test here --
+    it's an LLM call, covered on its own merits by TestFilterWorthARule, and
+    these tests are only about what sync_candidates does with what comes
+    back from it."""
+
+    def _pass_through(self, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: candidates)
+
+    def test_posts_every_candidate_and_returns_the_count(self, db, monkeypatch):
+        self._pass_through(monkeypatch)
         for i in range(5):
             write_to_db([_txn(f"tx{i}", merchant="Tesco")])
             _classify(db, f"tx{i}", "Food & Drink", "Groceries")
@@ -120,13 +129,15 @@ class TestSyncCandidates:
         assert result == 1
         assert mock_post.call_args.kwargs["json"]["candidates"][0]["match_value"] == "Tesco"
 
-    def test_no_candidates_means_no_request(self, db):
+    def test_no_candidates_means_no_request(self, db, monkeypatch):
+        self._pass_through(monkeypatch)
         with patch("rule_suggestions.requests.post") as mock_post:
             result = rule_suggestions.sync_candidates()
         assert result == 0
         mock_post.assert_not_called()
 
-    def test_404_is_treated_as_not_yet_deployed(self, db):
+    def test_404_is_treated_as_not_yet_deployed(self, db, monkeypatch):
+        self._pass_through(monkeypatch)
         for i in range(5):
             write_to_db([_txn(f"tx{i}", merchant="Tesco")])
             _classify(db, f"tx{i}", "Food & Drink", "Groceries")
@@ -134,3 +145,87 @@ class TestSyncCandidates:
         with patch("rule_suggestions.requests.post", return_value=mock_resp):
             result = rule_suggestions.sync_candidates()
         assert result == 0
+
+    def test_missing_claude_secret_skips_without_calling_the_llm_or_posting(self, db, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", None)
+        for i in range(5):
+            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
+            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        with patch("rule_suggestions.filter_worth_a_rule") as mock_filter, \
+             patch("rule_suggestions.requests.post") as mock_post:
+            result = rule_suggestions.sync_candidates()
+        assert result == 0
+        mock_filter.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_llm_rejecting_every_candidate_means_no_request(self, db, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: [])
+        for i in range(5):
+            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
+            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        with patch("rule_suggestions.requests.post") as mock_post:
+            result = rule_suggestions.sync_candidates()
+        assert result == 0
+        mock_post.assert_not_called()
+
+
+def _candidate(match_value="Tesco", category="Food & Drink", subcategory="Groceries", txn_count=5):
+    return {
+        "match_field": "merchant_name", "match_value": match_value,
+        "category": category, "subcategory": subcategory,
+        "txn_count": txn_count, "auto_context": f"{match_value} purchase",
+    }
+
+
+class TestFilterWorthARule:
+    def test_keeps_a_candidate_the_llm_marks_worth_a_rule(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(
+            text='[{"index": 0, "worth_a_rule": true, "reasoning": "Single-purpose telecom bill"}]'
+        )]
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE", "Bills", "Phone")])
+        assert len(kept) == 1
+        assert kept[0]["match_value"] == "EE"
+        assert kept[0]["llm_reasoning"] == "Single-purpose telecom bill"
+
+    def test_drops_a_candidate_the_llm_marks_not_worth_a_rule(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(
+            text='[{"index": 0, "worth_a_rule": false, "reasoning": "General supermarket"}]'
+        )]
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("Lidl")])
+        assert kept == []
+
+    def test_mixed_verdicts_keep_only_the_worthwhile_ones(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(text='''[
+            {"index": 0, "worth_a_rule": true, "reasoning": "Single-purpose"},
+            {"index": 1, "worth_a_rule": false, "reasoning": "General retailer"}
+        ]''')]
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")])
+        assert [c["match_value"] for c in kept] == ["EE"]
+
+    def test_empty_candidate_list_short_circuits_without_calling_the_llm(self):
+        client = MagicMock()
+        assert rule_suggestions.filter_worth_a_rule(client, []) == []
+        client.messages.create.assert_not_called()
+
+    def test_api_failure_fails_closed_dropping_everything(self):
+        client = MagicMock()
+        client.messages.create.side_effect = Exception("API error")
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")])
+        assert kept == []
+
+    def test_malformed_json_fails_closed(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(text="not json")]
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")])
+        assert kept == []
+
+    def test_out_of_range_index_is_ignored_not_crashed_on(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(
+            text='[{"index": 5, "worth_a_rule": true, "reasoning": "x"}]'
+        )]
+        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")])
+        assert kept == []

@@ -174,6 +174,14 @@ class TestSendRuleSuggestion:
         assert buttons[0]["callback_data"] == "rulesug:approve:42"
         assert buttons[1]["callback_data"] == "rulesug:deny:42"
 
+    def test_llm_reasoning_is_shown_when_present(self):
+        payload = self._send(llm_reasoning="Single-purpose telecom bill")
+        assert "Single-purpose telecom bill" in payload["text"]
+
+    def test_no_reasoning_line_when_absent(self):
+        payload = self._send(llm_reasoning="")
+        assert "🤖" not in payload["text"]
+
     def test_html_in_values_is_escaped(self):
         payload = self._send(match_value="<script>")
         assert "<script>" not in payload["text"]
