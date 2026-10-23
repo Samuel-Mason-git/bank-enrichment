@@ -82,6 +82,17 @@ session for it to end, so it links to a page explaining this plainly rather than
 attempting a fake login challenge — closing the browser tab is the only way to 
 actually clear cached credentials.
 
+**Who can reach what.** The dashboard needs your login, and the endpoints the local
+pipeline uses need `LOCAL_API_KEY`. The two webhooks can't use either — Telegram and
+Monzo have to be able to call them — so each checks a shared secret instead: Telegram
+sends `TELEGRAM_WEBHOOK_SECRET` in a header, and Monzo's registered webhook URL carries
+`MONZO_WEBHOOK_SECRET` (redacted from the request logs). On top of that, the bot only
+acts on updates from your own `TELEGRAM_CHAT_ID`, so someone who finds it can't use it.
+Because browsers attach a saved Basic-auth login to *any* form submission, even one
+another website triggers, dashboard changes are refused unless they come from the
+dashboard's own pages. Monzo authorization starts from `/oauth/start` behind your login,
+and the callback only completes an authorization the server issued itself.
+
 Processed transactions are retained on the server for 5 days before being automatically 
 cleaned up. This acts as a deduplication buffer — some merchants (e.g. Aldi, Lidl) do 
 not send a pending webhook and only fire when the transaction settles, which can be days 

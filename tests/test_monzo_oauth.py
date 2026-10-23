@@ -29,14 +29,14 @@ class TestExchangeCodeForTokens:
     def test_success_saves_tokens_to_disk(self, _tokens_path):
         with patch("monzo_oauth.requests.post", return_value=_response(
                 access_token="a", refresh_token="r", expires_in=21600)):
-            assert monzo_oauth.exchange_code_for_tokens("some-code") is True
+            assert monzo_oauth.exchange_code_for_tokens("some-code", "https://example.test/oauth/callback") is True
         saved = json.loads(_tokens_path.read_text())
         assert saved["access_token"] == "a"
         assert saved["refresh_token"] == "r"
 
     def test_failure_does_not_write_a_file(self, _tokens_path):
         with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
-            assert monzo_oauth.exchange_code_for_tokens("bad-code") is False
+            assert monzo_oauth.exchange_code_for_tokens("bad-code", "https://example.test/oauth/callback") is False
         assert not _tokens_path.exists()
 
 

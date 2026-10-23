@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
+from urllib.parse import urlencode
 
 import requests
 
@@ -16,8 +18,16 @@ log = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(__file__)
 TOKENS_PATH = os.path.join(BASE_DIR, "..", "..", "data", "monzo_oauth.json")
-REDIRECT_URI = "https://bank-enrichment.duckdns.org/oauth/callback"
+AUTH_URL = "https://auth.monzo.com/"
 TOKEN_URL = "https://api.monzo.com/oauth2/token"
+
+# How long a started authorization stays valid -- long enough to log in and
+# approve in the Monzo app, short enough that a stray link can't be replayed.
+STATE_TTL = 10 * 60
+
+# state -> (redirect_uri, started_at). In memory on purpose: a restart just
+# means clicking "authorize" again, and nothing here needs to outlive that.
+_pending_authorizations: dict[str, tuple[str, float]] = {}
 
 # Access tokens expire in ~6 hours (Monzo's own documented example) -- refresh
 # well before that so a slow network blip never lets the stored token lapse.
@@ -53,14 +63,44 @@ def _load_tokens() -> dict | None:
         return json.load(f)
 
 
-def exchange_code_for_tokens(code: str) -> bool:
-    """One-time exchange of the authorization code the /oauth/callback route
-    just received for the first access/refresh token pair."""
+def begin_authorization(redirect_uri: str) -> str:
+    """The Monzo login URL to send the user to, with a fresh single-use state.
+
+    The redirect_uri is passed in (built from the request's own host) rather
+    than hard-coded, so this works on anyone's domain -- it just has to match
+    the redirect URL registered on their Monzo OAuth client."""
+    now = time.time()
+    for stale in [s for s, (_, t) in _pending_authorizations.items() if now - t > STATE_TTL]:
+        del _pending_authorizations[stale]
+    state = secrets.token_urlsafe(24)
+    _pending_authorizations[state] = (redirect_uri, now)
+    return AUTH_URL + "?" + urlencode({
+        "client_id": MONZO_CLIENT_ID, "redirect_uri": redirect_uri,
+        "response_type": "code", "state": state,
+    })
+
+
+def complete_authorization(code: str, state: str) -> bool:
+    """Exchange the code only if it comes back with a state this server
+    issued in the last STATE_TTL seconds -- otherwise anyone could hit the
+    callback with a code of their own choosing and overwrite the stored
+    tokens. Each state works once."""
+    entry = _pending_authorizations.pop(state, None)
+    if not entry or time.time() - entry[1] > STATE_TTL:
+        log.warning("Monzo OAuth callback with an unknown or expired state -- ignored")
+        return False
+    return exchange_code_for_tokens(code, entry[0])
+
+
+def exchange_code_for_tokens(code: str, redirect_uri: str) -> bool:
+    """One-time exchange of the authorization code for the first access/
+    refresh token pair. redirect_uri must be the exact one the authorization
+    was started with -- Monzo rejects the exchange otherwise."""
     response = requests.post(TOKEN_URL, data={
         "grant_type": "authorization_code",
         "client_id": MONZO_CLIENT_ID,
         "client_secret": MONZO_CLIENT_SECRET,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code": code,
     }, timeout=20)
     if response.status_code != 200:
@@ -125,7 +165,7 @@ def run_monzo_refresh(bot) -> None:
                 "Monzo access needs re-authorization",
                 "The scheduled token refresh failed, so Monzo API access may lapse "
                 "(merchant names on new transactions may stop coming through). "
-                "Re-run the one-time Monzo authorization flow to restore it.",
+                "Re-authorize at /oauth/start on your server to restore it.",
             )
             _alerted_for_current_failure = True
 

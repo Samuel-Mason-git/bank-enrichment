@@ -76,8 +76,12 @@ Then open `config/.env` and fill in all values:
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
 | `MONZO_CLIENT_ID` | Server | OAuth client ID from a **confidential** client registered at [developers.monzo.com](https://developers.monzo.com) — used to silently refresh Monzo API access instead of needing to re-confirm it in the Monzo app |
 | `MONZO_CLIENT_SECRET` | Server | OAuth client secret for the same client — keep this out of anywhere it could be committed |
+| `TELEGRAM_WEBHOOK_SECRET` | Server | A random string Telegram sends with every update, proving it really came from Telegram — generate with `openssl rand -hex 32` |
+| `MONZO_WEBHOOK_SECRET` | Server | A random string included in the Monzo webhook URL, proving a transaction really came from Monzo — generate with `openssl rand -hex 32` (use a different value from the one above) |
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
+
+**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server still starts without them, but it logs a warning and sends you a Telegram alert on every startup until both are set.
 
 Once filled in, copy it to the server:
 ```bash
@@ -131,32 +135,48 @@ sudo docker compose logs -f
 
 ### 8. Register the Telegram Webhook
 
-Once the server is running, register your URL with Telegram (replace with your token and subdomain):
+Once the server is running, register your URL with Telegram, including the `secret_token` Telegram will then send back with every update. Run this **on the server**, from the repo root — it reads your bot token and secret straight from `config/.env`, so neither ends up in your browser history (replace only the subdomain):
 
-```
-https://api.telegram.org/bot{YOUR_TOKEN}/setWebhook?url=https://your-name.duckdns.org/recieve_telegram/
+```bash
+set -a && . config/.env && set +a
+curl -s "https://api.telegram.org/bot${TELEGRAM_API}/setWebhook" \
+  -d "url=https://your-name.duckdns.org/recieve_telegram/" \
+  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 
-You should get back `{"ok":true,"result":true}`. Verify with:
+You should get back `{"ok":true,"result":true,...}`. Verify with:
 
+```bash
+curl -s "https://api.telegram.org/bot${TELEGRAM_API}/getWebhookInfo"
 ```
-https://api.telegram.org/bot{YOUR_TOKEN}/getWebhookInfo
-```
+
+If `last_error_message` there ever says `403 Forbidden`, the secret Telegram has doesn't match `TELEGRAM_WEBHOOK_SECRET` on the server — re-run the `setWebhook` command above.
+
+Only you can use the bot: updates from any chat other than `TELEGRAM_CHAT_ID` are ignored, even with the right secret.
 
 ### 9. Register the Monzo Webhook
 
+Monzo can't send custom headers, so its secret goes in the webhook URL itself. Print the exact URL to register — on the server, from the repo root (replace only the subdomain):
+
+```bash
+set -a && . config/.env && set +a
+echo "https://your-name.duckdns.org/recieve_monzo/?token=${MONZO_WEBHOOK_SECRET}"
+```
+
 1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
 2. Note your **Account ID** at the top of the playground
-3. Click **Register webhook** and send:
+3. Click **Register webhook** and send, with the URL printed above:
 
 ```json
 {
     "account_id": "your_account_id_here",
-    "url": "https://your-name.duckdns.org/recieve_monzo/"
+    "url": "https://your-name.duckdns.org/recieve_monzo/?token=your_monzo_webhook_secret"
 }
 ```
 
-You should get back a webhook ID confirming registration.
+You should get back a webhook ID confirming registration. The token is redacted from the server's request logs, so it won't sit there in plain text.
+
+**Only ever have one webhook registered.** Monzo delivers every transaction to every webhook on the account, so a leftover registration (e.g. an old URL without the token) keeps receiving deliveries the server rejects — and Monzo keeps retrying them. Check with **List webhooks** in the playground and **Delete webhook** any extras.
 
 ### 10. Set Up the Monzo OAuth Confidential Client (keeps merchant data flowing)
 
@@ -178,11 +198,7 @@ MONZO_CLIENT_SECRET=your_client_secret
 docker compose up -d
 ```
 
-6. Visit the authorization URL once, in your browser, to grant the one-time consent (replace `client_id` and `redirect_uri` with your own):
-
-```
-https://auth.monzo.com/?client_id=your_client_id&redirect_uri=https%3A%2F%2Fyour-name.duckdns.org%2Foauth%2Fcallback&response_type=code&state=any-random-string
-```
+6. Open `https://your-name.duckdns.org/oauth/start` in your browser and log in with your dashboard credentials. It sends you to Monzo's login with a single-use link that expires after 10 minutes — the server only accepts the authorization that comes back from a link it issued itself, so nobody else can complete one on your behalf.
 
 Log in and approve with your PIN/Face ID. You'll land on a page saying "Monzo authorization complete" — the server exchanges the code for an access/refresh token pair itself and stores it in `data/monzo_oauth.json` (gitignored). From there, a background job refreshes it automatically every 4 hours, comfortably inside Monzo's token lifetime, and alerts you on Telegram if a refresh ever fails.
 
