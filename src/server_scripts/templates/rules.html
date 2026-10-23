@@ -91,11 +91,38 @@
                 </div>
             </div>
         </form>
+        {% if candidate_results is defined %}
+        {% set _m = candidate_results.matches %}
+        <div id="candidate-results" style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
+            {% if _m %}
+            <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">
+                This rule would match {{ _m | length }} of the {{ candidate_results.queue_size }} transaction{{ 's' if candidate_results.queue_size != 1 else '' }} in the queue:
+            </div>
+            <table>
+                <thead><tr><th>Transaction</th><th>Status</th><th>Current context</th></tr></thead>
+                <tbody>
+                {% for t in _m %}
+                <tr>
+                    <td>{{ t.label }}</td>
+                    <td><span class="badge {% if t.status == 'pending' %}badge-disabled{% else %}badge-enabled{% endif %}">{{ t.status }}</span></td>
+                    <td class="rule-context">{{ t.user_context if t.user_context else '—' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div style="font-size:0.8rem;color:#71717a;">
+                This rule doesn't match any of the {{ candidate_results.queue_size }} transaction{{ 's' if candidate_results.queue_size != 1 else '' }} in the queue.
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 
     <div class="section-label">Test Rules</div>
     <div class="rules-form">
         <form method="POST" action="/dashboard/rules/test" id="test-form">
+            <input type="hidden" id="candidate_name" name="candidate_name">
             <input type="hidden" id="candidate_match_field" name="candidate_match_field">
             <input type="hidden" id="candidate_match_type" name="candidate_match_type">
             <input type="hidden" id="candidate_match_value" name="candidate_match_value">
@@ -140,7 +167,7 @@
         </form>
         {% if test_results is defined %}
         <div style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
-            {% set matched = test_results | rejectattr('is_candidate') | selectattr('matched') | list %}
+            {% set matched = test_results | selectattr('matched') | list %}
             {% if matched %}
             <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">{{ matched | length }} rule{{ 's' if matched | length != 1 else '' }} matched — first match wins:</div>
             {% else %}
@@ -150,7 +177,7 @@
                 <thead><tr><th>Rule</th><th>Enabled</th><th>Result</th><th>Would apply</th></tr></thead>
                 <tbody>
                 {% for r in test_results %}
-                <tr style="{% if r.is_candidate %}background:rgba(155,89,182,0.08);{% elif r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
+                <tr style="{% if r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
                     <td class="rule-name">{{ r.name }}</td>
                     <td><span class="badge {% if r.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if r.enabled %}yes{% else %}no{% endif %}</span></td>
                     <td>{% if r.matched %}<span class="badge badge-enabled">✓ match</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
@@ -245,6 +272,7 @@ function fillFromTransaction(id) {
 }
 
 function testCandidateRule() {
+    document.getElementById("candidate_name").value = document.getElementById("name").value;
     document.getElementById("candidate_match_field").value = document.getElementById("match_field").value;
     document.getElementById("candidate_match_type").value = document.getElementById("match_type").value;
     document.getElementById("candidate_match_value").value = document.getElementById("match_value").value;
@@ -421,6 +449,29 @@ function cancelEdit() {
 
 updateMatchType();
 updateMatchType2();
+
+// "Test this rule" is a full page round trip -- without this, the rule you
+// were building would be wiped by the reload, right next to its results.
+const CANDIDATE_RULE = {{ (candidate_results.rule if candidate_results is defined else none) | tojson }};
+if (CANDIDATE_RULE) {
+    document.getElementById("name").value = CANDIDATE_RULE.name || "";
+    document.getElementById("match_field").value = CANDIDATE_RULE.match_field;
+    updateMatchType();
+    document.getElementById("match_type").value = CANDIDATE_RULE.match_type;
+    document.getElementById("match_value").value = CANDIDATE_RULE.match_value;
+    if (CANDIDATE_RULE.match_field === "amount") updateAmountHint();
+    document.getElementById("match_field_2").value = CANDIDATE_RULE.match_field_2 || "";
+    updateMatchType2();
+    if (CANDIDATE_RULE.match_field_2) {
+        document.getElementById("match_type_2").value = CANDIDATE_RULE.match_type_2 || "";
+        document.getElementById("match_value_2").value = CANDIDATE_RULE.match_value_2 || "";
+        if (CANDIDATE_RULE.match_field_2 === "amount") updateAmountHint2();
+    }
+    document.getElementById("auto_context").value = CANDIDATE_RULE.auto_context || "";
+    document.getElementById("auto_skip").checked = !!CANDIDATE_RULE.auto_skip;
+    toggleAutoSkip();
+    document.getElementById("candidate-results").scrollIntoView({ block: "center" });
+}
 
 document.querySelectorAll(".delete-rule-form").forEach(function (form) {
     form.addEventListener("submit", function (e) {

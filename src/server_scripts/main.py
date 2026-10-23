@@ -807,9 +807,37 @@ async def reset_transaction(transaction_id: str, request: Request, credentials: 
 
 @app.post("/dashboard/rules/test", response_class=HTMLResponse)
 async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    from check_rules import _extract_field, _matches
-    import re as _re
     form = await request.form()
+    con = get_con()
+    context = {"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules"}
+
+    # "Test this rule" on the Add Rule form: run the not-yet-saved rule
+    # against everything sitting in the queue (up to ~7 days of history
+    # before cleanup), so you see which real transactions it would catch --
+    # not whether it matches a single transaction you already picked it from.
+    candidate_field = (form.get("candidate_match_field") or "").strip()
+    if candidate_field:
+        candidate = {
+            "match_field": candidate_field,
+            "match_type": (form.get("candidate_match_type") or "").strip(),
+            "match_value": (form.get("candidate_match_value") or "").strip(),
+            "match_field_2": (form.get("candidate_match_field_2") or "").strip() or None,
+            "match_type_2": (form.get("candidate_match_type_2") or "").strip() or None,
+            "match_value_2": (form.get("candidate_match_value_2") or "").strip() or None,
+        }
+        queue = _get_test_transactions(con, limit=None)
+        matches = [t for t in queue if _evaluate_rule(t, **candidate)]
+        context["candidate_results"] = {
+            "rule": {**candidate,
+                     "name": (form.get("candidate_name") or "").strip(),
+                     "auto_context": (form.get("candidate_auto_context") or "").strip(),
+                     "auto_skip": (form.get("candidate_auto_skip") or "") == "on"},
+            "queue_size": len(queue),
+            "matches": matches,
+        }
+        return templates.TemplateResponse(request=request, name="rules.html", context=context)
+
+    # "▶ Test": which saved rules match one transaction's fields.
     test_data = {
         "merchant_name": (form.get("merchant_name") or "").strip(),
         "description": (form.get("description") or "").strip(),
@@ -819,72 +847,24 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
         "amount": (form.get("amount") or "0").strip(),
     }
     try:
-        amount_pence = int(float(test_data["amount"]) * 100)
+        amount_pence = int(round(float(test_data["amount"]) * 100))
     except ValueError:
         amount_pence = 0
-
-    con = get_con()
-    rules = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
-    ).fetchall()
-
-    def get_field(field):
-        if field == "merchant_name": return test_data["merchant_name"] or None
-        if field == "description": return test_data["description"] or None
-        if field == "counterparty_name": return test_data["counterparty_name"] or None
-        if field == "category": return test_data["category"] or None
-        if field == "scheme": return test_data["scheme"] or None
-        if field == "amount": return amount_pence
-        return None
-
-    def evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled) -> bool:
-        try:
-            v1 = get_field(match_field)
-            cond1 = v1 is not None and match_field and match_type and match_value and _matches(v1, match_type, match_value)
-            cond2 = True
-            if match_field_2 and match_type_2 and match_value_2:
-                v2 = get_field(match_field_2)
-                cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
-            return bool(enabled) and cond1 and cond2
-        except Exception:
-            return False
+    fields = {**test_data, "amount_pence": amount_pence}
 
     results = []
-
-    # A not-yet-saved rule, carried over from the Add Rule form by the "Test
-    # this rule" button -- lets you confirm it actually matches the picked
-    # transaction before committing to it, same as any saved rule above it.
-    candidate_field = (form.get("candidate_match_field") or "").strip()
-    if candidate_field:
-        candidate_matched = evaluate(
-            candidate_field,
-            (form.get("candidate_match_type") or "").strip(),
-            (form.get("candidate_match_value") or "").strip(),
-            (form.get("candidate_match_field_2") or "").strip() or None,
-            (form.get("candidate_match_type_2") or "").strip() or None,
-            (form.get("candidate_match_value_2") or "").strip() or None,
-            enabled=True,
+    for rule in _get_rules(con):
+        matched = bool(rule["enabled"]) and _evaluate_rule(
+            fields, rule["match_field"], rule["match_type"], rule["match_value"],
+            rule["match_field_2"], rule["match_type_2"], rule["match_value_2"],
         )
         results.append({
-            "id": None, "name": "🆕 Your new rule (not saved)", "enabled": True,
-            "matched": candidate_matched, "is_candidate": True,
-            "auto_context": (form.get("candidate_auto_context") or "").strip(),
-            "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
+            "id": rule["id"], "name": rule["name"], "enabled": rule["enabled"],
+            "matched": matched, "auto_context": rule["auto_context"], "auto_skip": bool(rule["auto_skip"]),
         })
 
-    for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
-        matched = evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled)
-        results.append({
-            "id": rule_id, "name": name, "enabled": enabled, "is_candidate": False,
-            "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
-        })
-
-    return templates.TemplateResponse(
-        request=request,
-        name="rules.html",
-        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules", "test_results": results, "test_data": test_data}
-    )
+    context.update({"test_results": results, "test_data": test_data})
+    return templates.TemplateResponse(request=request, name="rules.html", context=context)
 
 
 @app.post("/dashboard/rules/{rule_id}/edit", response_class=HTMLResponse)
@@ -967,10 +947,9 @@ def _txn_short_label(con, transaction_id: str) -> str:
     return f"{display} · {sign}£{abs(amount_pence) / 100:.2f}"
 
 
-def _get_test_transactions(con):
-    rows = con.execute(
-        "SELECT id, payload, received_at, user_context FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
-    ).fetchall()
+def _get_test_transactions(con, limit: int | None = 100):
+    sql = "SELECT id, payload, received_at, user_context, status FROM webhook_queue ORDER BY received_at DESC"
+    rows = con.execute(sql + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
     txns = []
     for row in rows:
         data = json.loads(row[1]).get("data", {})
@@ -994,9 +973,39 @@ def _get_test_transactions(con):
             # rule can only be tested meaningfully against the real direction
             # the money moved.
             "amount": round(amount_pence / 100, 2),
+            "amount_pence": amount_pence,
             "user_context": row[3] or "",
+            "status": row[4],
         })
     return txns
+
+
+def _evaluate_rule(fields: dict, match_field, match_type, match_value,
+                   match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
+    """Whether a rule's condition(s) match one transaction's fields -- the
+    same keys _get_test_transactions produces, with amount in signed pence.
+    Shared by the saved-rule tester and the queue preview for a new rule, so
+    both judge a match exactly the same way."""
+    from check_rules import _matches
+
+    def get_field(field):
+        if field == "amount":
+            return fields.get("amount_pence")
+        return fields.get(field) or None
+
+    try:
+        if not (match_field and match_type and match_value):
+            return False
+        v1 = get_field(match_field)
+        if v1 is None or not _matches(v1, match_type, match_value):
+            return False
+        if match_field_2 and match_type_2 and match_value_2:
+            v2 = get_field(match_field_2)
+            if v2 is None or not _matches(v2, match_type_2, match_value_2):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 @app.get("/dashboard/rules", response_class=HTMLResponse)
