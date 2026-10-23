@@ -407,3 +407,32 @@ class TestRuleEdit:
         })
         assert isinstance(resp, RedirectResponse)
         assert resp.headers["location"] == "/dashboard/rules"
+
+
+class TestOauthCallback:
+    """The route must never render the authorization code or any token back
+    to the browser -- it only ever reports success/failure."""
+
+    def test_error_param_returns_failure_without_exchanging(self):
+        with patch("main.exchange_code_for_tokens") as mock_exchange:
+            resp = asyncio.run(main.oauth_callback(error="access_denied"))
+        mock_exchange.assert_not_called()
+        assert "failed" in resp.lower()
+
+    def test_no_code_returns_failure_without_exchanging(self):
+        with patch("main.exchange_code_for_tokens") as mock_exchange:
+            resp = asyncio.run(main.oauth_callback())
+        mock_exchange.assert_not_called()
+        assert "no authorization code" in resp.lower()
+
+    def test_successful_exchange_reports_success(self):
+        with patch("main.exchange_code_for_tokens", return_value=True):
+            resp = asyncio.run(main.oauth_callback(code="a-secret-code", state="s"))
+        assert "complete" in resp.lower()
+        assert "a-secret-code" not in resp
+
+    def test_failed_exchange_reports_failure(self):
+        with patch("main.exchange_code_for_tokens", return_value=False):
+            resp = asyncio.run(main.oauth_callback(code="a-secret-code", state="s"))
+        assert "failed" in resp.lower()
+        assert "a-secret-code" not in resp

@@ -22,6 +22,7 @@ from server_db import init_db, get_con, get_quick_categories
 from telegram import TelegramBot
 from check_rules import check_rules
 from follow_up_tg import requester_loop
+from monzo_oauth import exchange_code_for_tokens, monzo_refresh_loop
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -103,12 +104,16 @@ async def lifespan(app: FastAPI):
         log.warning(f"Telegram bot not initialised: {e}")
     task = asyncio.create_task(requester_loop(bot))
     log.info("Requester loop started")
+    monzo_task = asyncio.create_task(monzo_refresh_loop())
+    log.info("Monzo OAuth refresh loop started")
     yield
     task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    monzo_task.cancel()
+    for t in (task, monzo_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -118,13 +123,18 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 @app.get("/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     """Monzo's OAuth authorization redirect lands here. One-time manual setup
-    step (exchanging `code` for a refresh token) -- there's no ongoing session
-    to protect, and the code is single-use and short-lived, so this is
-    deliberately unauthenticated rather than behind the dashboard login."""
-    log.info(f"OAuth callback received: code={code!r} state={state!r} error={error!r}")
+    step -- there's no ongoing session to protect, so this is deliberately
+    unauthenticated rather than behind the dashboard login. The exchange
+    happens entirely server-side; neither the code nor any token is ever
+    rendered back to the browser or logged in full."""
     if error:
-        return f"<p>OAuth error: {error}</p>"
-    return f"<p>code: {code}</p><p>state: {state}</p>"
+        log.error(f"Monzo OAuth authorization failed: {error}")
+        return "<p>Authorization failed. Check the server logs.</p>"
+    if not code:
+        return "<p>No authorization code received.</p>"
+    if exchange_code_for_tokens(code):
+        return "<p>Monzo authorization complete. Tokens stored -- you can close this tab.</p>"
+    return "<p>Token exchange failed. Check the server logs.</p>"
 
 
 @app.get("/dashboard/logout", response_class=HTMLResponse)
