@@ -150,7 +150,37 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getWebhookInfo
 
 You should get back a webhook ID confirming registration.
 
-### 10. Access the Dashboard
+### 10. Set Up the Monzo OAuth Confidential Client (keeps merchant data flowing)
+
+Monzo's webhook access needs periodically re-confirming in the Monzo app, and when it lapses, the `merchant` field on new transactions silently goes `null` — the category still gets classified fine from the raw description text, but the Telegram card's per-merchant quick-pick buttons fall back to a generic list instead of your actual history for that merchant. A **confidential** OAuth client lets the server silently renew access on a schedule instead of you having to notice and manually reconfirm it in the Monzo app.
+
+1. Go to [developers.monzo.com](https://developers.monzo.com) → **Clients** → **New OAuth Client**.
+2. Set **Redirect URLs** to `https://your-name.duckdns.org/oauth/callback`.
+3. Set **Confidentiality** to **Confidential** — this is what gets you issued a `refresh_token` at all; a "Public"/non-confidential client never gets one and would need manual re-approval every time it expires.
+4. Add the `client_id`/`client_secret` it gives you to the server's `config/.env`:
+
+```
+MONZO_CLIENT_ID=your_client_id
+MONZO_CLIENT_SECRET=your_client_secret
+```
+
+5. Recreate the container so it picks up the new values (editing `.env` alone has no effect on an already-running container):
+
+```bash
+docker compose up -d
+```
+
+6. Visit the authorization URL once, in your browser, to grant the one-time consent (replace `client_id` and `redirect_uri` with your own):
+
+```
+https://auth.monzo.com/?client_id=your_client_id&redirect_uri=https%3A%2F%2Fyour-name.duckdns.org%2Foauth%2Fcallback&response_type=code&state=any-random-string
+```
+
+Log in and approve with your PIN/Face ID. You'll land on a page saying "Monzo authorization complete" — the server exchanges the code for an access/refresh token pair itself and stores it in `data/monzo_oauth.json` (gitignored). From there, a background job refreshes it automatically every 4 hours, comfortably inside Monzo's token lifetime, and alerts you on Telegram if a refresh ever fails.
+
+Whether a silent refresh alone is enough to keep `merchant` populated (as opposed to also requiring you to physically reopen the Monzo app sometimes) isn't documented by Monzo — treat this as something to keep an eye on rather than a guaranteed permanent fix.
+
+### 11. Access the Dashboard
 
 Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
 

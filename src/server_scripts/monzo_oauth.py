@@ -25,6 +25,12 @@ REFRESH_INTERVAL = 4 * 60 * 60
 
 MONZO_CLIENT_ID = os.getenv("MONZO_CLIENT_ID")
 MONZO_CLIENT_SECRET = os.getenv("MONZO_CLIENT_SECRET")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# Only re-alert once per failure streak -- reset on the next successful
+# refresh -- so a lapse that persists for days sends one notice, not one
+# every 4 hours.
+_alerted_for_current_failure = False
 
 
 def _save_tokens(response: dict) -> None:
@@ -103,11 +109,31 @@ def ping() -> bool:
     return response.status_code == 200
 
 
-async def monzo_refresh_loop() -> None:
+def run_monzo_refresh(bot) -> None:
+    global _alerted_for_current_failure
+    had_tokens_before = _load_tokens() is not None
+    if refresh_tokens():
+        ping()
+        _alerted_for_current_failure = False
+    elif had_tokens_before:
+        # Not alerting when there's no prior authorization yet -- that's just
+        # the expected state before the one-time setup, not a failure.
+        log.warning("Monzo token refresh failed")
+        if bot and TELEGRAM_CHAT_ID and not _alerted_for_current_failure:
+            bot.send_alert(
+                int(TELEGRAM_CHAT_ID),
+                "Monzo access needs re-authorization",
+                "The scheduled token refresh failed, so Monzo API access may lapse "
+                "(merchant names on new transactions may stop coming through). "
+                "Re-run the one-time Monzo authorization flow to restore it.",
+            )
+            _alerted_for_current_failure = True
+
+
+async def monzo_refresh_loop(bot) -> None:
     while True:
         await asyncio.sleep(REFRESH_INTERVAL)
         try:
-            if refresh_tokens():
-                ping()
+            run_monzo_refresh(bot)
         except Exception as e:
             log.error(f"Monzo refresh loop error: {e}", exc_info=True)

@@ -6,6 +6,7 @@ requester_loop) while still exercising the real SQL and template rendering.
 """
 import asyncio
 import json
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -436,3 +437,24 @@ class TestOauthCallback:
             resp = asyncio.run(main.oauth_callback(code="a-secret-code", state="s"))
         assert "failed" in resp.lower()
         assert "a-secret-code" not in resp
+
+
+class TestDropOauthCallbackAccessLogs:
+    def _record(self, args):
+        return logging.LogRecord(
+            name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+            msg='%s - "%s %s HTTP/%s" %d', args=args, exc_info=None,
+        )
+
+    def test_drops_the_oauth_callback_line_query_string_and_all(self):
+        f = main._DropOauthCallbackAccessLogs()
+        record = self._record((
+            "127.0.0.1", "GET",
+            "/oauth/callback?code=super-secret-code&state=abc", "1.1", 200,
+        ))
+        assert f.filter(record) is False
+
+    def test_keeps_every_other_route(self):
+        f = main._DropOauthCallbackAccessLogs()
+        record = self._record(("127.0.0.1", "GET", "/dashboard", "1.1", 200))
+        assert f.filter(record) is True

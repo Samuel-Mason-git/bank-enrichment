@@ -39,6 +39,21 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+class _DropOauthCallbackAccessLogs(logging.Filter):
+    """Uvicorn's access logger writes the full request line, query string
+    included, for every request -- unlike every other route here, /oauth/
+    callback's query string carries a (single-use, but still sensitive while
+    valid) authorization code. Easier and more robust to drop that one
+    route's access-log line entirely than to try to reconstruct and redact it
+    from uvicorn's internal log-record args, whose order isn't a public API."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.args and any("/oauth/callback" in str(a) for a in record.args))
+
+
+logging.getLogger("uvicorn.access").addFilter(_DropOauthCallbackAccessLogs())
+
 DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 _sessions: dict = {}
@@ -104,7 +119,7 @@ async def lifespan(app: FastAPI):
         log.warning(f"Telegram bot not initialised: {e}")
     task = asyncio.create_task(requester_loop(bot))
     log.info("Requester loop started")
-    monzo_task = asyncio.create_task(monzo_refresh_loop())
+    monzo_task = asyncio.create_task(monzo_refresh_loop(bot))
     log.info("Monzo OAuth refresh loop started")
     yield
     task.cancel()
