@@ -1,16 +1,18 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Depends, Request, status, Query, Security
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
+from urllib.parse import urlsplit
 import asyncio
 import uvicorn
 import html
 import logging
+import re
 import secrets
 import time
 import json
@@ -23,7 +25,7 @@ from server_db import init_db, get_con, get_quick_categories
 from telegram import TelegramBot
 from check_rules import check_rules, NO_MATCH
 from follow_up_tg import requester_loop
-from monzo_oauth import exchange_code_for_tokens, monzo_refresh_loop
+from monzo_oauth import begin_authorization, complete_authorization, monzo_refresh_loop, MONZO_CLIENT_ID
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -53,7 +55,64 @@ class _DropOauthCallbackAccessLogs(logging.Filter):
         return not (record.args and any("/oauth/callback" in str(a) for a in record.args))
 
 
+class _RedactWebhookTokens(logging.Filter):
+    """The Monzo webhook secret travels in its URL (Monzo can't send custom
+    headers), and uvicorn logs every request line in full -- so the secret
+    would otherwise sit in plain text in the container logs. Redacts the
+    value wherever it appears rather than dropping the line, because those
+    lines are the main way to see that webhooks are actually arriving."""
+
+    _token = re.compile(r"(\btoken=)[^&\s\"]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args and isinstance(record.args, tuple):
+            record.args = tuple(
+                self._token.sub(r"\1[redacted]", a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
 logging.getLogger("uvicorn.access").addFilter(_DropOauthCallbackAccessLogs())
+logging.getLogger("uvicorn.access").addFilter(_RedactWebhookTokens())
+
+# Shared secrets proving an inbound webhook really came from Telegram/Monzo --
+# both endpoints are otherwise open to anyone who knows the URL. Optional so a
+# deploy never breaks an install that hasn't set them yet (deploys happen
+# automatically on merge), but startup warns loudly until both are set.
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+MONZO_WEBHOOK_SECRET = os.getenv("MONZO_WEBHOOK_SECRET")
+
+
+def _secret_matches(expected: str | None, supplied: str | None) -> bool:
+    """True if no secret is configured, or the supplied one matches it.
+    Constant-time, so response timing can't leak the secret a byte at a time."""
+    if not expected:
+        return True
+    return bool(supplied) and secrets.compare_digest(supplied.encode(), expected.encode())
+
+
+def _unset_webhook_secrets() -> list[str]:
+    return [name for name, value in (("TELEGRAM_WEBHOOK_SECRET", TELEGRAM_WEBHOOK_SECRET),
+                                     ("MONZO_WEBHOOK_SECRET", MONZO_WEBHOOK_SECRET)) if not value]
+
+
+def _is_same_site(request: Request) -> bool:
+    """Whether a browser request came from a page on this server.
+
+    The dashboard uses HTTP Basic auth, which browsers attach automatically --
+    even to a form another website submits -- so without this, any page you
+    visited while logged in could create, edit or delete rules. Browsers
+    always send Origin on a cross-site POST, so a mismatched (or "null")
+    Origin is rejected. A request with neither Origin nor Referer isn't a
+    browser being tricked into anything (curl, a script) and is let through."""
+    host = request.headers.get("host", "")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        return urlsplit(origin).netloc == host
+    referer = request.headers.get("referer")
+    if referer is not None:
+        return urlsplit(referer).netloc == host
+    return True
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
@@ -118,6 +177,21 @@ async def lifespan(app: FastAPI):
         log.info("Telegram bot initialised")
     except ValueError as e:
         log.warning(f"Telegram bot not initialised: {e}")
+    unset = _unset_webhook_secrets()
+    if unset:
+        log.warning(
+            f"{' and '.join(unset)} not set -- the matching webhook endpoint accepts requests from "
+            "anyone who knows its URL. See SETUP.md steps 4, 8 and 9."
+        )
+        if bot and os.getenv("TELEGRAM_CHAT_ID"):
+            try:
+                bot.send_alert(
+                    int(os.getenv("TELEGRAM_CHAT_ID")), "Webhooks aren't secured yet",
+                    f"{' and '.join(unset)} not set, so anyone who knows your server's URL can send it "
+                    "fake transactions or fake button taps. See SETUP.md steps 4, 8 and 9.",
+                )
+            except Exception as e:
+                log.warning(f"Could not send the webhook-secret alert: {e}")
     task = asyncio.create_task(requester_loop(bot))
     log.info("Requester loop started")
     monzo_task = asyncio.create_task(monzo_refresh_loop(bot))
@@ -136,21 +210,46 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
+@app.middleware("http")
+async def reject_cross_site_dashboard_posts(request: Request, call_next):
+    if request.method == "POST" and request.url.path.startswith("/dashboard") and not _is_same_site(request):
+        log.warning(f"Blocked a cross-site POST to {request.url.path} (Origin: {request.headers.get('origin')!r})")
+        return PlainTextResponse("Cross-site request blocked.", status_code=403)
+    return await call_next(request)
+
+
+def _public_base_url(request: Request) -> str:
+    """https://your-domain, as the outside world sees it. Behind Caddy the app
+    itself only ever sees plain http, so the scheme Caddy forwarded wins."""
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"{scheme}://{request.headers.get('host', request.url.netloc)}"
+
+
+@app.get("/oauth/start")
+async def oauth_start(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    """Begin (or redo) Monzo authorization: sends you to Monzo's login with a
+    fresh single-use state. Behind the dashboard login, so only you can
+    start a flow whose result gets stored."""
+    if not MONZO_CLIENT_ID:
+        return HTMLResponse("<p>MONZO_CLIENT_ID isn't set on the server -- see SETUP.md.</p>", status_code=503)
+    return RedirectResponse(begin_authorization(f"{_public_base_url(request)}/oauth/callback"), status_code=303)
+
+
 @app.get("/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback(code: str = "", state: str = "", error: str = ""):
-    """Monzo's OAuth authorization redirect lands here. One-time manual setup
-    step -- there's no ongoing session to protect, so this is deliberately
-    unauthenticated rather than behind the dashboard login. The exchange
-    happens entirely server-side; neither the code nor any token is ever
-    rendered back to the browser or logged in full."""
+    """Monzo's OAuth redirect lands here, so it can't sit behind the dashboard
+    login -- Monzo's redirect doesn't carry your credentials. What protects
+    it instead is the state: only a flow started from /oauth/start (which IS
+    behind the login) is ever completed. The exchange happens entirely
+    server-side; neither the code nor any token is rendered or logged."""
     if error:
         log.error(f"Monzo OAuth authorization failed: {error}")
         return "<p>Authorization failed. Check the server logs.</p>"
-    if not code:
-        return "<p>No authorization code received.</p>"
-    if exchange_code_for_tokens(code):
+    if not code or not state:
+        return "<p>No authorization code received. Start from /oauth/start.</p>"
+    if complete_authorization(code, state):
         return "<p>Monzo authorization complete. Tokens stored -- you can close this tab.</p>"
-    return "<p>Token exchange failed. Check the server logs.</p>"
+    return "<p>That authorization link has expired or wasn't started here. Start again from /oauth/start.</p>"
 
 
 @app.get("/dashboard/logout", response_class=HTMLResponse)
@@ -317,6 +416,12 @@ class SyncRuleSuggestionsRequest(BaseModel):
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
+    # Monzo doesn't sign webhooks, so the only proof one came from Monzo is the
+    # secret token registered in its URL. Checked before anything is parsed
+    # or logged, so a forged request leaves no trace beyond the access line.
+    if not _secret_matches(MONZO_WEBHOOK_SECRET, request.query_params.get("token")):
+        log.warning("Rejected a Monzo webhook with a missing or wrong token")
+        raise HTTPException(status_code=403, detail="Forbidden")
     body = await request.body()
     try:
         monzo_data = MonzoOuter.model_validate_json(body)
@@ -449,13 +554,39 @@ async def recieve_monzo(request: Request):
 
 
 
+def _from_owner(update: "TelegramUpdate") -> bool:
+    """Whether an update came from the one person this bot works for.
+    TELEGRAM_CHAT_ID is your personal chat id, which in a private chat is
+    the same number as your user id -- so a button tap is checked by who
+    tapped it, and a message by the chat it was sent in."""
+    owner = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if not owner:
+        return False
+    if update.callback_query:
+        return str(update.callback_query.from_user.id) == owner
+    if update.message:
+        return str(update.message.chat.id) == owner
+    return False
+
+
 @app.post('/recieve_telegram/')
 async def recieve_telegram(request: Request):
+    # Telegram sends the secret_token set via setWebhook in this header on
+    # every update -- without it, anyone could post a fake button tap here.
+    if not _secret_matches(TELEGRAM_WEBHOOK_SECRET, request.headers.get("x-telegram-bot-api-secret-token")):
+        log.warning("Rejected a Telegram update with a missing or wrong secret token")
+        raise HTTPException(status_code=403, detail="Forbidden")
     body = await request.body()
     try:
         update = TelegramUpdate.model_validate_json(body)
     except Exception as e:
         log.error(f"Telegram parse error: {e}. Body: {body.decode()}")
+        return {"ok": True}
+
+    # Anyone can find and message a bot. Only you can act through it -- a
+    # quiet 200 for everyone else, so they learn nothing about what it does.
+    if not _from_owner(update):
+        log.warning("Ignored a Telegram update from someone other than TELEGRAM_CHAT_ID")
         return {"ok": True}
 
     if update.callback_query:
