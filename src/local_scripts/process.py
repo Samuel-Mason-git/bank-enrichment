@@ -15,6 +15,7 @@ from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
 from category_proposals import collect_decisions as collect_category_decisions
+from rule_suggestions import sync_candidates as sync_rule_candidates
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -179,6 +180,13 @@ if __name__ == "__main__":
             log.info(f"Sent {len(proposed)} taxonomy proposal(s) for review")
     except Exception as e:
         log.error(f"Taxonomy review run failed: {e}", exc_info=True)
+
+    try:
+        synced = sync_rule_candidates()
+        if synced:
+            log.info(f"Synced {synced} rule suggestion candidate(s) to the server")
+    except Exception as e:
+        log.error(f"Rule suggestion sync failed: {e}", exc_info=True)
 
     try:
         run_monthly_summary()

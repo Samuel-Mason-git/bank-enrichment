@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
 import uvicorn
+import html
 import logging
 import secrets
 import time
@@ -276,6 +277,18 @@ class CategoryProposalEntry(BaseModel):
 
 class SyncCategoryProposalsRequest(BaseModel):
     proposals: list[CategoryProposalEntry]
+
+
+class RuleSuggestionCandidate(BaseModel):
+    match_field: str
+    match_value: str
+    category: str
+    subcategory: str
+    txn_count: int = 0
+    auto_context: str = ""
+
+class SyncRuleSuggestionsRequest(BaseModel):
+    candidates: list[RuleSuggestionCandidate]
 
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
@@ -555,6 +568,48 @@ async def recieve_telegram(request: Request):
                 f"Category proposal {local_id} {action}"
                 + (f" (option {option_index})" if action == "select" else "") + " via Telegram"
             )
+
+        elif cq.data and cq.data.startswith("rulesug:"):
+            _, action, sid = cq.data.split(":", 2)
+            suggestion_id = int(sid)
+            try:
+                con = get_con()
+                row = con.execute(
+                    "SELECT match_field, match_value, auto_context, status FROM rule_suggestions WHERE id = ?",
+                    [suggestion_id]
+                ).fetchone()
+                if not row:
+                    bot.send_message(chat_id, "That suggestion no longer exists.")
+                    return {"ok": True}
+                match_field, match_value, auto_context, current = row
+                if current != "pending":
+                    bot.send_message(chat_id, f"Already {current}.")
+                    return {"ok": True}
+                if action == "approve":
+                    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
+                    con.execute(
+                        "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context) "
+                        "VALUES (?, ?, ?, 'exact', ?, ?)",
+                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context]
+                    )
+                    con.execute(
+                        "UPDATE rule_suggestions SET status = 'approved', decided_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                    )
+                else:
+                    con.execute(
+                        "UPDATE rule_suggestions SET status = 'denied', decided_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                    )
+            except Exception as e:
+                log.error(f"Failed to record rule suggestion decision {suggestion_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            if action == "approve":
+                bot.send_message(chat_id, f"✅ Rule created for <b>{html.escape(match_value)}</b>.")
+            else:
+                bot.send_message(chat_id, "👍 Won't suggest that one again.")
+            log.info(f"Rule suggestion {suggestion_id} {action}d via Telegram")
 
         elif cq.data and cq.data.startswith("quickcat:"):
             _, transaction_id, quick_id = cq.data.split(":", 2)
@@ -1237,6 +1292,63 @@ async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: s
                 "txn_count": p.txn_count, "examples": p.examples,
             })
     log.info(f"Received {len(stored)} category proposal(s) and sent cards")
+    return {"received": len(stored)}
+
+
+def _rule_suggestion_already_covered(con, match_field: str, match_value: str) -> bool:
+    """Whether an existing ENABLED rule already catches this pattern's
+    identifying value on its own. A rule with a second condition can't be
+    verified without a full transaction to test it against, so it's treated
+    as not covering this -- erring toward still suggesting rather than
+    silently missing a genuinely useful one."""
+    from check_rules import _matches
+    rows = con.execute(
+        """SELECT match_type, match_value FROM rules
+           WHERE enabled = TRUE AND match_field = ?
+           AND (match_field_2 IS NULL OR match_field_2 = '')""",
+        [match_field]
+    ).fetchall()
+    for match_type, existing_value in rows:
+        try:
+            if _matches(match_value, match_type, existing_value):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+@app.post('/sync-rule-suggestions')
+async def sync_rule_suggestions(body: SyncRuleSuggestionsRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Store genuinely new rule suggestions and send their cards. Skips a
+    candidate already asked about -- in any status, so a denied one stays
+    denied -- and one an existing enabled rule already covers, since neither
+    needs asking about again."""
+    await verify_api_key(api_key)
+    con = get_con()
+    stored = []
+    for c in body.candidates:
+        if con.execute(
+            "SELECT 1 FROM rule_suggestions WHERE match_field = ? AND match_value = ?",
+            [c.match_field, c.match_value]
+        ).fetchone():
+            continue
+        if _rule_suggestion_already_covered(con, c.match_field, c.match_value):
+            continue
+        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
+        con.execute(
+            """INSERT INTO rule_suggestions
+               (id, match_field, match_value, category, subcategory, txn_count, auto_context, status, proposed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            [next_id, c.match_field, c.match_value, c.category, c.subcategory, c.txn_count, c.auto_context,
+             time.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        stored.append({"id": next_id, **c.model_dump()})
+
+    if stored:
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+        for s in stored:
+            bot.send_rule_suggestion(chat_id, s)
+    log.info(f"Received {len(stored)} rule suggestion(s) and sent cards")
     return {"received": len(stored)}
 
 

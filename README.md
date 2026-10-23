@@ -137,6 +137,28 @@ of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") a
 gone through each, set that subcategory's Role to **Saving** in the Settings tab — see
 [Category Roles & Standard vs Actual](#category-roles--standard-vs-actual).
 
+### Creating a Rule From an Existing Transaction
+
+Picking a transaction from the dropdown above the Add Rule form pre-fills it for you —
+merchant name if present, else counterparty name, else description (the same fallback
+order used throughout), plus that transaction's existing context if it has one. A
+**Test this rule** button carries those not-yet-saved fields over to the Test Rules panel
+below as a distinct "Your new rule (not saved)" row, so you can confirm it actually
+matches before committing to it.
+
+### Rule Suggestions
+
+Each local pipeline run also scans your already-classified transactions for a merchant or
+counterparty that has shown up 5+ times with the *exact same* category/subcategory every
+single time — one disagreement anywhere in its history disqualifies it, since the whole
+point is a pattern reliable enough to automate. A qualifying one that isn't already
+covered by an existing enabled rule gets a Telegram card of its own: **💡 Rule
+suggestion**, with the suggested context pre-filled from whichever context sentence
+you've typed most often for that merchant (falling back to a generic "`<merchant>`
+purchase" if your wording has never settled on one). Tapping **Create rule** adds it
+immediately — no local round trip needed, since Rules already live entirely on the
+server. Tapping **No thanks** means that exact pattern is never suggested again.
+
 ## Quick Categories
 
 Typing a sentence for every transaction adds up. Each time the local pipeline runs, 
