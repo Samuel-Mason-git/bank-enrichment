@@ -65,6 +65,7 @@ def get_month_stats(month_str: str) -> dict:
     total_spend = totals["spend"]
     total_income = totals["income"]
     total_invested = totals["investment"]
+    total_saved = totals["saving"]
     total_transferred = totals["transfer"] + totals["excluded"]
 
     spend_by_cat = get_category_totals_by_role("spend", month_start, month_end)
@@ -75,6 +76,7 @@ def get_month_stats(month_str: str) -> dict:
         "total_spend": float(total_spend),
         "total_income": float(total_income),
         "total_invested": float(total_invested),
+        "total_saved": float(total_saved),
         "total_transferred": float(total_transferred),
         "net": float(total_income - total_spend),
         "spend_by_category": [{"category": r["category"], "amount": abs(float(r["total"]))} for r in spend_by_cat],
@@ -90,6 +92,8 @@ def format_monthly_message(stats: dict) -> str:
     lines.append(f"{'📈' if stats['net'] >= 0 else '📉'} Net: £{stats['net']:.2f}")
     if stats["total_invested"] > 0.005:
         lines.append(f"📊 Invested: £{stats['total_invested']:.2f}")
+    if stats["total_saved"] > 0.005:
+        lines.append(f"🏦 Saved: £{stats['total_saved']:.2f}")
     if stats["total_transferred"] > 0.005:
         lines.append(f"↔ Transferred: £{stats['total_transferred']:.2f} (excluded from totals)")
 
@@ -118,10 +122,10 @@ def send_monthly_report(month_str: str, message: str) -> None:
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM monthly_summaries").fetchone()[0]
     stats = get_month_stats(month_str)
     con.execute(
-        """INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, total_invested, sent_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, total_invested, total_saved, sent_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [next_id, month_str, stats["total_spend"], stats["total_income"], stats["net"],
-         stats["total_invested"], time.strftime("%Y-%m-%d %H:%M:%S")]
+         stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )
     log.info(f"Monthly report sent and recorded for {month_str}")
 

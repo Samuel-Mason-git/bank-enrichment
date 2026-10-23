@@ -127,6 +127,8 @@ MIGRATIONS = [
     ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
     ("transactions", "pending_category_proposal_id", "INTEGER"),
     ("category_proposals", "regenerate_requested", "BOOLEAN DEFAULT FALSE"),
+    ("monthly_summaries", "total_saved", "DECIMAL(19,4)"),
+    ("weekly_summaries", "total_saved", "DECIMAL(19,4)"),
 ]
 
 
@@ -604,19 +606,26 @@ def _validate_role(role: str) -> None:
 
 
 def get_totals_by_role(date_from: str, date_to: str) -> dict[str, float]:
-    """Directional totals per role in [date_from, date_to] -- income sums its
-    positive (incoming) side, every other role sums its negative (outgoing)
-    side as a positive magnitude. Always returns all of ROLES as keys (0.0
-    default) so callers never need a .get() guard.
+    """Directional totals per role in [date_from, date_to]. Always returns all
+    of ROLES as keys (0.0 default) so callers never need a .get() guard.
 
-    Roles like "transfer" are bidirectional (an Inbound and an Outbound
-    Transfer subcategory can both carry that role) -- summing every sign
-    together would let them cancel out (e.g. -674 + 540 nets to -134) instead
-    of reporting the true £674 that actually went out."""
+    income sums its positive (incoming) side. "saving"/"investment" net their
+    two sides together (a deposit and a later withdrawal are the same pot or
+    account, so £500 in then £200 back out is genuinely £300 net saved/
+    invested, not two unrelated amounts). Every other role -- "spend", and
+    bidirectional ones like "transfer" (an Inbound and an Outbound Transfer
+    subcategory can both carry that role) -- sums only its negative (outgoing)
+    side as a positive magnitude: those can mix genuinely unrelated inbound and
+    outbound movements (a refund in, an unrelated bill out), so summing every
+    sign together would let them cancel into a number that looks meaningful
+    but isn't (e.g. -674 + 540 nets to -134 instead of reporting the true £674
+    that actually went out)."""
     con = get_con()
     rows = con.execute(
         """SELECT role, COALESCE(SUM(
-               CASE WHEN role = 'income' THEN GREATEST(amount, 0) ELSE GREATEST(-amount, 0) END
+               CASE WHEN role = 'income' THEN GREATEST(amount, 0)
+                    WHEN role IN ('saving', 'investment') THEN -amount
+                    ELSE GREATEST(-amount, 0) END
            ), 0) FROM transaction_roles
            WHERE skipped = FALSE AND created_at BETWEEN ? AND ?
            GROUP BY role""",

@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS monthly_summaries (
     total_income DECIMAL(19,4) NOT NULL,
     net          DECIMAL(19,4) NOT NULL,
     total_invested DECIMAL(19,4),
+    total_saved  DECIMAL(19,4),
     sent_at      TIMESTAMP NOT NULL
 );
 
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
     total_income DECIMAL(19,4) NOT NULL,
     net          DECIMAL(19,4) NOT NULL,
     total_invested DECIMAL(19,4),
+    total_saved  DECIMAL(19,4),
     sent_at      TIMESTAMP NOT NULL
 );
 
