@@ -1,8 +1,25 @@
 from server_db import get_con
+from typing import NamedTuple
 import logging
 import re
 
 log = logging.getLogger(__name__)
+
+
+class RuleMatch(NamedTuple):
+    context: str | None
+    skip: bool
+    # Both set only when the rule fixes a placement -- the local pipeline then
+    # files the transaction there instead of classifying it.
+    category: str | None = None
+    subcategory: str | None = None
+
+    @property
+    def matched(self) -> bool:
+        return bool(self.context or self.skip or self.category)
+
+
+NO_MATCH = RuleMatch(None, False)
 
 
 def _extract_field(data, match_field: str):
@@ -48,14 +65,14 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
         return int(field_value) > 0
     return False
 
-def check_rules(data) -> tuple[str | None, bool]:
+def check_rules(data) -> RuleMatch:
     con = get_con()
     rules = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules WHERE enabled = TRUE"
+        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory FROM rules WHERE enabled = TRUE"
     ).fetchall()
 
     for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip = rule
+        rule_id, name, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory = rule
 
         try:
             field_value = _extract_field(data, match_field)
@@ -70,7 +87,11 @@ def check_rules(data) -> tuple[str | None, bool]:
             log.warning(f"Rule {rule_id} ('{name}') failed to evaluate and was skipped: {e}")
             continue
 
-        return (auto_context or None, bool(auto_skip))
+        # Only a complete pair is a placement -- a category on its own would
+        # file the transaction under a parent with no subcategory.
+        if category and subcategory:
+            return RuleMatch(auto_context or None, bool(auto_skip), category, subcategory)
+        return RuleMatch(auto_context or None, bool(auto_skip))
 
-    return (None, False)
+    return NO_MATCH
 

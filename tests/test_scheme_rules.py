@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from check_rules import _extract_field, _matches, check_rules
+from check_rules import _extract_field, _matches, check_rules, RuleMatch, NO_MATCH
 
 
 def _txn(scheme="uk_retail_pot", description="pot_0000B7cenLixHWSDlwwxKD",
@@ -49,13 +49,13 @@ class TestSchemeIsExtractable:
 class TestPotRuleMatchesTheRightThings:
     def test_a_pot_transfer_matches(self, server_con):
         _add_rule(server_con)
-        assert check_rules(_txn()) == ("Moved between Monzo pot and account", False)
+        assert check_rules(_txn()) == RuleMatch("Moved between Monzo pot and account", False)
 
     def test_a_card_payment_does_not_match(self, server_con):
         _add_rule(server_con)
         card = _txn(scheme="mastercard", description="MORRISONS MILTON KEYNES",
                     merchant="Morrisons", amount=-891)
-        assert check_rules(card) == (None, False)
+        assert check_rules(card) == NO_MATCH
 
     def test_a_merchant_whose_name_contains_pot_does_not_match(self, server_con):
         """The whole reason for using scheme. Under a description `contains
@@ -64,17 +64,17 @@ class TestPotRuleMatchesTheRightThings:
         _add_rule(server_con)
         depot = _txn(scheme="mastercard", description="HOME DEPOT_STORE 42",
                      merchant="Home Depot", amount=-4500)
-        assert check_rules(depot) == (None, False)
+        assert check_rules(depot) == NO_MATCH
 
     def test_a_transaction_with_no_scheme_does_not_match(self, server_con):
         _add_rule(server_con)
-        assert check_rules(_txn(scheme=None)) == (None, False)
+        assert check_rules(_txn(scheme=None)) == NO_MATCH
 
     def test_the_rule_does_not_skip_so_the_transfer_stays_visible(self, server_con):
         """Skipping hides it from the dashboard entirely. The transfer role
         already keeps it out of income and spend while remaining visible."""
         _add_rule(server_con)
-        _, skipped = check_rules(_txn())
+        skipped = check_rules(_txn()).skip
         assert skipped is False
 
 
@@ -88,7 +88,7 @@ class TestDescriptionMatchingIsStillAvailable:
     def test_the_anchored_regex_rejects_a_merchant_containing_pot(self, server_con):
         _add_rule(server_con, match_field="description", match_type="regex",
                   match_value=r"^pot_[A-Za-z0-9]+$")
-        assert check_rules(_txn(description="HOME DEPOT_STORE 42")) == (None, False)
+        assert check_rules(_txn(description="HOME DEPOT_STORE 42")) == NO_MATCH
 
     def test_an_unanchored_contains_rule_is_the_trap(self, server_con):
         """Documents why the anchor matters: this is what a naive rule does."""
@@ -142,17 +142,17 @@ class TestDirectionDistinguishesDepositsFromWithdrawals:
     def test_money_leaving_the_account_into_the_pot_matches_the_deposit_rule(self, server_con):
         _add_rule(server_con, context="Moved into savings pot",
                   match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
-        assert check_rules(_txn(amount=-100000)) == ("Moved into savings pot", False)
+        assert check_rules(_txn(amount=-100000)) == RuleMatch("Moved into savings pot", False)
 
     def test_money_arriving_back_from_the_pot_does_not_match_the_deposit_rule(self, server_con):
         _add_rule(server_con, context="Moved into savings pot",
                   match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
-        assert check_rules(_txn(amount=20000)) == (None, False)
+        assert check_rules(_txn(amount=20000)) == NO_MATCH
 
     def test_money_arriving_back_from_the_pot_matches_the_withdrawal_rule(self, server_con):
         _add_rule(server_con, context="Moved out of savings pot",
                   match_field_2="amount", match_type_2="amount_positive", match_value_2="any")
-        assert check_rules(_txn(amount=20000)) == ("Moved out of savings pot", False)
+        assert check_rules(_txn(amount=20000)) == RuleMatch("Moved out of savings pot", False)
 
     def test_both_rules_together_route_each_direction_to_its_own_context(self, server_con):
         """The realistic setup: deposit rule first, withdrawal rule second --
@@ -169,4 +169,4 @@ class TestDirectionDistinguishesDepositsFromWithdrawals:
                   match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
         card = _txn(scheme="mastercard", description="MORRISONS MILTON KEYNES",
                     merchant="Morrisons", amount=-891)
-        assert check_rules(card) == (None, False)
+        assert check_rules(card) == NO_MATCH

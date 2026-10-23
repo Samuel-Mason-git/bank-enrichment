@@ -42,6 +42,31 @@
                     </label>
                 </div>
             </div>
+            <div style="margin:10px 0 4px;">
+                <span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;">Fixed Category <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — files matches straight here, skipping the classifier)</span></span>
+            </div>
+            <div class="form-grid" style="margin-bottom:0;">
+                <div class="form-group">
+                    <label for="category">Category</label>
+                    <select name="category" id="category" onchange="updateSubcategories(); toggleAutoSkip();">
+                        <option value="">— None (classify as normal) —</option>
+                        {% for cat in (taxonomy | default({})).keys() %}
+                        <option value="{{ cat }}">{{ cat }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="subcategory">Subcategory</label>
+                    <select name="subcategory" id="subcategory" onchange="toggleAutoSkip()" disabled>
+                        <option value="">—</option>
+                    </select>
+                </div>
+                <div class="form-group" style="grid-column: span 3;justify-content:flex-end;">
+                    {% if not taxonomy %}
+                    <span style="font-size:0.7rem;color:#a1a1aa;">Your categories appear here after the next pipeline run syncs them up.</span>
+                    {% endif %}
+                </div>
+            </div>
             {% set _txns = transactions | default([]) %}
             {% if _txns %}
             <div class="form-group" style="margin-top:10px;">
@@ -91,11 +116,38 @@
                 </div>
             </div>
         </form>
+        {% if candidate_results is defined %}
+        {% set _m = candidate_results.matches %}
+        <div id="candidate-results" style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
+            {% if _m %}
+            <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">
+                This rule would match {{ _m | length }} of the {{ candidate_results.queue_size }} transaction{{ 's' if candidate_results.queue_size != 1 else '' }} in the queue:
+            </div>
+            <table>
+                <thead><tr><th>Transaction</th><th>Status</th><th>Current context</th></tr></thead>
+                <tbody>
+                {% for t in _m %}
+                <tr>
+                    <td>{{ t.label }}</td>
+                    <td><span class="badge {% if t.status == 'pending' %}badge-disabled{% else %}badge-enabled{% endif %}">{{ t.status }}</span></td>
+                    <td class="rule-context">{{ t.user_context if t.user_context else '—' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div style="font-size:0.8rem;color:#71717a;">
+                This rule doesn't match any of the {{ candidate_results.queue_size }} transaction{{ 's' if candidate_results.queue_size != 1 else '' }} in the queue.
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 
     <div class="section-label">Test Rules</div>
     <div class="rules-form">
         <form method="POST" action="/dashboard/rules/test" id="test-form">
+            <input type="hidden" id="candidate_name" name="candidate_name">
             <input type="hidden" id="candidate_match_field" name="candidate_match_field">
             <input type="hidden" id="candidate_match_type" name="candidate_match_type">
             <input type="hidden" id="candidate_match_value" name="candidate_match_value">
@@ -104,6 +156,8 @@
             <input type="hidden" id="candidate_match_value_2" name="candidate_match_value_2">
             <input type="hidden" id="candidate_auto_context" name="candidate_auto_context">
             <input type="hidden" id="candidate_auto_skip" name="candidate_auto_skip">
+            <input type="hidden" id="candidate_category" name="candidate_category">
+            <input type="hidden" id="candidate_subcategory" name="candidate_subcategory">
             {% set _txns = transactions | default([]) %}
             {% if not _txns %}
             <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;margin-bottom:8px;">Fill in manually, or pick a transaction above to auto-fill</div>
@@ -140,7 +194,7 @@
         </form>
         {% if test_results is defined %}
         <div style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
-            {% set matched = test_results | rejectattr('is_candidate') | selectattr('matched') | list %}
+            {% set matched = test_results | selectattr('matched') | list %}
             {% if matched %}
             <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">{{ matched | length }} rule{{ 's' if matched | length != 1 else '' }} matched — first match wins:</div>
             {% else %}
@@ -150,7 +204,7 @@
                 <thead><tr><th>Rule</th><th>Enabled</th><th>Result</th><th>Would apply</th></tr></thead>
                 <tbody>
                 {% for r in test_results %}
-                <tr style="{% if r.is_candidate %}background:rgba(155,89,182,0.08);{% elif r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
+                <tr style="{% if r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
                     <td class="rule-name">{{ r.name }}</td>
                     <td><span class="badge {% if r.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if r.enabled %}yes{% else %}no{% endif %}</span></td>
                     <td>{% if r.matched %}<span class="badge badge-enabled">✓ match</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
@@ -158,6 +212,7 @@
                         {% if r.matched %}
                             {% if r.auto_skip %}<span class="badge badge-disabled" style="background:#fef3c7;color:#92400e;">skip</span>{% endif %}
                             {% if r.auto_context %}"{{ r.auto_context }}"{% endif %}
+                            {% if r.category %}<span class="match-type-badge">→ {{ r.category }} › {{ r.subcategory }}</span>{% endif %}
                         {% else %}—{% endif %}
                     </td>
                 </tr>
@@ -178,6 +233,7 @@
                     <th>Condition 1</th>
                     <th>Condition 2</th>
                     <th>Auto Context</th>
+                    <th>Fixed Category</th>
                     <th>Auto Skip</th>
                     <th>Status</th>
                     <th></th>
@@ -190,6 +246,7 @@
                     <td><span class="mono">{{ rule.match_field }}</span> <span class="match-type-badge">{{ rule.match_type }}</span> <span class="mono">{{ rule.match_value }}</span></td>
                     <td>{% if rule.match_field_2 %}<span class="mono">{{ rule.match_field_2 }}</span> <span class="match-type-badge">{{ rule.match_type_2 }}</span> <span class="mono">{{ rule.match_value_2 }}</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
                     <td class="rule-context">{{ rule.auto_context if rule.auto_context else '—' }}</td>
+                    <td>{% if rule.category %}{{ rule.category }} › {{ rule.subcategory }}{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
                     <td>{% if rule.auto_skip %}<span class="badge badge-disabled" style="background:#fef3c7;color:#92400e;">skip</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
                     <td><span class="badge {% if rule.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if rule.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                     <td>
@@ -245,6 +302,7 @@ function fillFromTransaction(id) {
 }
 
 function testCandidateRule() {
+    document.getElementById("candidate_name").value = document.getElementById("name").value;
     document.getElementById("candidate_match_field").value = document.getElementById("match_field").value;
     document.getElementById("candidate_match_type").value = document.getElementById("match_type").value;
     document.getElementById("candidate_match_value").value = document.getElementById("match_value").value;
@@ -253,7 +311,43 @@ function testCandidateRule() {
     document.getElementById("candidate_match_value_2").value = document.getElementById("match_value_2").value;
     document.getElementById("candidate_auto_context").value = document.getElementById("auto_context").value;
     document.getElementById("candidate_auto_skip").value = document.getElementById("auto_skip").checked ? "on" : "";
+    document.getElementById("candidate_category").value = document.getElementById("category").value;
+    document.getElementById("candidate_subcategory").value = document.getElementById("subcategory").value;
     document.getElementById("test-form").submit();
+}
+
+const TAXONOMY = {{ (taxonomy | default({})) | tojson }};
+
+function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+// Subcategory options follow the chosen category, so only a pair that really
+// exists in your taxonomy can be picked.
+function updateSubcategories(selected) {
+    const category = document.getElementById("category").value;
+    const sub = document.getElementById("subcategory");
+    const options = TAXONOMY[category] || [];
+    sub.innerHTML = category
+        ? options.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("")
+        : '<option value="">—</option>';
+    sub.disabled = !category;
+    if (selected && options.includes(selected)) sub.value = selected;
+}
+
+// A rule whose saved category has since been renamed or deleted locally still
+// shows it, rather than silently dropping it the next time it's edited.
+function setPlacement(category, subcategory) {
+    const catSelect = document.getElementById("category");
+    if (category && !TAXONOMY[category]) {
+        catSelect.insertAdjacentHTML("beforeend", `<option value="${esc(category)}">${esc(category)} (no longer in your taxonomy)</option>`);
+        TAXONOMY[category] = [];
+    }
+    if (category && subcategory && !TAXONOMY[category].includes(subcategory)) {
+        TAXONOMY[category] = [...TAXONOMY[category], subcategory];
+    }
+    catSelect.value = category || "";
+    updateSubcategories(subcategory);
 }
 
 const TEXT_TYPES = [
@@ -362,11 +456,14 @@ function updateAmountHint() {
     );
 }
 
+// A rule has to DO something: set a context, skip, or file into a fixed
+// category. Context is only required when neither of the other two is set.
 function toggleAutoSkip() {
     const skip = document.getElementById("auto_skip").checked;
+    const placed = !!(document.getElementById("category").value && document.getElementById("subcategory").value);
     const ctx = document.getElementById("auto_context");
-    ctx.required = !skip;
-    ctx.placeholder = skip ? "Optional — shown as context if provided" : "e.g. Monthly gym membership";
+    ctx.required = !skip && !placed;
+    ctx.placeholder = (skip || placed) ? "Optional — shown as context if provided" : "e.g. Monthly gym membership";
 }
 
 function editRule(id) {
@@ -391,6 +488,7 @@ function editRule(id) {
 
     document.getElementById("auto_context").value = rule.auto_context || "";
     document.getElementById("auto_skip").checked = !!rule.auto_skip;
+    setPlacement(rule.category, rule.subcategory);
     toggleAutoSkip();
 
     document.getElementById("match_field_2").value = rule.match_field_2 || "";
@@ -414,6 +512,8 @@ function cancelEdit() {
     form.reset();
     updateMatchType();
     updateMatchType2();
+    updateSubcategories();
+    toggleAutoSkip();
     document.getElementById("form-section-label").textContent = "Add Rule";
     document.getElementById("submit-btn").textContent = "+ Add Rule";
     document.getElementById("cancel-edit").style.display = "none";
@@ -421,6 +521,31 @@ function cancelEdit() {
 
 updateMatchType();
 updateMatchType2();
+toggleAutoSkip();
+
+// "Test this rule" is a full page round trip -- without this, the rule you
+// were building would be wiped by the reload, right next to its results.
+const CANDIDATE_RULE = {{ (candidate_results.rule if candidate_results is defined else none) | tojson }};
+if (CANDIDATE_RULE) {
+    document.getElementById("name").value = CANDIDATE_RULE.name || "";
+    document.getElementById("match_field").value = CANDIDATE_RULE.match_field;
+    updateMatchType();
+    document.getElementById("match_type").value = CANDIDATE_RULE.match_type;
+    document.getElementById("match_value").value = CANDIDATE_RULE.match_value;
+    if (CANDIDATE_RULE.match_field === "amount") updateAmountHint();
+    document.getElementById("match_field_2").value = CANDIDATE_RULE.match_field_2 || "";
+    updateMatchType2();
+    if (CANDIDATE_RULE.match_field_2) {
+        document.getElementById("match_type_2").value = CANDIDATE_RULE.match_type_2 || "";
+        document.getElementById("match_value_2").value = CANDIDATE_RULE.match_value_2 || "";
+        if (CANDIDATE_RULE.match_field_2 === "amount") updateAmountHint2();
+    }
+    document.getElementById("auto_context").value = CANDIDATE_RULE.auto_context || "";
+    document.getElementById("auto_skip").checked = !!CANDIDATE_RULE.auto_skip;
+    setPlacement(CANDIDATE_RULE.category, CANDIDATE_RULE.subcategory);
+    toggleAutoSkip();
+    document.getElementById("candidate-results").scrollIntoView({ block: "center" });
+}
 
 document.querySelectorAll(".delete-rule-form").forEach(function (form) {
     form.addEventListener("submit", function (e) {

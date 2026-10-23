@@ -25,6 +25,14 @@ git clone git@github.com:your-username/bank-enrichment.git
 cd bank-enrichment
 ```
 
+**On a small instance (e.g. Oracle's free 1GB-RAM AMD Micro), add a swapfile too.** With no swap, any brief memory spike — a burst of webhooks, a dependency update, Caddy renewing a certificate — gets a container killed outright mid-request. Swap turns that into a moment of slowness instead. From the repo root:
+
+```bash
+sudo ./setup_swap.sh        # 2G by default; pass a size to change it, e.g. sudo ./setup_swap.sh 1G
+```
+
+It creates `/swapfile`, adds it to `/etc/fstab` so it survives reboots, and sets `vm.swappiness=10` so the system only swaps under real memory pressure rather than leaning on it day to day. It's safe to re-run — anything already in place is left alone. Check with `free -h`: the `Swap:` line should show the size you chose.
+
 ### 3. Create a Telegram Bot
 
 The system sends push notifications via a Telegram bot when a transaction arrives.

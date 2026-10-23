@@ -102,7 +102,8 @@ Each rule specifies:
 | Match field | What to check — merchant name, description, counterparty name, category, payment scheme, or amount |
 | Match type | How to compare — `contains`, `exact`, `regex`, `amount_range`, `amount_exact`, or (amount field only) `amount_negative`/`amount_positive` for direction alone |
 | Match value | The value to match against (e.g. `EE`, `490-510` for a £ range, `9.99` for exact) — not needed for `amount_negative`/`amount_positive`, which only look at the sign |
-| Auto context | The context sentence to store (e.g. "Monthly wifi bill") — optional if Auto Skip is on |
+| Auto context | The context sentence to store (e.g. "Monthly wifi bill") — optional if Auto Skip is on or a Fixed Category is set |
+| Fixed category | Optional — a category and subcategory picked from your own taxonomy. A match is filed straight there, and the classifier never runs on it |
 | Auto Skip | If checked, the transaction is marked as skipped automatically — no Telegram notification, no manual enrichment needed |
 | Second condition | Optional — a second match field/type/value that must also pass (AND logic) |
 
@@ -124,6 +125,18 @@ The transaction is still stored and will appear in your local database; it just 
 interrupt you via Telegram. You can combine Auto Skip with an Auto Context if you want 
 the transaction labelled but not notified.
 
+**Auto Context vs Fixed Category.** An Auto Context rule only supplies the context
+sentence — the transaction still goes through quick-tap or Claude to be placed, which
+costs a classification call and can, in principle, land somewhere different from last
+time. A **Fixed Category** rule skips all of that: the local pipeline files the match
+straight into the chosen category (logged with model `rule`) and the classifier never
+sees it. Use it when the answer is never in doubt — a phone bill, a subscription, rent.
+The dropdowns list your real categories, synced up from the local taxonomy on each
+pipeline run, so a typo can't quietly create a near-duplicate category. If a rule's
+category is later renamed or deleted locally, matches are left for the classifier
+instead of recreating the old name. Editing or resetting a transaction's context by hand
+clears any rule placement on it, so what you typed always wins.
+
 **A card payment's amount isn't always final.** A provisional authorisation hold (the
 classic UK fuel-pump pattern — a flat ~£99/£100 hold before the pump knows how much fuel
 was actually taken) is detected automatically and auto-skipped, the same way a declined
@@ -141,10 +154,12 @@ gone through each, set that subcategory's Role to **Saving** in the Settings tab
 
 Picking a transaction from the dropdown above the Add Rule form pre-fills it for you —
 merchant name if present, else counterparty name, else description (the same fallback
-order used throughout), plus that transaction's existing context if it has one. A
-**Test this rule** button carries those not-yet-saved fields over to the Test Rules panel
-below as a distinct "Your new rule (not saved)" row, so you can confirm it actually
-matches before committing to it.
+order used throughout), plus that transaction's existing context if it has one.
+**Test this rule** runs the not-yet-saved rule against everything still in the queue
+(roughly a week of transactions before cleanup) and lists exactly which ones it would
+catch, with their status and current context, right under the form — so you see its
+real reach before saving, not just that it matches the transaction you built it from.
+The form stays filled in afterwards.
 
 ### Rule Suggestions
 
@@ -168,8 +183,11 @@ rule, gets a Telegram card of its own: **💡 Rule suggestion**, with the sugges
 pre-filled from whichever context sentence you've typed most often for that merchant
 (falling back to a generic "`<merchant>` purchase" if your wording has never settled on
 one) and Claude's own reasoning for why it's safe to automate. Tapping **Create rule**
-adds it immediately — no local round trip needed, since Rules already live entirely on
-the server. Tapping **No thanks** means that exact pattern is never suggested again.
+adds it immediately as a **Fixed Category** rule — future matches go straight into that
+category without a classification call, which is safe precisely because the pattern has
+never once varied and was judged single-purpose first. No local round trip is needed,
+since Rules already live entirely on the server. Tapping **No thanks** means that exact
+pattern is never suggested again.
 
 ## Quick Categories
 

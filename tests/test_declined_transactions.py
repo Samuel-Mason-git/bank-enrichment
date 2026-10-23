@@ -40,7 +40,7 @@ def _webhook(txn_id="tx_declined", amount=-598, decline_reason=None, merchant="A
 def _post(server_con, req, bot=None):
     with patch.object(main, "get_con", return_value=server_con), \
          patch.object(main, "bot", bot or MagicMock()), \
-         patch.object(main, "check_rules", return_value=(None, False)), \
+         patch.object(main, "check_rules", return_value=main.NO_MATCH), \
          patch.object(main, "get_quick_categories", return_value=[]):
         return _run(main.recieve_monzo(req))
 

@@ -222,7 +222,7 @@ class TelegramBot:
         ]
         if suggestion.get("llm_reasoning"):
             lines += ["", f"🤖 {html.escape(suggestion['llm_reasoning'])}"]
-        lines += ["", "Create a rule so future ones skip the card entirely?"]
+        lines += ["", "Create a rule so future ones skip the card and go straight to that category?"]
         return self._post("sendMessage", {
             "chat_id": chat_id,
             "text": "\n".join(lines),

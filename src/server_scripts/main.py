@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from server_db import init_db, get_con, get_quick_categories
 from telegram import TelegramBot
-from check_rules import check_rules
+from check_rules import check_rules, NO_MATCH
 from follow_up_tg import requester_loop
 from monzo_oauth import exchange_code_for_tokens, monzo_refresh_loop
 
@@ -254,6 +254,13 @@ class QuickCategoryEntry(BaseModel):
 class SyncQuickCategoriesRequest(BaseModel):
     entries: list[QuickCategoryEntry]
 
+class TaxonomyEntry(BaseModel):
+    category: str
+    subcategory: str
+
+class SyncTaxonomyRequest(BaseModel):
+    entries: list[TaxonomyEntry]
+
 class TaxonomyProposalEntry(BaseModel):
     id: int                      # the id in the LOCAL database
     parent_name: str
@@ -387,26 +394,37 @@ async def recieve_monzo(request: Request):
             log.error(f"Failed to auto-skip pending-amount {transaction_id}: {e}", exc_info=True)
         return {"status": "pending_hold"}
 
-    # Check rules for auto-enrichment / auto-skip
-    rule_context, rule_skip = (None, False)
+    # Check rules for auto-enrichment / auto-skip / a fixed placement
+    match = NO_MATCH
     if is_new:
         try:
-            rule_context, rule_skip = check_rules(monzo_data.data)
+            match = check_rules(monzo_data.data)
         except Exception as e:
             log.error(f"Rule check failed for {transaction_id}, falling back to no match: {e}", exc_info=True)
-    if rule_context or rule_skip:
+    if match.matched:
+        # A fixed-placement rule with no context of its own still leaves a
+        # readable one -- the same "Category - Subcategory" label a quick-tap
+        # writes, so the dashboards and exports show something meaningful.
+        context = match.context or (f"{match.category} - {match.subcategory}" if match.category else None)
         try:
             con.execute(
-                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ?, skipped = ? WHERE id = ?",
-                [rule_context, time.strftime("%Y-%m-%d %H:%M:%S"), rule_skip, transaction_id]
+                """UPDATE webhook_queue
+                   SET user_context = ?, status = 'enriched', enriched_at = ?, skipped = ?,
+                       rule_category = ?, rule_subcategory = ?
+                   WHERE id = ?""",
+                [context, time.strftime("%Y-%m-%d %H:%M:%S"), match.skip,
+                 match.category, match.subcategory, transaction_id]
             )
             con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
-            log.info(f"Transaction auto-enriched by rule: {transaction_id} → context='{rule_context}' skip={rule_skip}")
+            log.info(
+                f"Transaction auto-enriched by rule: {transaction_id} → context='{context}' skip={match.skip}"
+                + (f" placement='{match.category} / {match.subcategory}'" if match.category else "")
+            )
         except Exception as e:
             log.error(f"Failed to auto-enrich transaction {transaction_id}: {e}", exc_info=True)
 
     # Send Telegram Message
-    if is_new and not rule_context and not rule_skip and bot:
+    if is_new and not match.matched and bot:
         # Direct debits and bank transfers rarely populate merchant, only
         # counterparty -- without this fallback, quick-tap suggestions for a
         # recurring bill (rent, HMRC, utilities) never surface, and every one
@@ -470,7 +488,7 @@ async def recieve_telegram(request: Request):
             try:
                 con = get_con()
                 con.execute(
-                    "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', enriched_at = ? WHERE id = ?",
+                    "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
                     [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
                 )
                 log.info(f"Transaction skipped via Telegram: {transaction_id}")
@@ -594,22 +612,25 @@ async def recieve_telegram(request: Request):
             try:
                 con = get_con()
                 row = con.execute(
-                    "SELECT match_field, match_value, auto_context, status FROM rule_suggestions WHERE id = ?",
+                    "SELECT match_field, match_value, auto_context, status, category, subcategory FROM rule_suggestions WHERE id = ?",
                     [suggestion_id]
                 ).fetchone()
                 if not row:
                     bot.send_message(chat_id, "That suggestion no longer exists.")
                     return {"ok": True}
-                match_field, match_value, auto_context, current = row
+                match_field, match_value, auto_context, current, category, subcategory = row
                 if current != "pending":
                     bot.send_message(chat_id, f"Already {current}.")
                     return {"ok": True}
                 if action == "approve":
+                    # The placement is fixed, not left to the classifier: the
+                    # pattern was never once categorized differently, and was
+                    # judged single-purpose before being suggested at all.
                     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
                     con.execute(
-                        "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context) "
-                        "VALUES (?, ?, ?, 'exact', ?, ?)",
-                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context]
+                        "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, category, subcategory) "
+                        "VALUES (?, ?, ?, 'exact', ?, ?, ?, ?)",
+                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context, category, subcategory]
                     )
                     con.execute(
                         "UPDATE rule_suggestions SET status = 'approved', decided_at = ? WHERE id = ?",
@@ -625,7 +646,11 @@ async def recieve_telegram(request: Request):
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
             if action == "approve":
-                bot.send_message(chat_id, f"✅ Rule created for <b>{html.escape(match_value)}</b>.")
+                bot.send_message(
+                    chat_id,
+                    f"✅ Rule created — <b>{html.escape(match_value)}</b> will go straight to "
+                    f"<b>{html.escape(category)} › {html.escape(subcategory)}</b> from now on."
+                )
             else:
                 bot.send_message(chat_id, "👍 Won't suggest that one again.")
             log.info(f"Rule suggestion {suggestion_id} {action}d via Telegram")
@@ -648,7 +673,7 @@ async def recieve_telegram(request: Request):
                 status_row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
                 was_pending = bool(status_row) and status_row[0] == "pending"
                 con.execute(
-                    "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+                    "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
                     [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
                 )
                 if was_pending:
@@ -683,7 +708,7 @@ async def recieve_telegram(request: Request):
             row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
             was_pending = bool(row) and row[0] == "pending"
             con.execute(
-                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
                 [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
             )
             if was_pending:
@@ -751,7 +776,7 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
 async def skip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     con.execute(
-        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', enriched_at = ? WHERE id = ?",
+        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
         [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
     )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
@@ -769,7 +794,7 @@ async def enrich_transaction_dashboard(transaction_id: str, request: Request, cr
         raise HTTPException(status_code=404, detail="Transaction not found")
     was_pending = row[0] == "pending"
     con.execute(
-        "UPDATE webhook_queue SET user_context = ?, status = 'enriched', enriched_at = ? WHERE id = ?",
+        "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
         [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
     )
     if was_pending:
@@ -790,7 +815,7 @@ async def edit_transaction_context(transaction_id: str, request: Request, creden
     context = (form.get("context") or "").strip()
     if context:
         get_con().execute(
-            "UPDATE webhook_queue SET user_context = ?, enriched_at = ? WHERE id = ?",
+            "UPDATE webhook_queue SET user_context = ?, rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
             [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
         )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
@@ -800,16 +825,47 @@ async def edit_transaction_context(transaction_id: str, request: Request, creden
 async def reset_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
     con.execute(
-        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL, skipped = FALSE WHERE id = ?",
+        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, rule_category = NULL, rule_subcategory = NULL, enriched_at = NULL, skipped = FALSE WHERE id = ?",
         [transaction_id]
     )
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
 
 @app.post("/dashboard/rules/test", response_class=HTMLResponse)
 async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    from check_rules import _extract_field, _matches
-    import re as _re
     form = await request.form()
+    con = get_con()
+    context = {"rules": _get_rules(con), "transactions": _get_test_transactions(con),
+               "taxonomy": _get_taxonomy(con), "active_nav": "rules"}
+
+    # "Test this rule" on the Add Rule form: run the not-yet-saved rule
+    # against everything sitting in the queue (up to ~7 days of history
+    # before cleanup), so you see which real transactions it would catch --
+    # not whether it matches a single transaction you already picked it from.
+    candidate_field = (form.get("candidate_match_field") or "").strip()
+    if candidate_field:
+        candidate = {
+            "match_field": candidate_field,
+            "match_type": (form.get("candidate_match_type") or "").strip(),
+            "match_value": (form.get("candidate_match_value") or "").strip(),
+            "match_field_2": (form.get("candidate_match_field_2") or "").strip() or None,
+            "match_type_2": (form.get("candidate_match_type_2") or "").strip() or None,
+            "match_value_2": (form.get("candidate_match_value_2") or "").strip() or None,
+        }
+        queue = _get_test_transactions(con, limit=None)
+        matches = [t for t in queue if _evaluate_rule(t, **candidate)]
+        context["candidate_results"] = {
+            "rule": {**candidate,
+                     "name": (form.get("candidate_name") or "").strip(),
+                     "auto_context": (form.get("candidate_auto_context") or "").strip(),
+                     "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
+                     "category": (form.get("candidate_category") or "").strip(),
+                     "subcategory": (form.get("candidate_subcategory") or "").strip()},
+            "queue_size": len(queue),
+            "matches": matches,
+        }
+        return templates.TemplateResponse(request=request, name="rules.html", context=context)
+
+    # "▶ Test": which saved rules match one transaction's fields.
     test_data = {
         "merchant_name": (form.get("merchant_name") or "").strip(),
         "description": (form.get("description") or "").strip(),
@@ -819,72 +875,25 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
         "amount": (form.get("amount") or "0").strip(),
     }
     try:
-        amount_pence = int(float(test_data["amount"]) * 100)
+        amount_pence = int(round(float(test_data["amount"]) * 100))
     except ValueError:
         amount_pence = 0
-
-    con = get_con()
-    rules = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
-    ).fetchall()
-
-    def get_field(field):
-        if field == "merchant_name": return test_data["merchant_name"] or None
-        if field == "description": return test_data["description"] or None
-        if field == "counterparty_name": return test_data["counterparty_name"] or None
-        if field == "category": return test_data["category"] or None
-        if field == "scheme": return test_data["scheme"] or None
-        if field == "amount": return amount_pence
-        return None
-
-    def evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled) -> bool:
-        try:
-            v1 = get_field(match_field)
-            cond1 = v1 is not None and match_field and match_type and match_value and _matches(v1, match_type, match_value)
-            cond2 = True
-            if match_field_2 and match_type_2 and match_value_2:
-                v2 = get_field(match_field_2)
-                cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
-            return bool(enabled) and cond1 and cond2
-        except Exception:
-            return False
+    fields = {**test_data, "amount_pence": amount_pence}
 
     results = []
-
-    # A not-yet-saved rule, carried over from the Add Rule form by the "Test
-    # this rule" button -- lets you confirm it actually matches the picked
-    # transaction before committing to it, same as any saved rule above it.
-    candidate_field = (form.get("candidate_match_field") or "").strip()
-    if candidate_field:
-        candidate_matched = evaluate(
-            candidate_field,
-            (form.get("candidate_match_type") or "").strip(),
-            (form.get("candidate_match_value") or "").strip(),
-            (form.get("candidate_match_field_2") or "").strip() or None,
-            (form.get("candidate_match_type_2") or "").strip() or None,
-            (form.get("candidate_match_value_2") or "").strip() or None,
-            enabled=True,
+    for rule in _get_rules(con):
+        matched = bool(rule["enabled"]) and _evaluate_rule(
+            fields, rule["match_field"], rule["match_type"], rule["match_value"],
+            rule["match_field_2"], rule["match_type_2"], rule["match_value_2"],
         )
         results.append({
-            "id": None, "name": "🆕 Your new rule (not saved)", "enabled": True,
-            "matched": candidate_matched, "is_candidate": True,
-            "auto_context": (form.get("candidate_auto_context") or "").strip(),
-            "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
+            "id": rule["id"], "name": rule["name"], "enabled": rule["enabled"],
+            "matched": matched, "auto_context": rule["auto_context"], "auto_skip": bool(rule["auto_skip"]),
+            "category": rule["category"], "subcategory": rule["subcategory"],
         })
 
-    for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
-        matched = evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled)
-        results.append({
-            "id": rule_id, "name": name, "enabled": enabled, "is_candidate": False,
-            "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
-        })
-
-    return templates.TemplateResponse(
-        request=request,
-        name="rules.html",
-        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules", "test_results": results, "test_data": test_data}
-    )
+    context.update({"test_results": results, "test_data": test_data})
+    return templates.TemplateResponse(request=request, name="rules.html", context=context)
 
 
 @app.post("/dashboard/rules/{rule_id}/edit", response_class=HTMLResponse)
@@ -899,11 +908,12 @@ async def edit_rule(rule_id: int, request: Request, credentials: HTTPBasicCreden
     match_type_2 = (form.get("match_type_2") or "").strip() or None
     match_value_2 = (form.get("match_value_2") or "").strip() or None
     auto_skip = form.get("auto_skip") == "on"
-    if name and match_field and match_type and match_value and (auto_context or auto_skip):
+    category, subcategory = _rule_placement(form)
+    if name and match_field and match_type and match_value and (auto_context or auto_skip or category):
         con = get_con()
         con.execute(
-            "UPDATE rules SET name=?, match_field=?, match_type=?, match_value=?, auto_context=?, match_field_2=?, match_type_2=?, match_value_2=?, auto_skip=? WHERE id=?",
-            [name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, rule_id]
+            "UPDATE rules SET name=?, match_field=?, match_type=?, match_value=?, auto_context=?, match_field_2=?, match_type_2=?, match_value_2=?, auto_skip=?, category=?, subcategory=? WHERE id=?",
+            [name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory, rule_id]
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
@@ -926,25 +936,50 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
     match_type_2 = (form.get("match_type_2") or "").strip() or None
     match_value_2 = (form.get("match_value_2") or "").strip() or None
     auto_skip = form.get("auto_skip") == "on"
-    if name and match_field and match_type and match_value and (auto_context or auto_skip):
+    category, subcategory = _rule_placement(form)
+    if name and match_field and match_type and match_value and (auto_context or auto_skip or category):
         con = get_con()
         next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
         con.execute(
-            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2, auto_skip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [next_id, name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip]
+            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [next_id, name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory]
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
+
+
+def _rule_placement(form) -> tuple[str | None, str | None]:
+    """A fixed (category, subcategory) from the rule form, or (None, None).
+    Only a complete pair counts -- a category picked without a subcategory
+    would file transactions under a parent with nothing beneath it, so a
+    half-filled pair is treated as no placement at all."""
+    category = (form.get("category") or "").strip()
+    subcategory = (form.get("subcategory") or "").strip()
+    if category and subcategory:
+        return category, subcategory
+    return None, None
+
+
+def _get_taxonomy(con) -> dict[str, list[str]]:
+    """{category: [subcategory, ...]} from the last pipeline sync, for the
+    Rules page's placement dropdowns."""
+    taxonomy: dict[str, list[str]] = {}
+    for category, subcategory in con.execute(
+        "SELECT category, subcategory FROM taxonomy ORDER BY category, subcategory"
+    ).fetchall():
+        taxonomy.setdefault(category, []).append(subcategory)
+    return taxonomy
 
 
 def _get_rules(con):
     rows = con.execute(
         "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, "
-        "match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
+        "match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory FROM rules ORDER BY id"
     ).fetchall()
     return [
         {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3],
          "match_value": r[4], "auto_context": r[5], "enabled": r[6],
-         "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
+         "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10],
+         "category": r[11], "subcategory": r[12]}
         for r in rows
     ]
 
@@ -967,10 +1002,9 @@ def _txn_short_label(con, transaction_id: str) -> str:
     return f"{display} · {sign}£{abs(amount_pence) / 100:.2f}"
 
 
-def _get_test_transactions(con):
-    rows = con.execute(
-        "SELECT id, payload, received_at, user_context FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
-    ).fetchall()
+def _get_test_transactions(con, limit: int | None = 100):
+    sql = "SELECT id, payload, received_at, user_context, status FROM webhook_queue ORDER BY received_at DESC"
+    rows = con.execute(sql + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
     txns = []
     for row in rows:
         data = json.loads(row[1]).get("data", {})
@@ -994,9 +1028,39 @@ def _get_test_transactions(con):
             # rule can only be tested meaningfully against the real direction
             # the money moved.
             "amount": round(amount_pence / 100, 2),
+            "amount_pence": amount_pence,
             "user_context": row[3] or "",
+            "status": row[4],
         })
     return txns
+
+
+def _evaluate_rule(fields: dict, match_field, match_type, match_value,
+                   match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
+    """Whether a rule's condition(s) match one transaction's fields -- the
+    same keys _get_test_transactions produces, with amount in signed pence.
+    Shared by the saved-rule tester and the queue preview for a new rule, so
+    both judge a match exactly the same way."""
+    from check_rules import _matches
+
+    def get_field(field):
+        if field == "amount":
+            return fields.get("amount_pence")
+        return fields.get(field) or None
+
+    try:
+        if not (match_field and match_type and match_value):
+            return False
+        v1 = get_field(match_field)
+        if v1 is None or not _matches(v1, match_type, match_value):
+            return False
+        if match_field_2 and match_type_2 and match_value_2:
+            v2 = get_field(match_field_2)
+            if v2 is None or not _matches(v2, match_type_2, match_value_2):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 @app.get("/dashboard/rules", response_class=HTMLResponse)
@@ -1005,7 +1069,8 @@ async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depen
     return templates.TemplateResponse(
         request=request,
         name="rules.html",
-        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con), "active_nav": "rules"}
+        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con),
+                 "taxonomy": _get_taxonomy(con), "active_nav": "rules"}
     )
 
 
@@ -1143,7 +1208,7 @@ async def bulk_delete_skipped(request: Request, credentials: HTTPBasicCredential
 @app.post("/dashboard/bulk/requeue-pending", response_class=HTMLResponse)
 async def bulk_requeue_pending(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     get_con().execute(
-        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, enriched_at = NULL, skipped = FALSE WHERE status = 'pending'"
+        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, rule_category = NULL, rule_subcategory = NULL, enriched_at = NULL, skipped = FALSE WHERE status = 'pending'"
     )
     return RedirectResponse(url="/dashboard", status_code=303)
 
@@ -1168,7 +1233,7 @@ async def export(api_key: str = Security(API_KEY_HEADER)):
     await verify_api_key(api_key)
     con = get_con()
     rows = con.execute(
-        """SELECT id, payload, received_at, user_context, enriched_at, skipped
+        """SELECT id, payload, received_at, user_context, enriched_at, skipped, rule_category, rule_subcategory
            FROM webhook_queue
            WHERE status = 'enriched'
            ORDER BY enriched_at ASC"""
@@ -1181,6 +1246,8 @@ async def export(api_key: str = Security(API_KEY_HEADER)):
             "user_context": row[3],
             "enriched_at": str(row[4]),
             "skipped": row[5],
+            "rule_category": row[6],
+            "rule_subcategory": row[7],
         }
         for row in rows
     ]
@@ -1214,6 +1281,21 @@ async def sync_quick_categories(body: SyncQuickCategoriesRequest, api_key: str =
         )
     log.info(f"Synced {len(body.entries)} quick categories")
     return {"synced": len(body.entries)}
+
+
+@app.post('/sync-taxonomy')
+async def sync_taxonomy(body: SyncTaxonomyRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Replace the server's copy of the local taxonomy -- names only, for the
+    Rules page's placement dropdowns. Replaced wholesale each run, so a
+    renamed or deleted category stops being offered on the next sync."""
+    await verify_api_key(api_key)
+    con = get_con()
+    con.execute("DELETE FROM taxonomy")
+    pairs = {(e.category, e.subcategory) for e in body.entries}
+    for category, subcategory in pairs:
+        con.execute("INSERT INTO taxonomy (category, subcategory) VALUES (?, ?)", [category, subcategory])
+    log.info(f"Synced {len(pairs)} taxonomy entries")
+    return {"synced": len(pairs)}
 
 
 @app.post('/sync-taxonomy-proposals')

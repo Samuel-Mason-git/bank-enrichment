@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS webhook_queue (
     enriched_at         TIMESTAMP,
     request_count       INTEGER      DEFAULT 0,
     skipped             BOOLEAN      DEFAULT FALSE,
-    last_requested_at   TIMESTAMP
+    last_requested_at   TIMESTAMP,
+    -- Set when a rule with a fixed category matched: the local pipeline files
+    -- the transaction straight there instead of classifying it.
+    rule_category       VARCHAR(255),
+    rule_subcategory    VARCHAR(255)
 );
 
 CREATE TABLE IF NOT EXISTS rules (
@@ -33,7 +37,21 @@ CREATE TABLE IF NOT EXISTS rules (
     match_field_2 VARCHAR(255),
     match_type_2  VARCHAR(50),
     match_value_2 VARCHAR(255),
-    auto_skip     BOOLEAN      DEFAULT FALSE
+    auto_skip     BOOLEAN      DEFAULT FALSE,
+    -- Optional fixed placement. When both are set, a match skips the
+    -- classifier entirely rather than leaving it to read auto_context.
+    category      VARCHAR(255),
+    subcategory   VARCHAR(255)
+);
+
+-- Every (category, subcategory) pair in the local taxonomy, pushed up each
+-- pipeline run so the Rules page can offer a dropdown of real names -- the
+-- taxonomy itself lives locally, and a free-typed name would quietly create
+-- a near-duplicate category the moment it differed by a letter.
+CREATE TABLE IF NOT EXISTS taxonomy (
+    category      VARCHAR(255) NOT NULL,
+    subcategory   VARCHAR(255) NOT NULL,
+    PRIMARY KEY (category, subcategory)
 );
 
 -- Taxonomy proposals pushed up from the local pipeline, awaiting an Approve or
