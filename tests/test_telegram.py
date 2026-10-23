@@ -148,6 +148,51 @@ class TestSendCardFollowUpText:
         assert keyboard[0][0]["callback_data"] == "quickcat:tx_001:1"
 
 
+class TestSendRuleSuggestion:
+    def _send(self, **overrides):
+        bot = TelegramBot()
+        suggestion = {
+            "id": 1, "match_field": "merchant_name", "match_value": "Tesco",
+            "category": "Food & Drink", "subcategory": "Groceries",
+            "txn_count": 5, "auto_context": "Weekly shop",
+            **overrides,
+        }
+        mock_resp = MagicMock(status_code=200)
+        with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
+            bot.send_rule_suggestion(123, suggestion)
+        return mock_post.call_args[1]["json"]
+
+    def test_includes_merchant_count_and_category(self):
+        payload = self._send()
+        text = payload["text"]
+        assert "Tesco" in text
+        assert "5" in text
+        assert "Food &amp; Drink" in text and "Groceries" in text
+
+    def test_counterparty_field_label_differs_from_merchant(self):
+        payload = self._send(match_field="counterparty_name", match_value="A Friend")
+        assert "counterparty" in payload["text"].lower()
+
+    def test_buttons_carry_the_suggestion_id(self):
+        payload = self._send(id=42)
+        buttons = payload["reply_markup"]["inline_keyboard"][0]
+        assert buttons[0]["callback_data"] == "rulesug:approve:42"
+        assert buttons[1]["callback_data"] == "rulesug:deny:42"
+
+    def test_llm_reasoning_is_shown_when_present(self):
+        payload = self._send(llm_reasoning="Single-purpose telecom bill")
+        assert "Single-purpose telecom bill" in payload["text"]
+
+    def test_no_reasoning_line_when_absent(self):
+        payload = self._send(llm_reasoning="")
+        assert "🤖" not in payload["text"]
+
+    def test_html_in_values_is_escaped(self):
+        payload = self._send(match_value="<script>")
+        assert "<script>" not in payload["text"]
+        assert "&lt;script&gt;" in payload["text"]
+
+
 class TestSendAlert:
     def _sent_text(self, title, message):
         bot = TelegramBot()

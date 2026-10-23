@@ -204,6 +204,35 @@ class TelegramBot:
             "reply_markup": {"inline_keyboard": buttons},
         })
 
+    def send_rule_suggestion(self, chat_id: int, suggestion: dict):
+        """Sent when the local pipeline finds a (merchant/counterparty,
+        category, subcategory) pattern that has repeated 5+ times with zero
+        disagreement -- offers to turn it into a Rule so future transactions
+        from the same merchant classify themselves without a card ever going
+        out at all."""
+        field_label = "Merchant" if suggestion["match_field"] == "merchant_name" else "Counterparty"
+        lines = [
+            "💡 <b>Rule suggestion</b>",
+            "",
+            f"<b>{suggestion['txn_count']}</b> transactions from {field_label.lower()} "
+            f"<b>{html.escape(suggestion['match_value'])}</b> have always been categorized as "
+            f"<b>{html.escape(suggestion['category'])} › {html.escape(suggestion['subcategory'])}</b>.",
+            "",
+            f'Suggested context: "{html.escape(suggestion["auto_context"])}"',
+        ]
+        if suggestion.get("llm_reasoning"):
+            lines += ["", f"🤖 {html.escape(suggestion['llm_reasoning'])}"]
+        lines += ["", "Create a rule so future ones skip the card entirely?"]
+        return self._post("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Create rule", "callback_data": f"rulesug:approve:{suggestion['id']}"},
+                {"text": "❌ No thanks", "callback_data": f"rulesug:deny:{suggestion['id']}"},
+            ]]},
+        })
+
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']
