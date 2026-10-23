@@ -583,9 +583,9 @@ with tab_overview:
             _mdf["_spend"] = _mdf.apply(
                 lambda r: abs(r["amount"]) if r["role"] in _spend_roles and r["amount"] < 0 else 0, axis=1)
             _mdf["_invested"] = _mdf.apply(
-                lambda r: abs(r["amount"]) if r["role"] in _invest_roles and r["amount"] < 0 else 0, axis=1)
+                lambda r: -r["amount"] if r["role"] in _invest_roles else 0, axis=1)
             _mdf["_saved"] = _mdf.apply(
-                lambda r: abs(r["amount"]) if r["role"] in _saving_roles and r["amount"] < 0 else 0, axis=1)
+                lambda r: -r["amount"] if r["role"] in _saving_roles else 0, axis=1)
             _monthly = (
                 _mdf.groupby("_month")
                 .agg(_income=("_income", "sum"), _spend=("_spend", "sum"),
@@ -644,13 +644,15 @@ with tab_time:
 
     def _time_chart_pair(key_prefix: str, metric: str, sign: str):
         """Monthly category + subcategory trend lines for one metric, restricted
-        to one direction of money flow -- roles like Invested/Transferred are
-        bidirectional under the hood (e.g. Transfers has an Inbound and an
-        Outbound subcategory), so without this restriction a month with both
-        would net together and understate the true amount, the same
-        sum-then-abs cancellation bug fixed on the Overview tab. Lines (not
-        stacked bars) since a per-category trend is what's being compared here,
-        and a stack makes any one category's own trajectory hard to isolate."""
+        to one direction of money flow. This is a per-category breakdown (which
+        categories drove deposits vs. withdrawals, which drove inbound vs.
+        outbound transfers), not a summary total -- unlike Overview's single
+        Invested/Saved figure (netted, since a deposit and a later withdrawal
+        are the same pot/account), showing both directions as one netted line
+        per category here would hide which side actually moved, so each
+        direction gets its own chart. Lines (not stacked bars) since a
+        per-category trend is what's being compared here, and a stack makes
+        any one category's own trajectory hard to isolate."""
         metric_time = filtered[filtered["role"].isin(ROLE_METRICS[metric])]
         metric_time = metric_time[metric_time["amount"] < 0] if sign == "negative" else metric_time[metric_time["amount"] > 0]
         if metric_time.empty:
@@ -695,9 +697,9 @@ with tab_time:
             else:
                 st.info(f"No classified {metric.lower()} in range.")
 
-    # Split by direction, mirroring Overview's Outgoings/Incomings cards --
-    # Spend/Invested/Transferred-Excluded are "money out", Income/Invested/
-    # Transferred-Excluded are "money in".
+    # Split by direction for the per-category breakdown charts below --
+    # Spend/Invested/Saved/Transferred-Excluded are "money out", Income/
+    # Invested/Saved/Transferred-Excluded are "money in".
     time_outgoing_metrics = [m for m in ROLE_METRICS if m != "Income"]
     time_incoming_metrics = [m for m in ROLE_METRICS if m != "Spend"]
 

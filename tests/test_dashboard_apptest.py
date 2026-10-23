@@ -763,6 +763,17 @@ class TestInvestedAndSavedStayNumericallySeparate:
         row = df.iloc[0]
         assert row["Invested (£)"] == "£250.00" and row["Saved (£)"] == "£500.00"
 
+    def test_monthly_breakdown_table_nets_a_withdrawal_against_a_deposit(self, tmp_path):
+        """Regression test: this table has its own separate computation from
+        the Overview summary cards above it (a hand-rolled per-row apply/
+        groupby, not the same masks) -- it must not silently disagree with
+        the now-netted Saved card just above it on the same tab."""
+        _seed_saving_deposit_and_withdrawal(tmp_path)
+        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        df = at.tabs[0].dataframe[0].value
+        row = df.iloc[0]
+        assert row["Saved (£)"] == "£300.00"
+
     def test_standard_row_omits_the_roles_it_never_populates(self, tmp_path):
         """Invested/Saved/Transferred have no Standard-side value at all (that
         money is just folded into Standard Spend by amount sign), so the
