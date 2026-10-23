@@ -97,16 +97,21 @@ class TestSendCardFollowUpText:
         assert "Created" in text
         assert "Reminder" not in text
 
-    def test_follow_up_is_condensed(self):
+    def test_follow_up_includes_the_same_detail_as_the_initial_card(self):
+        """Regression test: follow-ups used to build a separate, stripped-down
+        line set with only amount/merchant/description -- missing exactly the
+        payment detail (currency, status, category, created date) someone
+        needs to actually place the transaction a day or two later. The
+        reminder header is additive, not a replacement for the full card."""
         bot = TelegramBot()
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload(), follow_up=1)
         text = mock_post.call_args[1]["json"]["text"]
-        assert "Currency" not in text
-        assert "Status" not in text
-        assert "Transaction Category" not in text
+        assert "Currency" in text
+        assert "Status" in text
+        assert "Transaction Category" in text
         assert "Reminder" in text
 
     def test_follow_up_keeps_essential_recall_info(self):
