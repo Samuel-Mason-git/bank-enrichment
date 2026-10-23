@@ -245,16 +245,18 @@ This is why most of the dashboard shows two versions of the same figures:
 - **Actual** — the same figures computed from each category's Role instead, so refunds,
   transfers, and investment/saving movements are correctly excluded or reclassified.
 
-**Investment vs Saving** are mechanically identical (money moving in is tracked as its own
-outgoing-only figure and excluded from Actual Income/Spend/Net — a withdrawal can't cancel out
-a contribution, and a deposit can't be miscounted as real spend) but are kept as two separate
+**Investment vs Saving** are mechanically identical (both net their two directions together —
+a contribution/deposit and a later withdrawal are the same account or pot, so £500 in then £200
+back out is genuinely £300 net, not two unrelated amounts — and both are excluded from Actual
+Income/Spend/Net so a deposit can't be miscounted as real spend) but are kept as two separate
 roles rather than one, so a genuine investment contribution (stocks, ISA, pension) is never
 silently combined with money moved into a savings pot under one figure. Use whichever fits —
 e.g. a Monzo savings pot as Saving, a Trading 212/stocks & shares contribution as Investment.
 
-> **Known gap:** the weekly/monthly Telegram summaries currently only read the Investment
-> total, not Saving — money under a Saving-role category won't appear in those messages yet,
-> only in the dashboard itself.
+Transfer/Excluded categories are *not* netted the same way — that bucket can mix genuinely
+unrelated inbound and outbound movements (a refund in, an unrelated bill out), so it keeps
+showing its outgoing side plus a separate incoming card whenever there's both, rather than
+risking two unrelated amounts cancelling into a misleading number.
 
 ### New Category Approval
 
@@ -348,7 +350,7 @@ excluding something hides it from view, it does not delete or reclassify it.
 | Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Saved, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
 | Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); standalone Invested and Saved trend charts; Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
 | Transactions | Full filterable table with a few "fun fact" stat cards up top (unique merchants, biggest transaction, busiest day, etc). Category and Subcategory are edited via dropdowns restricted to your existing taxonomy, so labels stay consistent; Date and Context are also editable; Merchant and Description are read-only. |
-| Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved/Transferred-Excluded, split into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
+| Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved — Invested/Saved already net deposits against withdrawals; Transferred/Excluded splits into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
 | Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
 | Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
 | Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Backups section (see below). |

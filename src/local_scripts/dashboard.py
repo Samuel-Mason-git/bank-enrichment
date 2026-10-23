@@ -329,36 +329,44 @@ with tab_overview:
             labels = labels[:10] + [f"+{len(labels) - 10} more"]
         return ", ".join(labels)
 
-    # Roles like "transfer"/"investment" are bidirectional (e.g. Transfers has
-    # both an Inbound and an Outbound subcategory) -- restricting each mask to
-    # its expected direction (income=incoming, everything else=outgoing) means
-    # summing signed amounts can never let an inflow cancel an outflow.
+    # "saving"/"investment" net their two sides together (a deposit and a
+    # later withdrawal are the same pot or account, so summing them gives a
+    # true "how much extra is tucked away" figure). "transfer"/"excluded" stay
+    # direction-restricted (outgoing only, with the incoming side as its own
+    # card below) because that bucket can mix genuinely unrelated inbound and
+    # outbound movements (a refund in, an unrelated bill out) -- summing every
+    # sign together there would let them cancel into a number that looks
+    # meaningful but isn't.
     income_mask = (filtered["role"] == "income") & (filtered["amount"] > 0)
     spend_mask = (filtered["role"] == "spend") & (filtered["amount"] < 0)
-    invest_mask = (filtered["role"] == "investment") & (filtered["amount"] < 0)
-    saving_mask = (filtered["role"] == "saving") & (filtered["amount"] < 0)
+    invest_mask = filtered["role"] == "investment"
+    saving_mask = filtered["role"] == "saving"
     excluded_mask = filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)
+    excluded_in_mask = filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] > 0)
 
     actual_income = filtered.loc[income_mask, "amount"].sum()
     actual_spend = abs(filtered.loc[spend_mask, "amount"].sum())
-    invested = abs(filtered.loc[invest_mask, "amount"].sum())
-    saved = abs(filtered.loc[saving_mask, "amount"].sum())
+    invested = -filtered.loc[invest_mask, "amount"].sum()
+    saved = -filtered.loc[saving_mask, "amount"].sum()
     excluded_total = abs(filtered.loc[excluded_mask, "amount"].sum())
+    excluded_in = filtered.loc[excluded_in_mask, "amount"].sum()
 
     actual_net = actual_income - actual_spend
     actual_savings_rate = (actual_net / actual_income * 100) if actual_income > 0 else None
 
     prev_income_mask = (prev_filtered["role"] == "income") & (prev_filtered["amount"] > 0)
     prev_spend_mask = (prev_filtered["role"] == "spend") & (prev_filtered["amount"] < 0)
-    prev_invest_mask = (prev_filtered["role"] == "investment") & (prev_filtered["amount"] < 0)
-    prev_saving_mask = (prev_filtered["role"] == "saving") & (prev_filtered["amount"] < 0)
+    prev_invest_mask = prev_filtered["role"] == "investment"
+    prev_saving_mask = prev_filtered["role"] == "saving"
     prev_excluded_mask = prev_filtered["role"].isin(["transfer", "excluded"]) & (prev_filtered["amount"] < 0)
+    prev_excluded_in_mask = prev_filtered["role"].isin(["transfer", "excluded"]) & (prev_filtered["amount"] > 0)
 
     prev_actual_income = prev_filtered.loc[prev_income_mask, "amount"].sum()
     prev_actual_spend = abs(prev_filtered.loc[prev_spend_mask, "amount"].sum())
-    prev_invested = abs(prev_filtered.loc[prev_invest_mask, "amount"].sum())
-    prev_saved = abs(prev_filtered.loc[prev_saving_mask, "amount"].sum())
+    prev_invested = -prev_filtered.loc[prev_invest_mask, "amount"].sum()
+    prev_saved = -prev_filtered.loc[prev_saving_mask, "amount"].sum()
     prev_excluded_total = abs(prev_filtered.loc[prev_excluded_mask, "amount"].sum())
+    prev_excluded_in = prev_filtered.loc[prev_excluded_in_mask, "amount"].sum()
     prev_actual_net = prev_actual_income - prev_actual_spend
     prev_actual_savings_rate = (prev_actual_net / prev_actual_income * 100) if prev_actual_income > 0 else None
 
@@ -367,6 +375,7 @@ with tab_overview:
     invested_d = pct_delta(invested, prev_invested)
     saved_d = pct_delta(saved, prev_saved)
     excluded_d = pct_delta(excluded_total, prev_excluded_total)
+    excluded_in_d = pct_delta(excluded_in, prev_excluded_in)
     actual_net_d = pct_delta(actual_net, prev_actual_net)
     actual_sr_d = (
         round(actual_savings_rate - prev_actual_savings_rate, 1)
@@ -442,25 +451,40 @@ with tab_overview:
         "Spend": "Every transaction with a negative amount, regardless of category.",
         "Net": "Standard Income minus Standard Spend.",
         "Savings Rate": "Standard Net as a percentage of Standard Income.",
-        "Invested": "Not tracked separately here — investment transactions are just counted within Standard Income/Spend by amount sign.",
-        "Saved": "Not tracked separately here — savings transactions are just counted within Standard Income/Spend by amount sign.",
-        "Transferred / Excluded": "Not tracked separately here — transfers and refunds are just counted within Standard Income/Spend by amount sign.",
     }
     actual_static_tooltips = {
         "Net": "Actual Income minus Actual Spend.",
         "Savings Rate": "Actual Net as a percentage of Actual Income.",
     }
-    # (label, standard value, standard delta, actual value, actual delta,
-    #  categories-mask for the Actual card's tooltip, is_pct, color)
-    metrics_row = [
-        ("Income", total_income, income_d, actual_income, actual_income_d, income_mask, False),
-        ("Spend", total_spend, spend_d, actual_spend, actual_spend_d, spend_mask, False),
-        ("Net", net, net_d, actual_net, actual_net_d, None, False),
-        ("Savings Rate", savings_rate, sr_d, actual_savings_rate, actual_sr_d, None, True),
-        ("Invested", None, None, invested, invested_d, invest_mask, False),
-        ("Saved", None, None, saved, saved_d, saving_mask, False),
-        ("Transferred / Excluded", None, None, excluded_total, excluded_d, excluded_mask, False),
+    standard_metrics = [
+        ("Income", total_income, income_d, False),
+        ("Spend", total_spend, spend_d, False),
+        ("Net", net, net_d, False),
+        ("Savings Rate", savings_rate, sr_d, True),
     ]
+
+    # Transferred/Excluded only shows its outgoing side by default -- but it
+    # can also carry an incoming side under the same role (e.g. an inbound
+    # transfer or a refund), which may be unrelated money rather than the same
+    # pot/account cycling. Surface it as its own card whenever it's nonzero
+    # rather than letting it net invisibly against the outgoing figure or
+    # vanish from the Overview entirely. Invested/Saved don't need this split
+    # -- they're already netted above.
+    excluded_label = "Transferred / Excluded (Outgoing)" if excluded_in > 0 else "Transferred / Excluded"
+
+    # (display label, color/delta-direction key, actual value, actual delta,
+    #  categories-mask for the tooltip, is_pct)
+    actual_rows = [
+        ("Income", "Income", actual_income, actual_income_d, income_mask, False),
+        ("Spend", "Spend", actual_spend, actual_spend_d, spend_mask, False),
+        ("Net", "Net", actual_net, actual_net_d, None, False),
+        ("Savings Rate", "Savings Rate", actual_savings_rate, actual_sr_d, None, True),
+        ("Invested", "Invested", invested, invested_d, invest_mask, False),
+        ("Saved", "Saved", saved, saved_d, saving_mask, False),
+        (excluded_label, "Transferred / Excluded", excluded_total, excluded_d, excluded_mask, False),
+    ]
+    if excluded_in > 0:
+        actual_rows.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in, excluded_in_d, excluded_in_mask, False))
 
     st.caption(f"{len(filtered)} transactions · {int(filtered['llm_category'].isna().sum())} unclassified.")
 
@@ -471,8 +495,8 @@ with tab_overview:
         ),
         unsafe_allow_html=True,
     )
-    std_cols = st.columns(7)
-    for col, (label, std_val, std_d, _, _, _, is_pct) in zip(std_cols, metrics_row):
+    std_cols = st.columns(len(standard_metrics))
+    for col, (label, std_val, std_d, is_pct) in zip(std_cols, standard_metrics):
         badge = _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label])
         with col:
             st.markdown(
@@ -487,13 +511,13 @@ with tab_overview:
         ),
         unsafe_allow_html=True,
     )
-    act_cols = st.columns(7)
-    for col, (label, _, _, act_val, act_d, mask, is_pct) in zip(act_cols, metrics_row):
-        badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[label])
-        tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[label]
+    act_cols = st.columns(len(actual_rows))
+    for col, (label, color_key, act_val, act_d, mask, is_pct) in zip(act_cols, actual_rows):
+        badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[color_key])
+        tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[color_key]
         with col:
             st.markdown(
-                _card(label, _fmt(act_val, is_pct), row_colors[label], tooltip=tooltip, delta_html=badge),
+                _card(label, _fmt(act_val, is_pct), row_colors[color_key], tooltip=tooltip, delta_html=badge),
                 unsafe_allow_html=True,
             )
 
@@ -559,9 +583,9 @@ with tab_overview:
             _mdf["_spend"] = _mdf.apply(
                 lambda r: abs(r["amount"]) if r["role"] in _spend_roles and r["amount"] < 0 else 0, axis=1)
             _mdf["_invested"] = _mdf.apply(
-                lambda r: abs(r["amount"]) if r["role"] in _invest_roles and r["amount"] < 0 else 0, axis=1)
+                lambda r: -r["amount"] if r["role"] in _invest_roles else 0, axis=1)
             _mdf["_saved"] = _mdf.apply(
-                lambda r: abs(r["amount"]) if r["role"] in _saving_roles and r["amount"] < 0 else 0, axis=1)
+                lambda r: -r["amount"] if r["role"] in _saving_roles else 0, axis=1)
             _monthly = (
                 _mdf.groupby("_month")
                 .agg(_income=("_income", "sum"), _spend=("_spend", "sum"),
@@ -620,13 +644,15 @@ with tab_time:
 
     def _time_chart_pair(key_prefix: str, metric: str, sign: str):
         """Monthly category + subcategory trend lines for one metric, restricted
-        to one direction of money flow -- roles like Invested/Transferred are
-        bidirectional under the hood (e.g. Transfers has an Inbound and an
-        Outbound subcategory), so without this restriction a month with both
-        would net together and understate the true amount, the same
-        sum-then-abs cancellation bug fixed on the Overview tab. Lines (not
-        stacked bars) since a per-category trend is what's being compared here,
-        and a stack makes any one category's own trajectory hard to isolate."""
+        to one direction of money flow. This is a per-category breakdown (which
+        categories drove deposits vs. withdrawals, which drove inbound vs.
+        outbound transfers), not a summary total -- unlike Overview's single
+        Invested/Saved figure (netted, since a deposit and a later withdrawal
+        are the same pot/account), showing both directions as one netted line
+        per category here would hide which side actually moved, so each
+        direction gets its own chart. Lines (not stacked bars) since a
+        per-category trend is what's being compared here, and a stack makes
+        any one category's own trajectory hard to isolate."""
         metric_time = filtered[filtered["role"].isin(ROLE_METRICS[metric])]
         metric_time = metric_time[metric_time["amount"] < 0] if sign == "negative" else metric_time[metric_time["amount"] > 0]
         if metric_time.empty:
@@ -671,17 +697,17 @@ with tab_time:
             else:
                 st.info(f"No classified {metric.lower()} in range.")
 
-    # Split by direction, mirroring Overview's Outgoings/Incomings cards --
-    # Spend/Invested/Transferred-Excluded are "money out", Income/Invested/
-    # Transferred-Excluded are "money in".
+    # Split by direction for the per-category breakdown charts below --
+    # Spend/Invested/Saved/Transferred-Excluded are "money out", Income/
+    # Invested/Saved/Transferred-Excluded are "money in".
     time_outgoing_metrics = [m for m in ROLE_METRICS if m != "Income"]
     time_incoming_metrics = [m for m in ROLE_METRICS if m != "Spend"]
 
     if not filtered.empty:
         monthly_spend = filtered[(filtered["role"] == "spend") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Spend")
         monthly_income = filtered[(filtered["role"] == "income") & (filtered["amount"] > 0)].groupby("month")["amount"].sum().rename("Income")
-        monthly_invested = filtered[(filtered["role"] == "investment") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Invested")
-        monthly_saved = filtered[(filtered["role"] == "saving") & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Saved")
+        monthly_invested = filtered[filtered["role"] == "investment"].groupby("month")["amount"].sum().mul(-1).rename("Invested")
+        monthly_saved = filtered[filtered["role"] == "saving"].groupby("month")["amount"].sum().mul(-1).rename("Saved")
         monthly_transferred = filtered[filtered["role"].isin(["transfer", "excluded"]) & (filtered["amount"] < 0)].groupby("month")["amount"].sum().abs().rename("Transferred")
         monthly_totals_raw = (
             pd.concat([monthly_spend, monthly_income, monthly_invested, monthly_saved, monthly_transferred], axis=1)
@@ -831,16 +857,15 @@ with tab_time:
                         help="Net as a percentage of Income. Blank when there was no income that month."),
                     "Invested": st.column_config.NumberColumn(
                         "Invested", format="£%.2f",
-                        help="Money moved into investment categories (outgoing side only, so a "
-                             "withdrawal can't cancel out a contribution)."),
+                        help="Net money moved into investment categories (contributions minus withdrawals)."),
                     "Investment Rate": st.column_config.NumberColumn(
                         "Investment Rate", format="%.1f%%",
                         help="Invested as a percentage of Income. Blank when there was no income that month."),
                     "Saved": st.column_config.NumberColumn(
                         "Saved", format="£%.2f",
-                        help="Money moved into savings categories (outgoing side only, so a "
-                             "withdrawal can't cancel out a contribution) -- mechanically identical "
-                             "to Invested, kept separate so it isn't mixed with genuine investing."),
+                        help="Net money moved into savings categories (deposits minus withdrawals) -- "
+                             "mechanically identical to Invested, kept separate so it isn't mixed with "
+                             "genuine investing."),
                     "Saved Rate": st.column_config.NumberColumn(
                         "Saved Rate", format="%.1f%%",
                         help="Saved as a percentage of Income. Blank when there was no income that month."),
@@ -1032,30 +1057,27 @@ with tab_drill:
         )
         cat_df = classified[classified["llm_category"] == selected_cat]
 
-        # Roles like "transfer"/"investment" are bidirectional (e.g. Transfers
-        # has both an Inbound and an Outbound subcategory) -- restricting each
-        # to its expected direction (income=incoming, everything else=outgoing)
-        # means summing signed amounts can never let an inflow cancel an
-        # outflow, matching how Overview computes these same totals.
+        # "saving"/"investment" net their two sides together here too (same
+        # pot/account cycling, matching how Overview computes these same
+        # totals). "transfer"/"excluded" stay direction-restricted (outgoing
+        # only, incoming as its own card below) since that bucket can mix
+        # genuinely unrelated inbound and outbound movements.
         role_sign = {"income": "positive", "spend": "negative", "investment": "negative",
                      "saving": "negative", "transfer": "negative", "excluded": "negative"}
         income_cat = cat_df.loc[(cat_df["role"] == "income") & (cat_df["amount"] > 0), "amount"].sum()
         spend_cat = abs(cat_df.loc[(cat_df["role"] == "spend") & (cat_df["amount"] < 0), "amount"].sum())
-        invested_cat = abs(cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] < 0), "amount"].sum())
-        saved_cat = abs(cat_df.loc[(cat_df["role"] == "saving") & (cat_df["amount"] < 0), "amount"].sum())
+        invested_cat = -cat_df.loc[cat_df["role"] == "investment", "amount"].sum()
+        saved_cat = -cat_df.loc[cat_df["role"] == "saving", "amount"].sum()
         excluded_cat = abs(cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] < 0), "amount"].sum())
         net_cat = income_cat - spend_cat
 
-        # Invested/Saved/Transferred-Excluded only show their outgoing side
-        # above -- but since each can also carry an incoming side under the
-        # same role (e.g. an investment withdrawal, or an inbound transfer/
-        # refund), a category with ONLY incoming activity would otherwise show
-        # £0.00 here while the subcategory chart below it shows a real,
-        # nonzero amount. Surface the incoming side as its own card whenever
+        # Transferred-Excluded only shows its outgoing side above -- but it
+        # can also carry an incoming side under the same role (e.g. an
+        # inbound transfer/refund), which may be unrelated money rather than
+        # the same pot/account cycling. Surface it as its own card whenever
         # it's nonzero so the cards never disagree with what the charts are
-        # showing.
-        invested_in_cat = cat_df.loc[(cat_df["role"] == "investment") & (cat_df["amount"] > 0), "amount"].sum()
-        saved_in_cat = cat_df.loc[(cat_df["role"] == "saving") & (cat_df["amount"] > 0), "amount"].sum()
+        # showing. Invested/Saved don't need this -- they're already netted
+        # above.
         excluded_in_cat = cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] > 0), "amount"].sum()
 
         stat_color = "rgba(127, 140, 141, 0.16)"
@@ -1074,29 +1096,19 @@ with tab_drill:
                         unsafe_allow_html=True)
 
         # (display label, color key into row_colors, value, tooltip)
-        invested_label = "Invested (Outgoing)" if invested_in_cat > 0 else "Invested"
-        saved_label = "Saved (Outgoing)" if saved_in_cat > 0 else "Saved"
         excluded_label = "Transferred / Excluded (Outgoing)" if excluded_in_cat > 0 else "Transferred / Excluded"
         role_cards = [
             ("Income", "Income", income_cat,
              "Every transaction in this category whose role is Income (incoming side only)."),
             ("Spend", "Spend", spend_cat,
              "Every transaction in this category whose role is Spend (outgoing side only)."),
-            (invested_label, "Invested", invested_cat,
-             "Money moved into investment categories here (outgoing side only, so a withdrawal can't cancel a contribution)."),
-            (saved_label, "Saved", saved_cat,
-             "Money moved into savings categories here (outgoing side only, so a withdrawal can't cancel a contribution)."),
+            ("Invested", "Invested", invested_cat,
+             "Net money moved into investment categories here (contributions minus withdrawals)."),
+            ("Saved", "Saved", saved_cat,
+             "Net money moved into savings categories here (deposits minus withdrawals)."),
             (excluded_label, "Transferred / Excluded", excluded_cat,
              "Money moved to transfer or excluded categories here (outgoing side only)."),
         ]
-        if invested_in_cat > 0:
-            role_cards.append(("Invested (Incoming)", "Invested", invested_in_cat,
-                "Money that came back out of investment categories here (e.g. a withdrawal or sale) -- "
-                "kept separate so it can't cancel out the outgoing figure."))
-        if saved_in_cat > 0:
-            role_cards.append(("Saved (Incoming)", "Saved", saved_in_cat,
-                "Money that came back out of savings categories here (e.g. a withdrawal) -- "
-                "kept separate so it can't cancel out the outgoing figure."))
         if excluded_in_cat > 0:
             role_cards.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in_cat,
                 "Money that came in through transfer or excluded categories here (e.g. a refund or an inbound "
