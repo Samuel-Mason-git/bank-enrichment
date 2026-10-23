@@ -204,6 +204,35 @@ class TelegramBot:
             "reply_markup": {"inline_keyboard": buttons},
         })
 
+    def send_rule_suggestion(self, chat_id: int, suggestion: dict):
+        """Sent when the local pipeline finds a (merchant/counterparty,
+        category, subcategory) pattern that has repeated 5+ times with zero
+        disagreement -- offers to turn it into a Rule so future transactions
+        from the same merchant classify themselves without a card ever going
+        out at all."""
+        field_label = "Merchant" if suggestion["match_field"] == "merchant_name" else "Counterparty"
+        lines = [
+            "💡 <b>Rule suggestion</b>",
+            "",
+            f"<b>{suggestion['txn_count']}</b> transactions from {field_label.lower()} "
+            f"<b>{html.escape(suggestion['match_value'])}</b> have always been categorized as "
+            f"<b>{html.escape(suggestion['category'])} › {html.escape(suggestion['subcategory'])}</b>.",
+            "",
+            f'Suggested context: "{html.escape(suggestion["auto_context"])}"',
+        ]
+        if suggestion.get("llm_reasoning"):
+            lines += ["", f"🤖 {html.escape(suggestion['llm_reasoning'])}"]
+        lines += ["", "Create a rule so future ones skip the card entirely?"]
+        return self._post("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Create rule", "callback_data": f"rulesug:approve:{suggestion['id']}"},
+                {"text": "❌ No thanks", "callback_data": f"rulesug:deny:{suggestion['id']}"},
+            ]]},
+        })
+
     def send_card(self, payload, follow_up: int = 0, quick_categories: list[dict] | None = None):
         from datetime import datetime
         data = payload['data']
@@ -226,74 +255,69 @@ class TelegramBot:
         emoji = merchant.get('emoji', '💸') if is_merchant else '💸'
         merchant_name = merchant.get('name') if is_merchant else None
 
+        created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(created)
+        date_str = dt.strftime("%d %b %Y · %H:%M")
+
+        counterparty = data.get('counterparty')
+        is_counterparty = isinstance(counterparty, dict)
+
+        counterparty_name = counterparty.get('name') if is_counterparty else None
+        merchant_category = merchant.get('category', '').replace('_', ' ').capitalize() if is_merchant else None
+        transaction_category = data.get('category', '').replace('_', ' ').capitalize()
+        settled = "Settled" if data.get('settled') else "Pending"
+
+        addr = merchant.get('address', {}) if is_merchant else {}
+        location_parts = [p for p in [
+            addr.get('address'), addr.get('city'),
+            addr.get('postcode'), addr.get('region'), addr.get('country')
+        ] if p]
+        location = ", ".join(location_parts)
+
+        lines = []
         if follow_up > 0:
             follow_up_labels = {1: "1 hour", 2: "1 day", 3: "2 days"}
-            lines = [
+            lines += [
                 f"⏰ <b>Reminder — {follow_up_labels.get(follow_up, f'#{follow_up}')} ago, still unenriched</b>",
                 "",
-                f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>"
-                + (f" · {merchant_name}" if merchant_name else ""),
-                f"📝 {data.get('description', '—')}",
-                "",
-                f"🔖 <code>{data['id']}</code>",
-            ]
-            text = "\n".join(lines)
-        else:
-            created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
-            dt = datetime.fromisoformat(created)
-            date_str = dt.strftime("%d %b %Y · %H:%M")
-
-            counterparty = data.get('counterparty')
-            is_counterparty = isinstance(counterparty, dict)
-
-            counterparty_name = counterparty.get('name') if is_counterparty else None
-            merchant_category = merchant.get('category', '').replace('_', ' ').capitalize() if is_merchant else None
-            transaction_category = data.get('category', '').replace('_', ' ').capitalize()
-            settled = "Settled" if data.get('settled') else "Pending"
-
-            addr = merchant.get('address', {}) if is_merchant else {}
-            location_parts = [p for p in [
-                addr.get('address'), addr.get('city'),
-                addr.get('postcode'), addr.get('region'), addr.get('country')
-            ] if p]
-            location = ", ".join(location_parts)
-
-            lines = [
-                f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
-                "",
             ]
 
-            if merchant_name:
-                lines.append(f"🏪 <b>Merchant</b>: {merchant_name}")
-            if counterparty_name:
-                lines.append(f"👤 <b>Counterparty</b>: {counterparty_name}")
-                if counterparty.get('sort_code') and counterparty.get('account_number'):
-                    lines.append(f"🏦 <b>Bank</b>: {counterparty['sort_code']} · {counterparty['account_number']}")
+        lines += [
+            f"{emoji} {'🔴' if amount_pence < 0 else '🟢'} <b>{amount_str}</b>",
+            "",
+        ]
 
-            lines.append(f"📝 <b>Description</b>: {data.get('description', '—')}")
-            if merchant_category:
-                lines.append(f"🏷 <b>Merchant Category</b>: {merchant_category}")
-            lines.append(f"📂 <b>Transaction Category</b>: {transaction_category or '—'}")
-            lines += [
-                f"💱 <b>Currency</b>: {currency}",
-                f"📋 <b>Status</b>: {settled}",
-                f"🕐 <b>Created</b>: {date_str}",
-            ]
+        if merchant_name:
+            lines.append(f"🏪 <b>Merchant</b>: {merchant_name}")
+        if counterparty_name:
+            lines.append(f"👤 <b>Counterparty</b>: {counterparty_name}")
+            if counterparty.get('sort_code') and counterparty.get('account_number'):
+                lines.append(f"🏦 <b>Bank</b>: {counterparty['sort_code']} · {counterparty['account_number']}")
 
-            if data.get('settled'):
-                settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
-                settled_dt = datetime.fromisoformat(settled_str)
-                lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
+        lines.append(f"📝 <b>Description</b>: {data.get('description', '—')}")
+        if merchant_category:
+            lines.append(f"🏷 <b>Merchant Category</b>: {merchant_category}")
+        lines.append(f"📂 <b>Transaction Category</b>: {transaction_category or '—'}")
+        lines += [
+            f"💱 <b>Currency</b>: {currency}",
+            f"📋 <b>Status</b>: {settled}",
+            f"🕐 <b>Created</b>: {date_str}",
+        ]
 
-            if location:
-                lines.append(f"📍 <b>Location</b>: {location}")
+        if data.get('settled'):
+            settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
+            settled_dt = datetime.fromisoformat(settled_str)
+            lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
 
-            lines += [
-                "",
-                f"🔖 <b>ID</b>: <code>{data['id']}</code>",
-            ]
+        if location:
+            lines.append(f"📍 <b>Location</b>: {location}")
 
-            text = "\n".join(lines)
+        lines += [
+            "",
+            f"🔖 <b>ID</b>: <code>{data['id']}</code>",
+        ]
+
+        text = "\n".join(lines)
 
         keyboard_rows = []
         row = []

@@ -78,6 +78,27 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     decided_at        TIMESTAMP
 );
 
+-- Recurring-pattern rule suggestions, found by the local pipeline scanning
+-- already-classified transactions for a (merchant/counterparty, category,
+-- subcategory) combination that has never once varied. Entirely server-side
+-- -- unlike taxonomy/category proposals, approving one just inserts
+-- straight into `rules`, since Rules already live in this database and need
+-- no local taxonomy to apply.
+CREATE TABLE IF NOT EXISTS rule_suggestions (
+    id            INTEGER      PRIMARY KEY,
+    match_field   VARCHAR(255) NOT NULL,
+    match_value   VARCHAR(255) NOT NULL,
+    category      VARCHAR(255) NOT NULL,
+    subcategory   VARCHAR(255) NOT NULL,
+    txn_count     INTEGER      NOT NULL DEFAULT 0,
+    auto_context  VARCHAR(255) NOT NULL DEFAULT '',
+    status        VARCHAR(20)  NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied')),
+    proposed_at   TIMESTAMP    NOT NULL,
+    decided_at    TIMESTAMP,
+    UNIQUE (match_field, match_value)
+);
+
 CREATE TABLE IF NOT EXISTS quick_categories (
     id            INTEGER      PRIMARY KEY,
     category      VARCHAR(255) NOT NULL,

@@ -42,6 +42,18 @@
                     </label>
                 </div>
             </div>
+            {% set _txns = transactions | default([]) %}
+            {% if _txns %}
+            <div class="form-group" style="margin-top:10px;">
+                <label for="rule-tx-picker">Fill from a queue transaction</label>
+                <select id="rule-tx-picker" onchange="fillFromTransaction(this.value)" style="width:100%;">
+                    <option value="">— select to auto-fill both this form and Test Rules below —</option>
+                    {% for tx in _txns %}
+                    <option value="{{ tx.id }}">{{ tx.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
             <div style="margin:10px 0 4px;">
                 <span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;">Second Condition <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — both must match)</span></span>
             </div>
@@ -74,6 +86,7 @@
                 <span></span>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <button type="button" id="cancel-edit" onclick="cancelEdit()" class="btn-row-enrich" style="display:none;">Cancel</button>
+                    <button type="button" onclick="testCandidateRule()" class="btn-row-enrich">🧪 Test this rule</button>
                     <button type="submit" id="submit-btn" class="btn-add-rule">+ Add Rule</button>
                 </div>
             </div>
@@ -83,18 +96,17 @@
     <div class="section-label">Test Rules</div>
     <div class="rules-form">
         <form method="POST" action="/dashboard/rules/test" id="test-form">
+            <input type="hidden" id="candidate_match_field" name="candidate_match_field">
+            <input type="hidden" id="candidate_match_type" name="candidate_match_type">
+            <input type="hidden" id="candidate_match_value" name="candidate_match_value">
+            <input type="hidden" id="candidate_match_field_2" name="candidate_match_field_2">
+            <input type="hidden" id="candidate_match_type_2" name="candidate_match_type_2">
+            <input type="hidden" id="candidate_match_value_2" name="candidate_match_value_2">
+            <input type="hidden" id="candidate_auto_context" name="candidate_auto_context">
+            <input type="hidden" id="candidate_auto_skip" name="candidate_auto_skip">
             {% set _txns = transactions | default([]) %}
-            {% if _txns %}
-            <div class="form-group" style="margin-bottom:14px;">
-                <label for="tx-picker">Pick a transaction from queue</label>
-                <select id="tx-picker" onchange="fillFromTransaction(this.value)" style="width:100%;">
-                    <option value="">— select to auto-fill fields below —</option>
-                    {% for tx in _txns %}
-                    <option value="{{ tx.id }}">{{ tx.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;margin-bottom:8px;">Or fill in manually</div>
+            {% if not _txns %}
+            <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#a1a1aa;margin-bottom:8px;">Fill in manually, or pick a transaction above to auto-fill</div>
             {% endif %}
             <div class="form-grid form-grid-test">
                 <div class="form-group">
@@ -128,7 +140,7 @@
         </form>
         {% if test_results is defined %}
         <div style="margin-top:16px;border-top:1px solid #e4e4e7;padding-top:16px;">
-            {% set matched = test_results | selectattr('matched') | list %}
+            {% set matched = test_results | rejectattr('is_candidate') | selectattr('matched') | list %}
             {% if matched %}
             <div style="margin-bottom:8px;font-size:0.8rem;font-weight:600;color:#16a34a;">{{ matched | length }} rule{{ 's' if matched | length != 1 else '' }} matched — first match wins:</div>
             {% else %}
@@ -138,7 +150,7 @@
                 <thead><tr><th>Rule</th><th>Enabled</th><th>Result</th><th>Would apply</th></tr></thead>
                 <tbody>
                 {% for r in test_results %}
-                <tr style="{% if r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
+                <tr style="{% if r.is_candidate %}background:rgba(155,89,182,0.08);{% elif r.matched %}background:rgba(22,163,74,0.06);{% endif %}">
                     <td class="rule-name">{{ r.name }}</td>
                     <td><span class="badge {% if r.enabled %}badge-enabled{% else %}badge-disabled{% endif %}">{% if r.enabled %}yes{% else %}no{% endif %}</span></td>
                     <td>{% if r.matched %}<span class="badge badge-enabled">✓ match</span>{% else %}<span style="color:#d4d4d8;">—</span>{% endif %}</td>
@@ -216,6 +228,32 @@ function fillFromTransaction(id) {
     document.getElementById("test-category").value = tx.category;
     document.getElementById("test-scheme").value = tx.scheme;
     document.getElementById("test-amount").value = tx.amount;
+
+    // Best identifying field for a new rule, in the same preference order
+    // Rules already use elsewhere: a merchant name beats a counterparty name
+    // (direct debits/transfers rarely populate the former), which beats the
+    // free-text description (least reliable to match reliably on).
+    let field, value;
+    if (tx.merchant_name) { field = "merchant_name"; value = tx.merchant_name; }
+    else if (tx.counterparty_name) { field = "counterparty_name"; value = tx.counterparty_name; }
+    else { field = "description"; value = tx.description; }
+
+    document.getElementById("match_field").value = field;
+    updateMatchType();
+    document.getElementById("match_value").value = value;
+    document.getElementById("auto_context").value = tx.user_context || "";
+}
+
+function testCandidateRule() {
+    document.getElementById("candidate_match_field").value = document.getElementById("match_field").value;
+    document.getElementById("candidate_match_type").value = document.getElementById("match_type").value;
+    document.getElementById("candidate_match_value").value = document.getElementById("match_value").value;
+    document.getElementById("candidate_match_field_2").value = document.getElementById("match_field_2").value;
+    document.getElementById("candidate_match_type_2").value = document.getElementById("match_type_2").value;
+    document.getElementById("candidate_match_value_2").value = document.getElementById("match_value_2").value;
+    document.getElementById("candidate_auto_context").value = document.getElementById("auto_context").value;
+    document.getElementById("candidate_auto_skip").value = document.getElementById("auto_skip").checked ? "on" : "";
+    document.getElementById("test-form").submit();
 }
 
 const TEXT_TYPES = [

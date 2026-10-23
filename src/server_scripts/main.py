@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
 import uvicorn
+import html
 import logging
 import secrets
 import time
@@ -292,6 +293,21 @@ class CategoryProposalEntry(BaseModel):
 class SyncCategoryProposalsRequest(BaseModel):
     proposals: list[CategoryProposalEntry]
 
+
+class RuleSuggestionCandidate(BaseModel):
+    match_field: str
+    match_value: str
+    category: str
+    subcategory: str
+    txn_count: int = 0
+    auto_context: str = ""
+    # Not persisted -- only ever shown on the initial card, not needed again
+    # once a decision is made.
+    llm_reasoning: str = ""
+
+class SyncRuleSuggestionsRequest(BaseModel):
+    candidates: list[RuleSuggestionCandidate]
+
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     body = await request.body()
@@ -435,7 +451,8 @@ async def recieve_telegram(request: Request):
                 _sessions[chat_id].get("timeout_task") and _sessions[chat_id]["timeout_task"].cancel()
             task = asyncio.create_task(_enrich_timeout(chat_id, transaction_id))
             _sessions[chat_id] = {"transaction_id": transaction_id, "timeout_task": task}
-            bot.send_message(chat_id, f"Enriching <code>{transaction_id}</code>\n\nWhat was this transaction? Send a one-line description.")
+            label = _txn_short_label(get_con(), transaction_id)
+            bot.send_message(chat_id, f"Enriching <b>{html.escape(label)}</b>\n\nWhat was this transaction? Send a one-line description.")
 
         elif cq.data and cq.data.startswith("skip_confirm:"):
             transaction_id = cq.data.split(":", 1)[1]
@@ -570,6 +587,48 @@ async def recieve_telegram(request: Request):
                 f"Category proposal {local_id} {action}"
                 + (f" (option {option_index})" if action == "select" else "") + " via Telegram"
             )
+
+        elif cq.data and cq.data.startswith("rulesug:"):
+            _, action, sid = cq.data.split(":", 2)
+            suggestion_id = int(sid)
+            try:
+                con = get_con()
+                row = con.execute(
+                    "SELECT match_field, match_value, auto_context, status FROM rule_suggestions WHERE id = ?",
+                    [suggestion_id]
+                ).fetchone()
+                if not row:
+                    bot.send_message(chat_id, "That suggestion no longer exists.")
+                    return {"ok": True}
+                match_field, match_value, auto_context, current = row
+                if current != "pending":
+                    bot.send_message(chat_id, f"Already {current}.")
+                    return {"ok": True}
+                if action == "approve":
+                    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
+                    con.execute(
+                        "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context) "
+                        "VALUES (?, ?, ?, 'exact', ?, ?)",
+                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context]
+                    )
+                    con.execute(
+                        "UPDATE rule_suggestions SET status = 'approved', decided_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                    )
+                else:
+                    con.execute(
+                        "UPDATE rule_suggestions SET status = 'denied', decided_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                    )
+            except Exception as e:
+                log.error(f"Failed to record rule suggestion decision {suggestion_id}: {e}", exc_info=True)
+                bot.send_message(chat_id, "Something went wrong. Try again.")
+                return {"ok": True}
+            if action == "approve":
+                bot.send_message(chat_id, f"✅ Rule created for <b>{html.escape(match_value)}</b>.")
+            else:
+                bot.send_message(chat_id, "👍 Won't suggest that one again.")
+            log.info(f"Rule suggestion {suggestion_id} {action}d via Telegram")
 
         elif cq.data and cq.data.startswith("quickcat:"):
             _, transaction_id, quick_id = cq.data.split(":", 2)
@@ -769,32 +828,55 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
         "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
     ).fetchall()
 
-    results = []
-    for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
+    def get_field(field):
+        if field == "merchant_name": return test_data["merchant_name"] or None
+        if field == "description": return test_data["description"] or None
+        if field == "counterparty_name": return test_data["counterparty_name"] or None
+        if field == "category": return test_data["category"] or None
+        if field == "scheme": return test_data["scheme"] or None
+        if field == "amount": return amount_pence
+        return None
 
-        def get_field(field):
-            if field == "merchant_name": return test_data["merchant_name"] or None
-            if field == "description": return test_data["description"] or None
-            if field == "counterparty_name": return test_data["counterparty_name"] or None
-            if field == "category": return test_data["category"] or None
-            if field == "scheme": return test_data["scheme"] or None
-            if field == "amount": return amount_pence
-            return None
-
+    def evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled) -> bool:
         try:
             v1 = get_field(match_field)
-            cond1 = v1 is not None and _matches(v1, match_type, match_value)
+            cond1 = v1 is not None and match_field and match_type and match_value and _matches(v1, match_type, match_value)
             cond2 = True
             if match_field_2 and match_type_2 and match_value_2:
                 v2 = get_field(match_field_2)
                 cond2 = v2 is not None and _matches(v2, match_type_2, match_value_2)
-            matched = bool(enabled) and cond1 and cond2
-        except Exception as e:
-            matched = False
+            return bool(enabled) and cond1 and cond2
+        except Exception:
+            return False
 
+    results = []
+
+    # A not-yet-saved rule, carried over from the Add Rule form by the "Test
+    # this rule" button -- lets you confirm it actually matches the picked
+    # transaction before committing to it, same as any saved rule above it.
+    candidate_field = (form.get("candidate_match_field") or "").strip()
+    if candidate_field:
+        candidate_matched = evaluate(
+            candidate_field,
+            (form.get("candidate_match_type") or "").strip(),
+            (form.get("candidate_match_value") or "").strip(),
+            (form.get("candidate_match_field_2") or "").strip() or None,
+            (form.get("candidate_match_type_2") or "").strip() or None,
+            (form.get("candidate_match_value_2") or "").strip() or None,
+            enabled=True,
+        )
         results.append({
-            "id": rule_id, "name": name, "enabled": enabled,
+            "id": None, "name": "🆕 Your new rule (not saved)", "enabled": True,
+            "matched": candidate_matched, "is_candidate": True,
+            "auto_context": (form.get("candidate_auto_context") or "").strip(),
+            "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
+        })
+
+    for rule in rules:
+        rule_id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip = rule
+        matched = evaluate(match_field, match_type, match_value, match_field_2, match_type_2, match_value_2, enabled)
+        results.append({
+            "id": rule_id, "name": name, "enabled": enabled, "is_candidate": False,
             "matched": matched, "auto_context": auto_context, "auto_skip": bool(auto_skip),
         })
 
@@ -867,9 +949,27 @@ def _get_rules(con):
     ]
 
 
+def _txn_short_label(con, transaction_id: str) -> str:
+    """One line identifying a transaction in a chat message -- merchant (or
+    counterparty, or description, whichever is actually populated) plus the
+    signed amount, so "Enriching tx_0000..." doesn't leave the user guessing
+    which of several pending transactions they just tapped."""
+    row = con.execute("SELECT payload FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
+    if not row:
+        return transaction_id
+    data = json.loads(row[0]).get("data", {})
+    amount_pence = data.get("amount", 0)
+    merchant = (data.get("merchant") or {}).get("name") or ""
+    counterparty = (data.get("counterparty") or {}).get("name") or ""
+    description = data.get("description") or ""
+    display = merchant or counterparty or description or transaction_id
+    sign = "-" if amount_pence < 0 else "+"
+    return f"{display} · {sign}£{abs(amount_pence) / 100:.2f}"
+
+
 def _get_test_transactions(con):
     rows = con.execute(
-        "SELECT id, payload, received_at FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
+        "SELECT id, payload, received_at, user_context FROM webhook_queue ORDER BY received_at DESC LIMIT 100"
     ).fetchall()
     txns = []
     for row in rows:
@@ -879,7 +979,8 @@ def _get_test_transactions(con):
         counterparty = (data.get("counterparty") or {}).get("name") or ""
         description = data.get("description") or ""
         display = merchant or counterparty or description or row[0]
-        amount_str = f"£{abs(amount_pence) / 100:.2f}"
+        sign = "-" if amount_pence < 0 else "+"
+        amount_str = f"{sign}£{abs(amount_pence) / 100:.2f}"
         date_str = str(row[2])[:10]
         txns.append({
             "id": row[0],
@@ -889,7 +990,11 @@ def _get_test_transactions(con):
             "counterparty_name": counterparty,
             "category": data.get("category") or "",
             "scheme": data.get("scheme") or "",
-            "amount": round(abs(amount_pence) / 100, 2),
+            # Signed, not abs() -- a candidate amount_negative/amount_positive
+            # rule can only be tested meaningfully against the real direction
+            # the money moved.
+            "amount": round(amount_pence / 100, 2),
+            "user_context": row[3] or "",
         })
     return txns
 
@@ -1224,6 +1329,63 @@ async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: s
                 "txn_count": p.txn_count, "examples": p.examples,
             })
     log.info(f"Received {len(stored)} category proposal(s) and sent cards")
+    return {"received": len(stored)}
+
+
+def _rule_suggestion_already_covered(con, match_field: str, match_value: str) -> bool:
+    """Whether an existing ENABLED rule already catches this pattern's
+    identifying value on its own. A rule with a second condition can't be
+    verified without a full transaction to test it against, so it's treated
+    as not covering this -- erring toward still suggesting rather than
+    silently missing a genuinely useful one."""
+    from check_rules import _matches
+    rows = con.execute(
+        """SELECT match_type, match_value FROM rules
+           WHERE enabled = TRUE AND match_field = ?
+           AND (match_field_2 IS NULL OR match_field_2 = '')""",
+        [match_field]
+    ).fetchall()
+    for match_type, existing_value in rows:
+        try:
+            if _matches(match_value, match_type, existing_value):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+@app.post('/sync-rule-suggestions')
+async def sync_rule_suggestions(body: SyncRuleSuggestionsRequest, api_key: str = Security(API_KEY_HEADER)):
+    """Store genuinely new rule suggestions and send their cards. Skips a
+    candidate already asked about -- in any status, so a denied one stays
+    denied -- and one an existing enabled rule already covers, since neither
+    needs asking about again."""
+    await verify_api_key(api_key)
+    con = get_con()
+    stored = []
+    for c in body.candidates:
+        if con.execute(
+            "SELECT 1 FROM rule_suggestions WHERE match_field = ? AND match_value = ?",
+            [c.match_field, c.match_value]
+        ).fetchone():
+            continue
+        if _rule_suggestion_already_covered(con, c.match_field, c.match_value):
+            continue
+        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
+        con.execute(
+            """INSERT INTO rule_suggestions
+               (id, match_field, match_value, category, subcategory, txn_count, auto_context, status, proposed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            [next_id, c.match_field, c.match_value, c.category, c.subcategory, c.txn_count, c.auto_context,
+             time.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        stored.append({"id": next_id, **c.model_dump()})
+
+    if stored:
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+        for s in stored:
+            bot.send_rule_suggestion(chat_id, s)
+    log.info(f"Received {len(stored)} rule suggestion(s) and sent cards")
     return {"received": len(stored)}
 
 
