@@ -148,6 +148,12 @@ history yet, alongside the usual Enrich and Skip buttons. Tapping one instantly 
 category as your context — no typing required, and the LLM classifier still runs afterwards 
 as normal so it stays part of the same taxonomy.
 
+The per-merchant personalization depends on Monzo actually sending a `merchant` name on new
+transactions, which in turn depends on Monzo's own access confirmation staying current — see
+"Set Up the Monzo OAuth Confidential Client" in SETUP.md. If that lapses, categorization itself
+keeps working fine from the raw description text; only the personalized quick-pick buttons fall
+back to a generic top-5 list instead of that merchant's own history.
+
 ## Weekly & Monthly Summaries
 
 The daily processing script automatically sends two types of Telegram summary.

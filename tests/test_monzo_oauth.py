@@ -84,3 +84,72 @@ class TestPing:
         with patch("monzo_oauth.requests.get", return_value=_response(status_code=200)) as mock_get:
             assert monzo_oauth.ping() is True
         assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer my-access"
+
+
+class TestRunMonzoRefresh:
+    @pytest.fixture(autouse=True)
+    def _reset_alert_flag(self):
+        monzo_oauth._alerted_for_current_failure = False
+        yield
+        monzo_oauth._alerted_for_current_failure = False
+
+    def test_no_prior_tokens_sends_no_alert(self, _tokens_path):
+        """Before the one-time authorization has ever happened -- expected
+        state, not a failure."""
+        bot = MagicMock()
+        with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
+            monzo_oauth.run_monzo_refresh(bot)
+        bot.send_alert.assert_not_called()
+
+    def test_failure_after_prior_success_sends_one_alert(self, _tokens_path, monkeypatch):
+        monkeypatch.setattr(monzo_oauth, "TELEGRAM_CHAT_ID", "12345")
+        _tokens_path.write_text(json.dumps({
+            "access_token": "a", "refresh_token": "r",
+            "obtained_at": time.time(), "expires_at": time.time() + 100,
+        }))
+        bot = MagicMock()
+        with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
+            monzo_oauth.run_monzo_refresh(bot)
+        bot.send_alert.assert_called_once()
+        assert bot.send_alert.call_args.args[0] == 12345
+
+    def test_does_not_re_alert_on_a_second_consecutive_failure(self, _tokens_path, monkeypatch):
+        monkeypatch.setattr(monzo_oauth, "TELEGRAM_CHAT_ID", "12345")
+        _tokens_path.write_text(json.dumps({
+            "access_token": "a", "refresh_token": "r",
+            "obtained_at": time.time(), "expires_at": time.time() + 100,
+        }))
+        bot = MagicMock()
+        with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
+            monzo_oauth.run_monzo_refresh(bot)
+            monzo_oauth.run_monzo_refresh(bot)
+        bot.send_alert.assert_called_once()
+
+    def test_alerts_again_after_a_success_in_between(self, _tokens_path, monkeypatch):
+        monkeypatch.setattr(monzo_oauth, "TELEGRAM_CHAT_ID", "12345")
+        _tokens_path.write_text(json.dumps({
+            "access_token": "a", "refresh_token": "r",
+            "obtained_at": time.time(), "expires_at": time.time() + 100,
+        }))
+        bot = MagicMock()
+        with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
+            monzo_oauth.run_monzo_refresh(bot)
+        with patch("monzo_oauth.requests.post", return_value=_response(
+                access_token="a2", refresh_token="r2", expires_in=21600)):
+            monzo_oauth.run_monzo_refresh(bot)
+        with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
+            monzo_oauth.run_monzo_refresh(bot)
+        assert bot.send_alert.call_count == 2
+
+    def test_success_calls_ping_with_the_fresh_token(self, _tokens_path):
+        _tokens_path.write_text(json.dumps({
+            "access_token": "old", "refresh_token": "old-r",
+            "obtained_at": time.time(), "expires_at": time.time() + 100,
+        }))
+        bot = MagicMock()
+        with patch("monzo_oauth.requests.post", return_value=_response(
+                access_token="fresh", refresh_token="r2", expires_in=21600)):
+            with patch("monzo_oauth.requests.get", return_value=_response(status_code=200)) as mock_get:
+                monzo_oauth.run_monzo_refresh(bot)
+        assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer fresh"
+        bot.send_alert.assert_not_called()
