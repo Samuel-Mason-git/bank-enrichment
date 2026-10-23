@@ -383,72 +383,83 @@ class TestRuleTester:
 
 
 class TestCandidateRuleTester:
-    """The Add Rule form's "Test this rule" button carries its current,
-    not-yet-saved fields over as candidate_* form fields -- lets you confirm
-    a new rule actually matches the transaction it was built from before
-    committing to it."""
+    """The Add Rule form's "Test this rule" button runs the not-yet-saved
+    rule against everything sitting in the queue and lists which
+    transactions it would catch -- not whether it matches one hand-picked
+    transaction, and not mixed into the saved-rules table."""
 
     def _run(self, server_con, form_data: dict):
         req = _form_req(form_data)
         with patch("main.get_con", return_value=server_con):
             return asyncio.run(main.test_rules(req, _CREDS))
 
-    def test_matching_candidate_appears_first_and_flagged(self, server_con):
-        resp = self._run(server_con, {
-            "description": "PureGym monthly", "amount": "9.99",
-            "candidate_match_field": "description", "candidate_match_type": "contains",
-            "candidate_match_value": "gym", "candidate_auto_context": "Gym membership",
-        })
-        results = resp.context["test_results"]
-        assert results[0]["is_candidate"] is True
-        assert results[0]["matched"] is True
-        assert results[0]["auto_context"] == "Gym membership"
+    def _gym_candidate(self, **extra):
+        return {"candidate_match_field": "description", "candidate_match_type": "contains",
+                "candidate_match_value": "gym", **extra}
 
-    def test_non_matching_candidate_flagged_but_not_matched(self, server_con):
-        resp = self._run(server_con, {
-            "description": "Tesco groceries",
-            "candidate_match_field": "description", "candidate_match_type": "contains",
-            "candidate_match_value": "gym",
-        })
-        results = resp.context["test_results"]
-        assert results[0]["is_candidate"] is True
-        assert results[0]["matched"] is False
+    def test_lists_every_queue_transaction_the_rule_matches(self, server_con):
+        _insert_txn(server_con, "tx1", description="PureGym monthly")
+        _insert_txn(server_con, "tx2", description="The Gym Group")
+        _insert_txn(server_con, "tx3", description="Tesco groceries")
+        resp = self._run(server_con, self._gym_candidate())
+        result = resp.context["candidate_results"]
+        assert {t["id"] for t in result["matches"]} == {"tx1", "tx2"}
+        assert result["queue_size"] == 3
 
-    def test_no_candidate_field_means_no_extra_row(self, server_con):
+    def test_includes_already_enriched_queue_transactions_with_their_status(self, server_con):
+        _insert_txn(server_con, "tx1", description="PureGym", status="pending")
+        _insert_txn(server_con, "tx2", description="PureGym", status="enriched", user_context="Gym")
+        resp = self._run(server_con, self._gym_candidate())
+        statuses = {t["id"]: t["status"] for t in resp.context["candidate_results"]["matches"]}
+        assert statuses == {"tx1": "pending", "tx2": "enriched"}
+
+    def test_no_queue_matches_is_an_empty_list_not_an_error(self, server_con):
+        _insert_txn(server_con, "tx1", description="Tesco groceries")
+        resp = self._run(server_con, self._gym_candidate())
+        assert resp.context["candidate_results"]["matches"] == []
+        assert "doesn't match any" in resp.body.decode()
+
+    def test_second_condition_must_also_match(self, server_con):
+        _insert_txn(server_con, "tx1", description="gym payment", merchant="PureGym")
+        _insert_txn(server_con, "tx2", description="gym payment", merchant="Unknown")
+        resp = self._run(server_con, self._gym_candidate(
+            candidate_match_field_2="merchant_name", candidate_match_type_2="contains",
+            candidate_match_value_2="pure"))
+        assert [t["id"] for t in resp.context["candidate_results"]["matches"]] == ["tx1"]
+
+    def test_amount_direction_uses_the_real_sign(self, server_con):
+        _insert_txn(server_con, "out", description="pot", amount=-5000)
+        _insert_txn(server_con, "in", description="pot", amount=5000)
+        resp = self._run(server_con, {
+            "candidate_match_field": "description", "candidate_match_type": "exact",
+            "candidate_match_value": "pot",
+            "candidate_match_field_2": "amount", "candidate_match_type_2": "amount_negative",
+            "candidate_match_value_2": "any"})
+        assert [t["id"] for t in resp.context["candidate_results"]["matches"]] == ["out"]
+
+    def test_does_not_render_a_saved_rules_table(self, server_con):
+        """The confusing old behaviour: the new rule appeared as a row in the
+        "rules matched" table for the single test transaction."""
+        _insert_rule(server_con, match_value="gym")
+        _insert_txn(server_con, "tx1", description="PureGym")
+        resp = self._run(server_con, self._gym_candidate())
+        assert "test_results" not in resp.context
+        assert "rule matched" not in resp.body.decode()
+
+    def test_carries_the_rule_back_so_the_form_survives_the_reload(self, server_con):
+        resp = self._run(server_con, self._gym_candidate(
+            candidate_name="Gym", candidate_auto_context="Gym membership", candidate_auto_skip="on"))
+        rule = resp.context["candidate_results"]["rule"]
+        assert rule["name"] == "Gym"
+        assert rule["match_value"] == "gym"
+        assert rule["auto_context"] == "Gym membership"
+        assert rule["auto_skip"] is True
+
+    def test_plain_test_still_shows_saved_rules_for_one_transaction(self, server_con):
         _insert_rule(server_con, match_value="gym")
         resp = self._run(server_con, {"description": "PureGym"})
-        assert len(resp.context["test_results"]) == 1
-        assert resp.context["test_results"][0]["is_candidate"] is False
-
-    def test_candidate_auto_skip_checkbox_is_honoured(self, server_con):
-        resp = self._run(server_con, {
-            "description": "Monzo refund",
-            "candidate_match_field": "description", "candidate_match_type": "contains",
-            "candidate_match_value": "refund", "candidate_auto_skip": "on",
-        })
-        assert resp.context["test_results"][0]["auto_skip"] is True
-
-    def test_candidate_second_condition_must_also_match(self, server_con):
-        resp = self._run(server_con, {
-            "description": "gym payment", "merchant_name": "Unknown",
-            "candidate_match_field": "description", "candidate_match_type": "contains",
-            "candidate_match_value": "gym",
-            "candidate_match_field_2": "merchant_name", "candidate_match_type_2": "contains",
-            "candidate_match_value_2": "pure",
-        })
-        assert resp.context["test_results"][0]["matched"] is False
-
-    def test_candidate_does_not_inflate_the_matched_rules_summary_count(self, server_con):
-        """The "N rules matched" line in the rendered page counts saved rules
-        only -- a matching but still-unsaved candidate isn't one of them yet."""
-        _insert_rule(server_con, match_field="description", match_value="gym")
-        resp = self._run(server_con, {
-            "description": "PureGym monthly",
-            "candidate_match_field": "description", "candidate_match_type": "contains",
-            "candidate_match_value": "gym",
-        })
-        body = resp.body.decode()
-        assert "1 rule matched" in body
+        assert "candidate_results" not in resp.context
+        assert resp.context["test_results"][0]["matched"] is True
 
 
 # ── Rule edit ──────────────────────────────────────────────────────────────────
