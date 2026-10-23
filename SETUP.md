@@ -66,6 +66,8 @@ Then open `config/.env` and fill in all values:
 | `SERVER_URL` | Local | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
 | `DB_PATH` | Local | Full path for your local DuckDB database — e.g. `C:/Users/you/Documents/bank_enrichment.db` |
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
+| `MONZO_CLIENT_ID` | Server | OAuth client ID from a **confidential** client registered at [developers.monzo.com](https://developers.monzo.com) — used to silently refresh Monzo API access instead of needing to re-confirm it in the Monzo app |
+| `MONZO_CLIENT_SECRET` | Server | OAuth client secret for the same client — keep this out of anywhere it could be committed |
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
