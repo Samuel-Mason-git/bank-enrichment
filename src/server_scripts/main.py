@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
 import uvicorn
+import html
 import logging
 import secrets
 import time
@@ -435,7 +436,8 @@ async def recieve_telegram(request: Request):
                 _sessions[chat_id].get("timeout_task") and _sessions[chat_id]["timeout_task"].cancel()
             task = asyncio.create_task(_enrich_timeout(chat_id, transaction_id))
             _sessions[chat_id] = {"transaction_id": transaction_id, "timeout_task": task}
-            bot.send_message(chat_id, f"Enriching <code>{transaction_id}</code>\n\nWhat was this transaction? Send a one-line description.")
+            label = _txn_short_label(get_con(), transaction_id)
+            bot.send_message(chat_id, f"Enriching <b>{html.escape(label)}</b>\n\nWhat was this transaction? Send a one-line description.")
 
         elif cq.data and cq.data.startswith("skip_confirm:"):
             transaction_id = cq.data.split(":", 1)[1]
@@ -865,6 +867,24 @@ def _get_rules(con):
          "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10]}
         for r in rows
     ]
+
+
+def _txn_short_label(con, transaction_id: str) -> str:
+    """One line identifying a transaction in a chat message -- merchant (or
+    counterparty, or description, whichever is actually populated) plus the
+    signed amount, so "Enriching tx_0000..." doesn't leave the user guessing
+    which of several pending transactions they just tapped."""
+    row = con.execute("SELECT payload FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
+    if not row:
+        return transaction_id
+    data = json.loads(row[0]).get("data", {})
+    amount_pence = data.get("amount", 0)
+    merchant = (data.get("merchant") or {}).get("name") or ""
+    counterparty = (data.get("counterparty") or {}).get("name") or ""
+    description = data.get("description") or ""
+    display = merchant or counterparty or description or transaction_id
+    sign = "-" if amount_pence < 0 else "+"
+    return f"{display} · {sign}£{abs(amount_pence) / 100:.2f}"
 
 
 def _get_test_transactions(con):
