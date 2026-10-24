@@ -26,6 +26,34 @@ import duckdb
 
 _SQL_PATH = _repo / "sql" / "tables.sql"
 _SERVER_SQL_PATH = _repo / "sql" / "server_tables.sql"
+_PG_SCHEMA_PATH = _repo / "sql" / "postgres" / "schema.sql"
+
+
+@pytest.fixture
+def pg():
+    """A throwaway Postgres schema with today's tables in it
+    (sql/postgres/schema.sql), dropped again afterwards. Each test gets its own
+    schema, so tests can't see each other's rows.
+
+    Needs TEST_POSTGRES_URL, which CI sets (a Postgres service GitHub starts
+    empty for each run). Without it the test is skipped, so the suite still runs
+    on a machine with no Postgres -- unless REQUIRE_POSTGRES_TESTS is set, as it
+    is in CI, where a missing Postgres has to fail rather than quietly skip."""
+    url = os.environ.get("TEST_POSTGRES_URL")
+    if not url:
+        if os.environ.get("REQUIRE_POSTGRES_TESTS"):
+            pytest.fail("REQUIRE_POSTGRES_TESTS is set but TEST_POSTGRES_URL isn't")
+        pytest.skip("No TEST_POSTGRES_URL -- the Postgres tests run in CI")
+    import uuid
+    import psycopg
+    schema = f"test_{uuid.uuid4().hex[:12]}"
+    con = psycopg.connect(url, autocommit=True)
+    con.execute(f"CREATE SCHEMA {schema}")
+    con.execute(f"SET search_path TO {schema}")
+    con.execute(_PG_SCHEMA_PATH.read_text())
+    yield con
+    con.execute(f"DROP SCHEMA {schema} CASCADE")
+    con.close()
 
 
 @pytest.fixture(autouse=True)
