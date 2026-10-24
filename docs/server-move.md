@@ -239,7 +239,5 @@ Each step is its own PR, and nothing changes for real until step 6.
 - **Worker schedule:** unchanged (Task Scheduler, daily, plus by hand).
 - **Streamlit's queries:** `ATTACH` Postgres from DuckDB for now (§6).
 - **Backups:** not the app's job. An optional "back up now" `pg_dump` in Settings, never automatic (§4).
-
-## 11. Still open
-
-- **Merge the two dashboards?** Not needed for the move.
+- **Dashboards:** both stay as they are. Once there's a server with the compute
+  for it, both get server access, with Streamlit behind a login.
