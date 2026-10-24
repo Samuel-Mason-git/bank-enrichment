@@ -128,8 +128,12 @@ endpoints `/export`, `/mark-processed`, `/sync-quick-categories`, `/sync-taxonom
 `/category-decisions*`, `/sync-rule-suggestions` and `/send-alert`. The worker
 reads and writes the tables directly, and calls Telegram itself for alerts.
 
-The Settings tab's "back up before anything irreversible" can stay as a quick
-`pg_dump` of the schema if that safety net is still wanted. That's decided at step 5.
+**bank-enrichment provides the app; looking after the data is up to whoever runs
+it.** It needs nothing more than a Postgres connection (`DB_*` in `.env`), and has
+no backup schedule of its own. Here the data box handles that; someone else might
+use their provider's backups. What the app keeps is an **optional** "back up
+now" in Settings: a `pg_dump` of the project's schema to a file, for anyone who
+wants one before a big change. It's never run automatically.
 
 ## 5. How a transaction flows
 
@@ -160,13 +164,12 @@ Data box, nightly ─→ pg_dump, bronze dump, B2 copy
 - **Server (`src/server_scripts`)**: talks to Postgres directly (psycopg). Its
   queries are simple, so they're rewritten as plain Postgres SQL.
 - **Worker and Streamlit (`src/local_scripts`)**: `dashboard.py` alone is about
-  2,100 lines of DuckDB SQL. Two ways to point it at Postgres:
-  1. Rewrite the queries for Postgres. This is the cleaner end state, and the most work.
-  2. Keep DuckDB as the query engine and `ATTACH` the Postgres database
-     (DuckDB's postgres extension). Most queries then run unchanged against the
-     `transactions` view. At this data size, speed isn't a concern.
-
-  Decided at step 5, after seeing how the server and worker changes go.
+  2,100 lines of DuckDB SQL. **For now they keep DuckDB as the query engine and
+  `ATTACH` the Postgres database** (DuckDB's postgres extension), so most queries
+  run unchanged against the `transactions` view. At this data size, speed isn't a
+  concern. Rewriting them as plain Postgres SQL stays possible later, one query at
+  a time.
+- **Worker schedule**: unchanged. Task Scheduler runs it daily, and it can be run by hand at any time.
 - **Tests**: the 906 tests use DuckDB fixtures. CI gets a Postgres service
   container, and the fixtures build the schema in it.
 - **Dashboards**: both stay as they are. FastAPI's `/dashboard` stays on the app
@@ -227,14 +230,16 @@ Each step is its own PR, and nothing changes for real until step 6.
    Postgres in CI.
 3. Tailscale between the PC and the data box (a data-vault PR for the box side).
 4. The PC worker on Postgres: today's `process.py` steps, with the syncing removed.
-5. Streamlit on Postgres (rewrite vs `ATTACH`, §6).
+5. Streamlit on Postgres, via `ATTACH` (§6).
 6. Switch over (§8).
 7. bank-enrichment's bronze config in data-vault, then the test restore from B2.
 
-## 10. Open questions
+## 10. Decided
 
-- **Worker schedule:** keep Task Scheduler (daily at a set time, plus whenever you
-  run it by hand), or every 15 minutes while the PC is on?
-- **Streamlit's queries:** rewrite or `ATTACH` (§6).
-- **The pre-change backup in Settings:** keep it as a schema `pg_dump`, or rely on the nightly backups?
-- **Merge the two dashboards later?** Not needed now.
+- **Worker schedule:** unchanged (Task Scheduler, daily, plus by hand).
+- **Streamlit's queries:** `ATTACH` Postgres from DuckDB for now (§6).
+- **Backups:** not the app's job. An optional "back up now" `pg_dump` in Settings, never automatic (§4).
+
+## 11. Still open
+
+- **Merge the two dashboards?** Not needed for the move.
