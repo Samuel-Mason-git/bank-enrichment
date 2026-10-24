@@ -35,7 +35,7 @@ Monzo / Telegram ─→ app box (current Oracle Micro, `ssh oracle`)
                     data box (`ssh vault`, from the data-vault repo)
                      └─ postgres   database `vault`, schema `bank_enrichment`
                         + nightly backups: pg_dump, bronze, B2, Telegram alerts
-                          ↑  Tailscale (not set up yet; needed by step 4)
+                          ↑  SSH tunnel through the app box (step 1.6); Tailscale later, if wanted
                     PC (when it's on)
                      ├─ worker     today's process.py steps: rules, quick taps, classifier,
                      │             judge, proposals, summaries
@@ -48,7 +48,7 @@ Monzo / Telegram ─→ app box (current Oracle Micro, `ssh oracle`)
   reads and edits the same database. There's nothing to sync.
 - Streamlit stays on the PC, so it still needs no login.
 - Backups are the data box's job, not bank-enrichment's (§7).
-- Cost: £0. It uses both free Micros, Tailscale's free plan, and the data-vault buckets.
+- Cost: £0. It uses both free Micros, an SSH tunnel, and the data-vault buckets.
 
 When the work outgrows this (always-on classification, more projects), the worker
 and dashboard can move onto a server too. Nothing in the tables changes.
@@ -65,7 +65,7 @@ machine's `config/.env` as `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and
 | From | Reaches it via | `DB_HOST` |
 |---|---|---|
 | App box | Oracle's private network. Already open, and tested: the security list allows 5432 from `10.0.0.0/24` only | `10.0.0.252` |
-| PC (WSL) | Tailscale. The data box's `pg_hba.conf` already accepts the Tailscale range | The data box's Tailscale address |
+| PC (WSL) | An SSH tunnel through the app box (`ssh -L 5433:10.0.0.252:5432 oracle`, step 1.6), so Postgres sees it as the app box. Tailscale can replace it later; `pg_hba.conf` already accepts its range | `localhost`, port `5433` |
 
 **Why Postgres and not DuckDB:** the app box and the PC write at the same time
 (webhooks, worker runs, dashboard edits). DuckDB allows only one process to have a
@@ -196,48 +196,80 @@ without depending on Postgres or its dumps:
 - **Restore = rebuild**: a fresh schema plus a replay of bronze in order gives back
   everything. This is the real test restore from B2 that data-vault is still owed.
 
-## 8. Moving the data
+## 8. Rollout
 
-1. The schema is created in `bank_enrichment` on the data box. It starts empty;
-   the current setup keeps running untouched.
-2. A one-off migration script, run from the PC (or on the app box, with the local
-   DB copied across), reads both current DuckDBs:
-   - local `transactions.raw_payload` → `transactions_raw`
-   - current `user_context` / `skipped` → one `context_event` each (`source = migration`)
-   - current `llm_*` → one `label_event` each, keeping `llm_model` and `classified_at`
-   - taxonomy, roles, rules, proposals, judge reviews and summaries copied across,
-     with names mapped to ids. **Any name that doesn't map is listed, not guessed.**
-   - anything still only in the server's `webhook_queue` (arrived but not yet
-     pulled to the PC) comes across too.
+The move happens in two stages: **first the engine, then the redesign.** Today's
+tables go into Postgres exactly as they are, and the existing code is pointed at
+them. Only once that's settled does the design above (§4 and §5) get built,
+inside Postgres, as small migrations. The step-by-step list is §10, at the end.
 
-   It empties the schema first, so it can be re-run any number of times.
-3. **Check:** monthly totals by role, category counts and row counts must match
-   the current Streamlit dashboard exactly. Repeat until they do.
-4. **Switch:** stop the PC's scheduled task, run the migration once more to catch
-   anything new, then merge the server PR (it deploys itself). Same server, same
-   URLs: nothing to re-register with Monzo or Telegram. Monzo retries anything that
-   arrives during the minute of the deploy.
-5. Start the new PC worker in the scheduled task's place.
-6. Keep the old DuckDB files untouched for a couple of weeks before deleting anything.
-
-## 9. Order of work
-
-Each step is its own PR, and nothing changes for real until step 6.
-
-1. The schema and views; the migration script; the comparison check. Run against
-   the data box from the app box, which can already reach it.
-2. The server app on Postgres (webhooks, Telegram, rules page, follow-ups), plus
-   Postgres in CI.
-3. Tailscale between the PC and the data box (a data-vault PR for the box side).
-4. The PC worker on Postgres: today's `process.py` steps, with the syncing removed.
-5. Streamlit on Postgres, via `ATTACH` (§6).
-6. Switch over (§8).
-7. bank-enrichment's bronze config in data-vault, then the test restore from B2.
-
-## 10. Decided
+## 9. Decided
 
 - **Worker schedule:** unchanged (Task Scheduler, daily, plus by hand).
 - **Streamlit's queries:** `ATTACH` Postgres from DuckDB for now (§6).
 - **Backups:** not the app's job. An optional "back up now" `pg_dump` in Settings, never automatic (§4).
 - **Dashboards:** both stay as they are. Once there's a server with the compute
   for it, both get server access, with Streamlit behind a login.
+
+## 10. Step by step
+
+Each step is small, has a check you can see, and says what changes live. Steps
+marked *none* can be stopped at any point without the old setup noticing.
+
+### Stage 1: same tables, new engine
+
+During this stage the code works with either database, chosen by `DB_BACKEND`
+(`duckdb` or `postgres`) in each machine's `config/.env`. It stays `duckdb`
+until step 1.10, so going back is just a matter of flipping it.
+
+Server and local both have tables called `taxonomy_proposals` and
+`category_proposals`, so the two sides get a schema each: **`bank_enrichment`**
+for today's local tables and **`bank_enrichment_server`** for the server's. Both
+are owned by the `bank_enrichment` login, and none of the SQL changes.
+
+| # | Step | Check | Live change |
+|---|---|---|---|
+| 1.1 | **Postgres in CI**: a Postgres service in the GitHub workflow, and test fixtures that can build the tables in it | CI is green, with Postgres running alongside | None |
+| 1.2 | **Create both schemas** on the data box with today's tables in them, empty (`bank_enrichment_server` made with one admin command, recorded in data-vault's README) | `\dt` lists every table from `sql/tables.sql` and `sql/server_tables.sql` | None |
+| 1.3 | **Copy script**: copies both DuckDBs into Postgres table by table, emptying first, so it can be re-run | Row counts match, table by table | None |
+| 1.4 | **Compare script**: diffs every table, old against new, row by row | "0 differences" | None |
+| 1.5 | **Server code on Postgres** (psycopg), behind `DB_BACKEND` | The server tests pass on both engines | None (it deploys, but stays on `duckdb`) |
+| 1.6 | **SSH tunnel from the PC** through the app box (`ssh -L 5433:10.0.0.252:5432 oracle`) | The PC can query the data box | None |
+| 1.7 | **Local code via `ATTACH`** (worker and Streamlit), behind `DB_BACKEND` | The local tests pass on both engines | None |
+| 1.8 | **Second Streamlit on Postgres**, on another port | Open both side by side: the same numbers everywhere | None |
+| 1.9 | **Parallel run**: copy + compare at the end of every `process.py` run, logged only, never failing the run; the result on Telegram daily | A week of daily "0 differences" | One logged-only step in `process.py` |
+| 1.10 | **The switch**: stop the scheduled task, run a final copy + compare, flip `DB_BACKEND=postgres` on the server (restart) and the PC, start the scheduled task again | A penny transfer gets its card, a reply lands, a run classifies it, and both dashboards show it | **Yes**: Postgres is now the real database |
+| 1.11 | **Rollback window**: the old DuckDB files are frozen, not deleted. If something's wrong, the copy script runs in reverse (Postgres → DuckDB, so nothing since the switch is lost) and `DB_BACKEND` flips back | — | Only if needed |
+| 1.12 | **Remove the DuckDB code paths** and the parallel-run step, after a quiet week | The tests pass on Postgres only | Clean-up |
+
+### Stage 2: the redesign, inside Postgres
+
+Each step is a migration plus the code that goes with it, small enough to check
+and to revert on its own. While a step's old and new forms both exist, the code
+writes both and reads the new one, until the check passes and the old form is
+removed.
+
+| # | Step | Check | Live change |
+|---|---|---|---|
+| 2.1 | **Taxonomy:** the server reads the local category tables directly; `/sync-taxonomy` and the server `taxonomy` copy go | The Rules page dropdowns still list every category | Small |
+| 2.2 | **Quick categories:** the server works them out from transactions directly; `/sync-quick-categories` goes | Cards show the same quick-tap buttons as before | Small |
+| 2.3 | **Alerts:** the worker sends Telegram alerts itself; `/send-alert` goes | A test alert arrives | Small |
+| 2.4 | **Rule suggestions:** written straight into the server's table; `/sync-rule-suggestions` goes | The next suggestion card appears as normal | Small |
+| 2.5 | **Taxonomy and category proposals:** one copy each, decisions read directly; `local_id`, `collected` and four endpoints go | Approve one proposal end to end | Small |
+| 2.6 | **The queue:** `process.py` reads `webhook_queue` directly; `/export` and `/mark-processed` go | A new transaction reaches the dashboard as before | Small |
+| 2.7 | **The two schemas merge into one** (`bank_enrichment`), now that nothing is duplicated | All tests pass; data-vault's README updated | Small |
+| 2.8 | **Categories by id:** `subcategory_id` added alongside the names, filled in, readers switched, then the name columns dropped | Rename a category: every transaction follows, with no mass `UPDATE` | Small |
+| 2.9 | **`transactions_raw`** filled from the webhook, with existing rows backfilled from `raw_payload` | Its count equals `transactions` | Small |
+| 2.10 | **`context_events`** written alongside today's context columns, backfilled | The latest event per transaction equals today's column, for every row | Small |
+| 2.11 | **`label_events`** written alongside today's label columns, backfilled | The latest event per transaction equals today's label, for every row | Small |
+| 2.12 | **The `transactions` view** replaces the table: readers switch to it, then the old wide table and `webhook_queue` go | Both dashboards unchanged; a full day of normal use | Yes (the last big one) |
+| 2.13 | **`stats` goes**: its counts come from the data | The FastAPI dashboard's numbers unchanged | Small |
+| 2.14 | **Optional "back up now"** in Settings (a schema `pg_dump`), replacing the local `backups/` machinery | A dump file appears and restores into a scratch schema | Small |
+
+### Stage 3: backups of the raw data
+
+| # | Step | Check | Live change |
+|---|---|---|---|
+| 3.1 | **bank-enrichment's bronze config** in data-vault: the event tables dumped daily, edited tables snapshotted when they change (§7) | Files appear in bronze, then B2 the next night | None for the app |
+| 3.2 | **Test restore from B2**: rebuild the schema from bronze into a scratch schema | It matches the live one; data-vault's README Restore section gets the real steps | None |
+| 3.3 | **Delete the old DuckDB files** | — | Clean-up |
