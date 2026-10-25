@@ -18,6 +18,7 @@ from llm_labelling import (
     classify_subcategories,
     propose_regenerated_options,
 )
+from tests.local_helpers import ensure_category, insert_transaction
 
 
 def _txn(**kwargs):
@@ -421,20 +422,9 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
 
     def _seed(self, db, parent="Bills & Utilities", sub="Electricity"):
-        parent_id = db.execute(
-            "INSERT INTO parent_categories (id, name, created_at) VALUES (1, ?, NOW()) RETURNING id", [parent]
-        ).fetchone()[0]
-        db.execute(
-            "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (1, ?, ?, NOW())", [sub, parent_id]
-        )
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, description, user_context, skipped)
-               VALUES ('txn_bill', -80.0, 'GBP', 'Octopus Energy', 'Electricity bill', FALSE)"""
-        )
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, description, user_context, skipped)
-               VALUES ('txn_tax', -3000.0, 'GBP', 'HMRC', 'Self assessment tax payment', FALSE)"""
-        )
+        ensure_category(db, parent, sub)
+        insert_transaction(db, "txn_bill", amount=-80.0, description="Octopus Energy", user_context="Electricity bill")
+        insert_transaction(db, "txn_tax", amount=-3000.0, description="HMRC", user_context="Self assessment tax payment")
 
     def _options(self, db, proposal_id):
         import json
@@ -448,7 +438,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
             parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
             subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
         )
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         synced = []
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: synced.extend(ids))
 
@@ -485,7 +474,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
             parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Bills & Utilities"},
             subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Council Tax"},
         )
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
 
         ll.run()
@@ -513,7 +501,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
                 {"parent_name": "Bills & Utilities", "subcategory_name": "Council Tax", "rationale": "Stretch-fit into an existing bucket."},
             ]},
         )
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
 
         ll.run()
@@ -544,7 +531,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
                 {"parent_name": "Government", "subcategory_name": "Other Payments", "rationale": "A third real alternative -- past MAX_OPTIONS, must be dropped."},
             ]},
         )
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
 
         ll.run()
@@ -556,25 +542,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         assert len(options) == ll.MAX_OPTIONS
         names = [(o["parent_name"], o["subcategory_name"]) for o in options]
         assert names == [("Tax", "Self Assessment"), ("Bills & Utilities", "Council Tax"), ("Miscellany", "One-offs")]
-
-    def test_server_not_yet_deployed_falls_back_to_immediate_creation(self, db, monkeypatch):
-        """If the gate can't be enforced, the old behaviour must still work
-        rather than stranding a transaction locked with no card ever sent."""
-        self._seed(db)
-        self._stub_llm(
-            monkeypatch,
-            parent_by_id={"txn_bill": "Bills & Utilities", "txn_tax": "Tax"},
-            subcategory_by_id={"txn_bill": "Electricity", "txn_tax": "Self Assessment"},
-        )
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: False)
-
-        ll.run()
-
-        tax = db.execute(
-            "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = 'txn_tax'"
-        ).fetchone()
-        assert tax == ("Tax", "Self Assessment", None)
-        assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0
 
     def test_a_denied_name_is_forbidden_on_the_retry_and_a_different_one_is_accepted(self, db, monkeypatch):
         import json
@@ -599,7 +566,6 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         )
         monkeypatch.setattr(ll, "propose_alternatives", lambda client, groups, parents, subcategories: {})
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
 
         ll.run()
@@ -674,11 +640,7 @@ class TestRegenerateCategoryProposals:
     that into a fresh proposal."""
 
     def _seed_denied_for_regeneration(self, db, txn_id="tx_1", old_options=None):
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, user_context, skipped)
-               VALUES (?, -3000.0, 'GBP', 'HMRC payment', FALSE)""",
-            [txn_id],
-        )
+        insert_transaction(db, txn_id, amount=-3000.0, user_context="HMRC payment")
         options = old_options or [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
         old_id, _ = cp.register_group(options, [txn_id])
         db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [old_id])

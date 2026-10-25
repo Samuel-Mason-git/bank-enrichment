@@ -10,6 +10,7 @@ import database_functions as dbf
 import llm_labelling as ll
 import placement_judge as pj
 from database_functions import upsert_parent, upsert_subcategory
+from tests.local_helpers import insert_transaction
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -44,12 +45,9 @@ APPROVE = {"verdict": "approve", "confidence": 0.9, "issue": "none", "reason": "
 
 def add_txn(db, tid, amount=-10.0, description="x", context=None, merchant=None, counterparty=None,
             category=None, sub=None, created="2026-08-01 10:00:00", model=None):
-    db.execute(
-        """INSERT INTO transactions (id, amount, currency, description, user_context, merchant_name,
-               counterparty_name, created_at, llm_category, llm_subcategory, llm_model, skipped)
-           VALUES (?, ?, 'GBP', ?, ?, ?, ?, ?, ?, ?, ?, FALSE)""",
-        [tid, amount, description, context, merchant, counterparty, created, category, sub, model],
-    )
+    insert_transaction(db, tid, amount=amount, description=description, user_context=context,
+                       merchant_name=merchant, counterparty_name=counterparty, created_at=created,
+                       llm_category=category, llm_subcategory=sub, llm_model=model)
 
 
 def txn(db, tid):
@@ -541,7 +539,6 @@ class TestRunUsesTheJudge:
                             lambda client, txns, parent_name, subs, all_parent_names, denied_sub_names=None: {t["id"]: "Rent" for t in txns})
         monkeypatch.setattr(ll, "propose_alternatives", lambda client, groups, parents, subcategories: {})
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: client}))
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: True)
 
     def _seed(self, db):
         seed_taxonomy(db)
@@ -593,7 +590,6 @@ class TestRunUsesTheJudge:
     def test_an_approving_judge_changes_nothing(self, db, monkeypatch):
         self._seed(db)
         self._stub_passes(monkeypatch, FakeClient(lambda p: APPROVE))
-        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: pytest.fail("nothing should be synced"))
         ll.run()
         assert txn(db, "rent")["llm_subcategory"] == "Rent" and txn(db, "deposit")["llm_subcategory"] == "Rent"
         assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0
@@ -603,12 +599,12 @@ class TestRunUsesTheJudge:
         card, and the next run (with the judge back) picks it all up."""
         self._seed(db)
         self._stub_passes(monkeypatch, FakeClient(lambda p: RuntimeError("API down")))
-        monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: pytest.fail("no card without a verdict"))
         ll.run()
         for tid in ("rent", "deposit"):
             row = txn(db, tid)
             assert row["llm_category"] is None and row["pending_category_proposal_id"] is None
         assert db.execute("SELECT COUNT(*) FROM judge_reviews").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0, "no card without a verdict"
 
         self._stub_passes(monkeypatch, FakeClient(self._judge))
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
@@ -631,17 +627,8 @@ class TestRunUsesTheJudge:
         self._stub_passes(monkeypatch, FakeClient(lambda p: RuntimeError("API down")))
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: None)
         ll.run()
-        titles = [c.kwargs["json"]["title"] for c in alert_post.call_args_list]
-        assert "Placement judge is holding transactions back" in titles
-
-    def test_the_judge_stays_off_when_the_server_cannot_show_a_card(self, db, monkeypatch):
-        self._seed(db)
-        client = FakeClient(self._judge)
-        self._stub_passes(monkeypatch, client)
-        monkeypatch.setattr(cp, "server_supports_proposals", lambda: False)
-        ll.run()
-        assert client.calls == []
-        assert txn(db, "deposit")["llm_subcategory"] == "Rent"
+        texts = [c.kwargs["json"]["text"] for c in alert_post.call_args_list]
+        assert any("Placement judge is holding transactions back" in t for t in texts)
 
     def test_a_new_category_goes_through_the_gate_not_the_judge(self, db, monkeypatch):
         self._seed(db)

@@ -87,6 +87,38 @@ def add_rule(con, rule_id=1, name="Rule", match_field="merchant_name", match_typ
     )
 
 
+def tap(con, data: str, user_id: int = 12345):
+    """A tap on a Telegram button, through the real webhook handler. Returns
+    the mocked bot, to see what was said back."""
+    import asyncio
+    from unittest.mock import MagicMock, patch
+    import main
+
+    cq = MagicMock(data=data, id="cbq_1")
+    cq.from_user.id = user_id
+    update = MagicMock(callback_query=cq, message=None)
+    request = MagicMock()
+
+    async def _body():
+        return b"{}"
+
+    request.body = _body
+    request.headers = {"x-telegram-bot-api-secret-token": "test-secret"}
+    bot = MagicMock()
+    with patch.object(main, "get_con", return_value=con), \
+         patch.object(main, "bot", bot), \
+         patch.object(main, "TELEGRAM_WEBHOOK_SECRET", "test-secret"), \
+         patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+         patch.object(main.TelegramUpdate, "model_validate_json", return_value=update):
+        asyncio.run(main.recieve_telegram(request))
+    return bot
+
+
+def replies(bot) -> list[str]:
+    """Everything the bot sent back as a plain message."""
+    return [c.args[1] for c in bot.send_message.call_args_list]
+
+
 def status(con, txn_id="tx_1") -> str | None:
     """Where a transaction is up to, as the dashboard sees it: pending (no
     answer yet), enriched (answered, not classified), classified, or skipped."""

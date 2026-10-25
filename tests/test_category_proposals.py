@@ -1,16 +1,13 @@
 import json
-from unittest.mock import patch
 
 import category_proposals as cp
+from database_functions import update_classification
+from tests.local_helpers import ensure_category, insert_transaction
 
 
 def _seed_pending_txns(db, ids, description="Some payment"):
     for txn_id in ids:
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, description, skipped)
-               VALUES (?, -100.0, 'GBP', ?, FALSE)""",
-            [txn_id, description],
-        )
+        insert_transaction(db, txn_id, amount=-100.0, description=description)
 
 
 def _option(parent="Tax", sub="Self Assessment", is_new=True, rationale="Best fit."):
@@ -122,10 +119,7 @@ class TestDeniedNames:
 class TestApplySelected:
     def test_creates_the_chosen_option_and_classifies_exactly_the_locked_transactions(self, db):
         _seed_pending_txns(db, ["tx_1", "tx_2"])
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, description, skipped)
-               VALUES ('tx_other', -5.0, 'GBP', 'Unrelated', FALSE)"""
-        )
+        insert_transaction(db, "tx_other", amount=-5.0, description="Unrelated")
         options = [_option("Tax", "Self Assessment"), _option("Professional Services", "Tax Payments", is_new=False)]
         proposal_id, _ = cp.register_group(options, ["tx_1", "tx_2"])
 
@@ -168,7 +162,7 @@ class TestApplySelected:
         match) may have classified the waiting transaction another way."""
         _seed_pending_txns(db, ["tx_1", "tx_2"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1", "tx_2"])
-        from database_functions import update_classification
+        ensure_category(db, "Shopping", "General Retail")
         update_classification("tx_1", "Shopping", "General Retail", 1.0, "manual")
 
         count = cp.apply_selected(proposal_id, 0)
@@ -187,7 +181,7 @@ class TestApplySelected:
     def test_nothing_left_waiting_is_a_no_op(self, db):
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        from database_functions import update_classification
+        ensure_category(db, "Shopping", "General Retail")
         update_classification("tx_1", "Shopping", "General Retail", 1.0, "manual")
         assert cp.apply_selected(proposal_id, 0) == 0
 
@@ -214,11 +208,7 @@ class TestDenyAll:
 class TestPendingRegenerations:
     def test_finds_a_regenerate_flagged_proposal_via_its_locked_transactions(self, db):
         for txn_id, ctx in [("tx_1", "HMRC payment"), ("tx_2", None)]:
-            db.execute(
-                """INSERT INTO transactions (id, amount, currency, user_context, merchant_name, skipped)
-                   VALUES (?, -100.0, 'GBP', ?, 'HMRC', FALSE)""",
-                [txn_id, ctx],
-            )
+            insert_transaction(db, txn_id, amount=-100.0, user_context=ctx, merchant_name="HMRC")
         options = [_option("Tax", "Self Assessment")]
         proposal_id, _ = cp.register_group(options, ["tx_1", "tx_2"])
         db.execute(
@@ -234,9 +224,8 @@ class TestPendingRegenerations:
         assert set(pending[0]["examples"]) == {"HMRC payment", "HMRC"}
 
     def test_a_plain_denial_is_not_returned(self, db):
-        """Deny-all already unlocked its transactions, so the FK join finds
-        nothing -- this is what makes plain denials naturally invisible here
-        without any extra bookkeeping."""
+        """Deny-all already released its transactions, so it holds nothing --
+        which is what makes plain denials invisible here."""
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
         cp.deny_all(proposal_id)
@@ -255,157 +244,109 @@ class TestPendingRegenerations:
         assert cp.pending_regenerations() == []
 
 
+def _held(db, proposal_id):
+    return {r[0] for r in db.execute(
+        "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
+    ).fetchall()}
+
+
 class TestCollectDecisions:
-    def test_selected_decision_is_applied_and_recorded(self, db):
+    """The server records a tap on the proposal row itself; the next run acts on it."""
+
+    def test_a_selection_is_applied_and_recorded(self, db):
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option(), _option("Professional Services", "Tax Payments", is_new=False)], ["tx_1"])
-        confirmed = []
-        with patch.object(cp, "fetch_decisions",
-                          return_value=[{"id": proposal_id, "status": "selected", "selected_option": 1}]), \
-             patch.object(cp, "confirm_collected", side_effect=lambda ids: confirmed.extend(ids)):
-            applied = cp.collect_decisions()
-        assert applied == 1
+        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 1 WHERE id = ?", [proposal_id])
+
+        assert cp.collect_decisions() == 1
+
         row = db.execute("SELECT status, selected_option FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
         assert row == ("applied", 1)
         assert db.execute(
             "SELECT llm_category, llm_subcategory FROM transactions WHERE id = 'tx_1'"
         ).fetchone() == ("Professional Services", "Tax Payments")
-        assert confirmed == [proposal_id]
+        assert db.execute(
+            "SELECT source FROM label_events WHERE txn_id = 'tx_1'"
+        ).fetchone()[0] == "proposal"
 
-    def test_denied_decision_unlocks_and_is_recorded(self, db):
+    def test_an_applied_proposal_is_not_applied_again(self, db):
+        """Telegram cards stay tappable forever; once applied, a proposal is done."""
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        with patch.object(cp, "fetch_decisions",
-                          return_value=[{"id": proposal_id, "status": "denied", "selected_option": None}]), \
-             patch.object(cp, "confirm_collected"):
-            applied = cp.collect_decisions()
-        assert applied == 0
+        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 0 WHERE id = ?", [proposal_id])
+        cp.collect_decisions()
+        assert cp.collect_decisions() == 0
+        assert db.execute("SELECT COUNT(*) FROM label_events WHERE txn_id = 'tx_1'").fetchone()[0] == 1
+
+    def test_none_of_these_releases_the_transactions(self, db):
+        _seed_pending_txns(db, ["tx_1"])
+        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
+        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = ?", [proposal_id])
+
+        assert cp.collect_decisions() == 0
+
         assert db.execute("SELECT status FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0] == "denied"
         assert db.execute(
             "SELECT llm_category, pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
         ).fetchone() == (None, None)
 
-    def test_a_regenerate_decision_leaves_transactions_locked_rather_than_unlocking(self, db):
-        """Deliberately does NOT call deny_all(): the transactions must stay
-        locked to the (now-denied) proposal so pending_regenerations() can
-        still find them via that FK -- unlocking here would lose the link
-        between "these transactions" and "what was already shown"."""
+    def test_try_again_keeps_the_transactions_held(self, db):
+        """The hold is how pending_regenerations() knows which transactions are
+        waiting on fresh options, and what they were already shown."""
         _seed_pending_txns(db, ["tx_1", "tx_2"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1", "tx_2"])
-        with patch.object(cp, "fetch_decisions",
-                          return_value=[{"id": proposal_id, "status": "denied", "regenerate_requested": True}]), \
-             patch.object(cp, "confirm_collected"):
-            applied = cp.collect_decisions()
-        assert applied == 0
-        row = db.execute(
-            "SELECT status, regenerate_requested FROM category_proposals WHERE id = ?", [proposal_id]
-        ).fetchone()
-        assert row == ("denied", True)
-        locked = {r[0] for r in db.execute(
-            "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
-        ).fetchall()}
-        assert locked == {"tx_1", "tx_2"}
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?",
+                   [proposal_id])
 
-    def test_a_backup_is_taken_before_any_selection_is_applied(self, db):
-        _seed_pending_txns(db, ["tx_1"])
-        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        with patch.object(cp, "fetch_decisions",
-                          return_value=[{"id": proposal_id, "status": "selected", "selected_option": 0}]), \
-             patch.object(cp, "confirm_collected"), \
-             patch("database_functions.backup_db") as backup:
-            cp.collect_decisions()
-        backup.assert_called_once()
+        assert cp.collect_decisions() == 0
 
-    def test_a_second_decision_on_an_already_decided_proposal_is_ignored_but_confirmed(self, db):
-        """Telegram cards stay tappable forever -- a stale decision for a
-        proposal that already moved on must not be reapplied."""
-        _seed_pending_txns(db, ["tx_1"])
-        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'applied' WHERE id = ?", [proposal_id])
-        confirmed = []
-        with patch.object(cp, "fetch_decisions",
-                          return_value=[{"id": proposal_id, "status": "denied", "selected_option": None}]), \
-             patch.object(cp, "confirm_collected", side_effect=lambda ids: confirmed.extend(ids)):
-            applied = cp.collect_decisions()
-        assert applied == 0
-        assert db.execute("SELECT status FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0] == "applied"
-        assert confirmed == [proposal_id]
+        assert _held(db, proposal_id) == {"tx_1", "tx_2"}
 
     def test_nothing_happens_when_there_are_no_decisions(self, db):
-        with patch.object(cp, "fetch_decisions", return_value=[]):
-            assert cp.collect_decisions() == 0
+        _seed_pending_txns(db, ["tx_1"])
+        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
+        assert cp.collect_decisions() == 0
+        assert _held(db, proposal_id) == {"tx_1"}
 
 
-class TestServerNotYetDeployed:
-    def test_404_is_reported_as_unsupported(self, monkeypatch):
-        class _Resp:
-            status_code, ok = 404, False
-        monkeypatch.setattr(cp.requests, "get", lambda *a, **k: _Resp())
-        assert cp.server_supports_proposals() is False
+class TestCardLines:
+    """The card's lines are stored with the proposal, for the server to send."""
 
-    def test_an_unreachable_server_is_reported_as_unsupported(self, monkeypatch):
-        def _boom(*a, **k):
-            raise cp.requests.ConnectionError("no route to host")
-        monkeypatch.setattr(cp.requests, "get", _boom)
-        assert cp.server_supports_proposals() is False
+    def _examples(self, db, proposal_id):
+        return json.loads(db.execute("SELECT examples FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0])
 
-    def test_a_healthy_server_is_supported(self, monkeypatch):
-        class _Resp:
-            status_code, ok = 200, True
-        monkeypatch.setattr(cp.requests, "get", lambda *a, **k: _Resp())
-        assert cp.server_supports_proposals() is True
-
-
-class TestSyncNewProposals:
-    def test_builds_options_and_examples_from_the_locked_transactions_capped_at_four(self, db, monkeypatch):
+    def test_a_new_proposal_is_written_unsent_with_up_to_four_lines(self, db):
         for i in range(6):
-            db.execute(
-                """INSERT INTO transactions (id, amount, currency, user_context, skipped)
-                   VALUES (?, -10.0, 'GBP', ?, FALSE)""",
-                [f"tx_{i}", f"context {i}"],
-            )
-        options = [_option(), _option("Professional Services", "Tax Payments", is_new=False)]
-        proposal_id, _ = cp.register_group(options, [f"tx_{i}" for i in range(6)])
+            insert_transaction(db, f"tx_{i}", amount=-10.0, user_context=f"context {i}",
+                               created_at=f"2026-08-0{i + 1} 10:00:00")
+        proposal_id, _ = cp.register_group([_option()], [f"tx_{i}" for i in range(6)])
+        assert len(self._examples(db, proposal_id)) == 4
+        assert db.execute("SELECT sent_at FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0] is None
 
-        posted = {}
-        def fake_post(url, headers, json, timeout):
-            posted["url"], posted["json"] = url, json
-            class _Resp:
-                def raise_for_status(self):
-                    pass
-            return _Resp()
-        monkeypatch.setattr(cp.requests, "post", fake_post)
-
-        cp.sync_new_proposals([proposal_id])
-
-        assert posted["url"].endswith("/sync-category-proposals")
-        entry = posted["json"]["proposals"][0]
-        assert entry["options"] == options
-        assert entry["txn_count"] == 6
-        assert len(entry["examples"]) == 4
-
-    def test_each_example_says_which_transaction_it_is(self, db, monkeypatch):
+    def test_each_line_says_which_transaction_it_is(self, db):
         """A card that only shows 'Cards' or a quick-tap label can't tell you which
         of several transactions it means."""
-        db.execute(
-            """INSERT INTO transactions (id, amount, currency, description, merchant_name, user_context, created_at, skipped)
-               VALUES ('tx_a', -25.0, 'GBP', 'THE HUB DENTAL', 'The Hub Dental Practice', 'Food & Drink - Alcohol',
-                       '2026-08-17 10:00:00', FALSE)"""
-        )
+        insert_transaction(db, "tx_a", amount=-25.0, description="THE HUB DENTAL",
+                           merchant_name="The Hub Dental Practice", user_context="Food & Drink - Alcohol",
+                           created_at="2026-08-17 10:00:00")
         proposal_id, _ = cp.register_group([_option()], ["tx_a"])
-        posted = {}
-        monkeypatch.setattr(cp.requests, "post", lambda url, headers, json, timeout: posted.update(json=json) or type(
-            "R", (), {"raise_for_status": lambda self: None})())
+        assert self._examples(db, proposal_id) == ['-£25.00 · 17 Aug · The Hub Dental Practice — "Food & Drink - Alcohol"']
 
-        cp.sync_new_proposals([proposal_id])
+    def test_a_merged_batch_updates_the_lines(self, db):
+        insert_transaction(db, "tx_1", amount=-10.0, merchant_name="First")
+        insert_transaction(db, "tx_2", amount=-20.0, merchant_name="Second")
+        proposal_id, _ = cp.register_group([_option()], ["tx_1"])
+        cp.register_group([_option()], ["tx_2"])
+        assert len(self._examples(db, proposal_id)) == 2
 
-        assert posted["json"]["proposals"][0]["examples"] == ['-£25.00 · 17 Aug · The Hub Dental Practice — "Food & Drink - Alcohol"']
-
-    def test_empty_id_list_makes_no_request(self, monkeypatch):
-        called = []
-        monkeypatch.setattr(cp.requests, "post", lambda *a, **k: called.append(1))
-        cp.sync_new_proposals([])
-        assert called == []
+    def test_a_transaction_moves_to_the_proposal_now_holding_it(self, db):
+        """A transaction is only ever held by one proposal."""
+        _seed_pending_txns(db, ["tx_1"])
+        first, _ = cp.register_group([_option()], ["tx_1"])
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [first])
+        second, _ = cp.register_group([_option("Gifts", "Wedding Gifts")], ["tx_1"])
+        assert _held(db, first) == set()
+        assert _held(db, second) == {"tx_1"}
 
 
 class TestCardExample:

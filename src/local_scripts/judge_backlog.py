@@ -28,7 +28,7 @@ import sys
 import duckdb
 
 import placement_judge
-from database_functions import _rows, backup_db, get_con, init_db
+from database_functions import _rows, backup_db, init_db
 from llm_labelling import make_placement_reviewer
 
 # Measured on 342 judge calls (Sep 2026): 449k input + 39k output tokens, about $1.93 at
@@ -41,24 +41,15 @@ USER_DECISIONS = ("manual", "category-proposal")
 log = logging.getLogger(__name__)
 
 
-def _has_judge_table() -> bool:
-    return get_con().execute(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'judge_reviews'"
-    ).fetchone()[0] > 0
-
-
 def candidates() -> list[dict]:
     """Classified transactions the judge hasn't looked at yet, newest first."""
-    already_judged = (
-        "AND NOT EXISTS (SELECT 1 FROM judge_reviews j WHERE j.txn_id = t.id)" if _has_judge_table() else ""
-    )
     placeholders = ", ".join("?" for _ in USER_DECISIONS)
     return _rows(
         f"""SELECT * FROM transactions t
             WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
             AND skipped = FALSE AND pending_category_proposal_id IS NULL
             AND COALESCE(llm_model, '') NOT IN ({placeholders})
-            {already_judged}
+            AND NOT EXISTS (SELECT 1 FROM judge_reviews j WHERE j.txn_id = t.id)
             ORDER BY created_at DESC""",
         list(USER_DECISIONS),
     )

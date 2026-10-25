@@ -25,7 +25,7 @@ import json
 import logging
 import time
 
-from database_functions import get_con, release_holds, update_classification
+from database_functions import get_con, release_holds, set_json, update_classification
 
 log = logging.getLogger(__name__)
 
@@ -145,8 +145,7 @@ def register_group(options: list[dict], txn_ids: list[str]) -> tuple[int, bool]:
         if _option_key(json.loads(options_json)) == key:
             held = held_by(con, pid)
             held += [t for t in txn_ids if t not in held]
-            con.execute("UPDATE category_proposals SET txn_ids = ?, examples = ? WHERE id = ?",
-                        [json.dumps(held), json.dumps(_examples(con, held)), pid])
+            set_json(con, "category_proposals", pid, txn_ids=held, examples=_examples(con, held))
             return pid, False
 
     proposal_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals").fetchone()[0]

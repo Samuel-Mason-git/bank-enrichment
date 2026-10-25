@@ -6,6 +6,7 @@ import category_proposals as cp
 import database_functions as dbf
 import judge_backlog as jb
 import placement_judge as pj
+from tests.local_helpers import hold
 from tests.test_placement_judge import (
     APPROVE, FakeClient, add_txn, make_reviewer, outcome, reject, seed_taxonomy, txn,
 )
@@ -55,17 +56,11 @@ class TestCandidates:
             db.execute("INSERT INTO judge_reviews VALUES ('x', NULL, 'Bills & Utilities', 'Rent', 'approved', NOW())")
         elif why == "held":
             classified(db, "x")
-            db.execute("UPDATE transactions SET pending_category_proposal_id = 5 WHERE id = 'x'")
+            hold(db, 5, ["x"])
         else:
             classified(db, "x")
-            db.execute("UPDATE transactions SET skipped = TRUE WHERE id = 'x'")
+            db.execute("INSERT INTO context_events (txn_id, skipped, source) VALUES ('x', TRUE, 'dashboard')")
         assert jb.candidates() == []
-
-    def test_works_before_the_judge_table_exists(self, db):
-        """A database that predates the judge has no judge_reviews table yet."""
-        classified(db, "a")
-        db.execute("DROP TABLE judge_reviews")
-        assert [t["id"] for t in jb.candidates()] == ["a"]
 
     def test_newest_first(self, db):
         seed_taxonomy(db)
@@ -221,6 +216,7 @@ class TestChoosingTheCard:
 
     def test_a_manual_edit_made_while_the_card_waited_is_not_overwritten(self, run, db):
         pid = self._held(run, db)
+        dbf.upsert_subcategory("Groceries", dbf.upsert_parent("Food & Drink"))
         dbf.update_classification("dep", "Food & Drink", "Groceries", 1.0, "manual")
         assert cp.apply_selected(pid, 0) == 0
         assert txn(db, "dep")["llm_subcategory"] == "Groceries"

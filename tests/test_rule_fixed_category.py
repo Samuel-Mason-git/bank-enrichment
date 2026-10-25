@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 import main
 from check_rules import RuleMatch, check_rules
-from tests.server_helpers import add_rule, add_transaction, label_sources, status, transaction
+from tests.server_helpers import add_rule, label_sources, status, transaction
 
 
 def _run(coro):

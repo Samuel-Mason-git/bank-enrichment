@@ -1,8 +1,8 @@
 """sql/postgres/schema.sql: the new tables (docs/server-move.md §4).
 
-The views stand in for today's tables, so these check they give the same
-answers today's code does: the transactions view reads a payload the way
-write_to_db flattens it, the latest event wins, and roles, the classifier's
+The views stand in for the old tables, so these check they give the same
+answers the old ones did: the transactions view reads a payload the way the
+old pipeline flattened it, the latest event wins, and roles, the classifier's
 to-do list and the quick-tap buttons come out as before.
 
 These need a Postgres (the `pg` fixture), so they run in CI and are skipped on
@@ -104,7 +104,7 @@ def test_the_transactions_view_has_every_column_the_old_table_had(pg):
     assert columns[:len(OLD_TRANSACTION_COLUMNS)] == OLD_TRANSACTION_COLUMNS
 
 
-def test_monzo_fields_come_out_of_the_payload_as_write_to_db_flattened_them(pg):
+def test_monzo_fields_come_out_of_the_payload_as_the_old_pipeline_flattened_them(pg):
     _txn(pg, "tx1", amount=-450, created="2026-10-01T12:34:56.789Z", settled="")
     _txn(pg, "tx2", amount=2500, merchant=None, counterparty="Mum",
          settled="2026-10-02T08:00:00Z", is_load=True)
@@ -203,7 +203,7 @@ def test_needs_label_is_the_classifiers_to_do_list(pg):
     assert todo == {"ready", "parent_only", "held"}
 
 
-def test_transaction_roles_gives_the_same_answers_as_today(db, pg):
+def test_transaction_roles_gives_the_same_answers_as_today(old_local_db, pg):
     """The same transactions, set up the old way in DuckDB and the new way in
     Postgres, must get the same role, for every way a role can be decided."""
     cases = [
@@ -220,6 +220,7 @@ def test_transaction_roles_gives_the_same_answers_as_today(db, pg):
     parents = {1: "Food", 2: "Fun", 3: "Income", 4: "Investments", 5: "Transfers"}
     subs = {1: ("Groceries", 1), 2: ("Takeaway", 1), 3: ("Gigs", 2), 4: ("Salary", 3), 5: ("ISA", 4), 6: ("Pot", 5)}
 
+    db = old_local_db
     _taxonomy(pg)
     for pid, name in parents.items():
         db.execute("INSERT INTO parent_categories VALUES (?, ?, '2026-01-01')", [pid, name])

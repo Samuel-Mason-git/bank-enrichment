@@ -237,9 +237,8 @@ DROP VIEW IF EXISTS quick_categories, needs_label, needs_context, transaction_ro
 
 -- One row per transaction, under the column names the old transactions table
 -- had, so the dashboards and summaries read it the same way. Monzo's fields
--- come out of the payload exactly as database_functions.write_to_db flattened
--- them (amount from pence; '' dates as NULL). parent_id/subcategory_id are
--- extra, for joining by id.
+-- come out of the payload the way the old pipeline flattened them (amount from
+-- pence; '' dates as NULL). parent_id/subcategory_id are extra, for joining by id.
 --
 -- A labelled transaction's parent is its subcategory's parent *now*, not the
 -- one recorded with the label, so moving a subcategory to another parent takes

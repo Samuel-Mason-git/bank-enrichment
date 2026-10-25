@@ -100,16 +100,25 @@ def old_local_db():
 
 
 @pytest.fixture(autouse=True)
-def alert_post():
-    """Keep the pipeline's Telegram alerts off the network in every test, and
+def alert_post(monkeypatch):
+    """Keep the pipeline's Telegram messages off the network in every test, and
     start each one with nothing already sent (alerts.py sends each kind at most
     once per process). Yields the mocked requests.post so a test can assert on
     what would have been sent."""
     import alerts
+    monkeypatch.setenv("TELEGRAM_API", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     alerts._sent.clear()
     with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:
         yield post
     alerts._sent.clear()
+
+
+@pytest.fixture(autouse=True)
+def _backups_in_tmp(tmp_path, monkeypatch):
+    """Every backup a test takes goes in its own temporary folder, never the
+    real one (BACKUP_DIR, or ~/bank-enrichment-backups)."""
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
 
 @pytest.fixture(autouse=True)

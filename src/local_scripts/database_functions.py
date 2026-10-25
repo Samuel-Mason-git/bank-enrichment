@@ -55,12 +55,26 @@ def attach(con: duckdb.DuckDBPyConnection, dsn: str, schema: str = SCHEMA, read_
     options = f"TYPE postgres, SCHEMA '{schema}'" + (", READ_ONLY" if read_only else "")
     con.execute(f"ATTACH '{dsn}' AS pg ({options})")
     con.execute(f"SET search_path = 'pg.{schema},memory.main'")
+    con.execute(f"SET VARIABLE pg_schema = '{schema}'")
     con.execute(
         """CREATE OR REPLACE MACRO memory.main.default_role_for_parent(parent_name) AS
                CASE parent_name WHEN 'Income' THEN 'income'
                                 WHEN 'Investments' THEN 'investment'
                                 WHEN 'Transfers' THEN 'transfer' END"""
     )
+
+
+def set_json(con: duckdb.DuckDBPyConnection, table: str, row_id: int, **columns) -> None:
+    """Set JSONB columns on one row. DuckDB can't write a JSONB column through
+    the attachment (Postgres refuses the text it sends), so this one statement
+    goes to Postgres directly."""
+    schema = con.execute("SELECT getvariable('pg_schema')").fetchone()[0]
+    sets = ", ".join(
+        f"{name} = '{json.dumps(value).replace(chr(39), chr(39) * 2)}'::jsonb"
+        for name, value in columns.items()
+    )
+    con.execute("CALL postgres_execute('pg', ?)",
+                [f'UPDATE "{schema}".{table} SET {sets} WHERE id = {int(row_id)}'])
 
 
 def init_db(read_only: bool = False) -> None:
@@ -326,7 +340,7 @@ def release_holds(transaction_ids: list[str]) -> None:
         held = json.loads(txn_ids)
         kept = [t for t in held if t not in wanted]
         if len(kept) != len(held):
-            con.execute("UPDATE category_proposals SET txn_ids = ? WHERE id = ?", [json.dumps(kept), proposal_id])
+            set_json(con, "category_proposals", proposal_id, txn_ids=kept)
 
 
 def update_classification(
