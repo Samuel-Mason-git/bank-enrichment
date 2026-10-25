@@ -71,18 +71,32 @@ def _reset_db():
 
 
 @pytest.fixture
-def db():
-    """In-memory DuckDB with the full local schema applied."""
+def db(pg):
+    """The pipeline's database, as it really connects: DuckDB with the
+    throwaway Postgres schema (the `pg` fixture) attached, set as the
+    connection database_functions hands out. Writes through it land in the
+    same tables `pg` sees."""
     import database_functions
+    schema = pg.execute("SELECT current_schema()").fetchone()[0]
+    con = duckdb.connect(":memory:")
+    database_functions.attach(con, os.environ["TEST_POSTGRES_URL"], schema=schema)
+    database_functions._con = con
+    yield con
+    con.close()
+    database_functions._con = None
+
+
+@pytest.fixture
+def old_local_db():
+    """The PC's database as it was before the move: an in-memory DuckDB with
+    sql/tables.sql. Only the copy script, which reads that shape, needs it."""
     con = duckdb.connect(":memory:")
     for stmt in _SQL_PATH.read_text().split(";"):
         s = stmt.strip()
         if s:
             con.execute(s)
-    database_functions._con = con
     yield con
     con.close()
-    database_functions._con = None
 
 
 @pytest.fixture(autouse=True)

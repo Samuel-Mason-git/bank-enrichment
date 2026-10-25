@@ -16,8 +16,10 @@ from database_functions import (
     init_db, get_con, update_classification, update_transaction_details, upsert_parent, upsert_subcategory,
     get_subscriptions, upsert_subscription, update_subscription, toggle_subscription, delete_subscription,
     get_parents, get_subcategories, set_parent_role, set_subcategory_role, ROLES,
-    backup_db, list_backups, read_backup_manifest, backup_size_bytes,
+    backup_db, list_backups, read_backup_manifest, backup_size_bytes, backup_dir,
     delete_backup, BACKUPS_KEPT,
+    rename_parent, delete_parent, wipe_parent_labels, delete_subcategory, edit_subcategory,
+    move_all_transactions, wipe_taxonomy,
 )
 from dashboard_helpers import (
     FREQ_MONTHLY, pct_delta, detect_subscriptions, should_deactivate_subscription,
@@ -73,11 +75,12 @@ def load_transactions():
 
 @st.cache_data(ttl=60, show_spinner="Loading taxonomy...")
 def load_taxonomy():
-    parents = con.execute("SELECT name FROM parent_categories ORDER BY name").fetchall()
+    parents = con.execute("SELECT name FROM parent_categories WHERE archived_at IS NULL ORDER BY name").fetchall()
     subs = con.execute("""
         SELECT s.name, p.name AS parent_name
         FROM subcategories s
         JOIN parent_categories p ON p.id = s.parent_id
+        WHERE s.archived_at IS NULL AND p.archived_at IS NULL
         ORDER BY s.name
     """).fetchall()
     all_parent_names = [r[0] for r in parents]
@@ -1509,8 +1512,9 @@ with tab_settings:
                COUNT(DISTINCT s.id) AS sub_count,
                COUNT(DISTINCT t.id) AS txn_count
         FROM parent_categories p
-        LEFT JOIN subcategories s ON s.parent_id = p.id
-        LEFT JOIN transactions t ON t.llm_category = p.name
+        LEFT JOIN subcategories s ON s.parent_id = p.id AND s.archived_at IS NULL
+        LEFT JOIN transactions t ON t.parent_id = p.id
+        WHERE p.archived_at IS NULL
         GROUP BY p.id, p.name
         ORDER BY txn_count DESC
     """)
@@ -1579,11 +1583,11 @@ with tab_settings:
             subs_for_parent = _query("""
                 SELECT s.id, s.name, COUNT(t.id) AS txn_count
                 FROM subcategories s
-                LEFT JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = ?
-                WHERE s.parent_id = ?
+                LEFT JOIN transactions t ON t.subcategory_id = s.id
+                WHERE s.parent_id = ? AND s.archived_at IS NULL
                 GROUP BY s.id, s.name
                 ORDER BY txn_count DESC
-            """, [pname, pid])
+            """, [pid])
 
             active_sub_ids = [
                 s["id"] for s in subs_for_parent
@@ -1711,18 +1715,8 @@ with tab_settings:
                             st.error(f'"{stripped}" already exists as a category — rename to a unique name, or delete one of them first.')
                         else:
                             if stripped != parent_row["name"]:
-                                # DuckDB FK constraint fires on any UPDATE to a referenced parent row,
-                                # even non-key columns. Workaround: insert new name, re-point subs, delete old.
-                                new_pid = upsert_parent(stripped)
-                                con.execute("UPDATE subcategories SET parent_id = ? WHERE parent_id = ?", [new_pid, pid])
-                                con.execute("UPDATE transactions SET llm_category = ? WHERE llm_category = ?", [stripped, parent_row["name"]])
-                                # Carry the role override across the rename -- otherwise a
-                                # custom category's role silently resets to its default.
-                                con.execute(
-                                    "UPDATE category_roles SET parent_id = ? WHERE parent_id = ? AND subcategory_id IS NULL",
-                                    [new_pid, pid],
-                                )
-                                con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
+                                # Transactions point at the id, so they follow on their own.
+                                rename_parent(pid, stripped)
                             st.session_state.tax_edit_parent = None
                             st.cache_data.clear()
                             st.rerun()
@@ -1743,19 +1737,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary"):
-                        backup_db(f"delete-parent-{parent_row['name']}")
-                        # Role overrides reference parent/subcategory ids, and ids get
-                        # reused after a delete (new_id = MAX(id)+1) -- an orphaned
-                        # override left behind here could later attach itself to an
-                        # unrelated category that happens to reuse the same id.
-                        con.execute(
-                            "DELETE FROM category_roles WHERE subcategory_id IN "
-                            "(SELECT id FROM subcategories WHERE parent_id = ?)", [pid]
-                        )
-                        con.execute("DELETE FROM category_roles WHERE parent_id = ? AND subcategory_id IS NULL", [pid])
-                        con.execute("DELETE FROM subcategories WHERE parent_id = ?", [pid])
-                        con.execute("DELETE FROM parent_categories WHERE id = ?", [pid])
-                        con.execute("UPDATE transactions SET llm_category = NULL, llm_subcategory = NULL WHERE llm_category = ?", [parent_row["name"]])
+                        delete_parent(pid)
                         st.session_state.tax_del_parent = None
                         st.cache_data.clear()
                         st.rerun()
@@ -1778,14 +1760,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm wipe", type="primary"):
-                        backup_db(f"wipe-labels-{parent_row['name']}")
-                        con.execute(
-                            """UPDATE transactions
-                               SET llm_category = NULL, llm_subcategory = NULL,
-                                   classified_at = NULL, llm_model = NULL, llm_confidence = NULL
-                               WHERE llm_category = ?""",
-                            [parent_row["name"]],
-                        )
+                        wipe_parent_labels(pid)
                         st.session_state.tax_wipe_parent = None
                         st.cache_data.clear()
                         st.rerun()
@@ -1802,7 +1777,7 @@ with tab_settings:
                        COUNT(t.id) AS txn_count
                 FROM subcategories s
                 JOIN parent_categories p ON p.id = s.parent_id
-                LEFT JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = p.name
+                LEFT JOIN transactions t ON t.subcategory_id = s.id
                 WHERE s.id = ?
                 GROUP BY s.id, s.name, p.name
             """, [sid])
@@ -1816,13 +1791,7 @@ with tab_settings:
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("Confirm delete", type="primary", key="confirm_del_sub"):
-                        backup_db(f"delete-subcategory-{sub['name']}")
-                        con.execute("DELETE FROM category_roles WHERE subcategory_id = ?", [sid])
-                        con.execute("DELETE FROM subcategories WHERE id = ?", [sid])
-                        con.execute(
-                            "UPDATE transactions SET llm_subcategory = NULL WHERE llm_subcategory = ? AND llm_category = ?",
-                            [sub["name"], sub["parent_name"]],
-                        )
+                        delete_subcategory(sid)
                         st.session_state.tax_del_sub = None
                         st.cache_data.clear()
                         st.rerun()
@@ -1863,7 +1832,7 @@ with tab_settings:
                         # another subcategory would otherwise crash with an uncaught
                         # DuckDB constraint violation instead of a friendly message.
                         collision = (name_changed or parent_changed) and _query(
-                            "SELECT 1 AS x FROM subcategories WHERE name = ? AND parent_id = ? AND id != ?",
+                            "SELECT 1 AS x FROM subcategories WHERE name = ? AND parent_id = ? AND id != ? AND archived_at IS NULL",
                             [effective_name, target_parent_id, sid],
                         )
                         if collision:
@@ -1872,25 +1841,9 @@ with tab_settings:
                                 f"choose a different name, or delete/merge the existing one first."
                             )
                         else:
-                            if name_changed:
-                                con.execute("UPDATE subcategories SET name = ? WHERE id = ?", [effective_name, sid])
-                                con.execute(
-                                    "UPDATE transactions SET llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                                    [effective_name, sub["name"], sub["parent_name"]],
-                                )
-                            if parent_changed:
-                                con.execute("UPDATE subcategories SET parent_id = ? WHERE id = ?", [target_parent_id, sid])
-                                con.execute(
-                                    "UPDATE transactions SET llm_category = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                                    [new_sparent, effective_name, sub["parent_name"]],
-                                )
-                                # Keep the override's parent_id in sync with the move --
-                                # unused by role resolution (which only keys off
-                                # subcategory_id) but avoids a stale, confusing value.
-                                con.execute(
-                                    "UPDATE category_roles SET parent_id = ? WHERE subcategory_id = ?",
-                                    [target_parent_id, sid],
-                                )
+                            if name_changed or parent_changed:
+                                # Its transactions follow on their own: they point at the id.
+                                edit_subcategory(sid, effective_name, target_parent_id)
                             st.session_state.tax_edit_sub = None
                             st.cache_data.clear()
                             st.rerun()
@@ -1916,7 +1869,7 @@ with tab_settings:
                     SELECT s.id, s.name, p.name AS parent_name
                     FROM subcategories s
                     JOIN parent_categories p ON p.id = s.parent_id
-                    WHERE s.id != ?
+                    WHERE s.id != ? AND s.archived_at IS NULL AND p.archived_at IS NULL
                     ORDER BY p.name, s.name
                 """, [sid])
                 reassign_map = {f"{s['name']} ({s['parent_name']})": s for s in reassign_raw}
@@ -1925,12 +1878,7 @@ with tab_settings:
                     with st.form("reassign_all_form"):
                         target_key = st.selectbox("Move all transactions to:", list(reassign_map.keys()))
                         if st.form_submit_button("Move all", type="secondary"):
-                            backup_db(f"move-all-{sub['name']}")
-                            tgt = reassign_map[target_key]
-                            con.execute(
-                                "UPDATE transactions SET llm_category = ?, llm_subcategory = ? WHERE llm_subcategory = ? AND llm_category = ?",
-                                [tgt["parent_name"], tgt["name"], sub["name"], sub["parent_name"]],
-                            )
+                            move_all_transactions(sid, reassign_map[target_key]["id"])
                             st.session_state.tax_view_sub = None
                             st.cache_data.clear()
                             st.rerun()
@@ -1940,9 +1888,9 @@ with tab_settings:
                 txns = _query("""
                     SELECT id, description, merchant_name, counterparty_name, amount, created_at, user_context
                     FROM transactions
-                    WHERE llm_subcategory = ? AND llm_category = ?
+                    WHERE subcategory_id = ?
                     ORDER BY created_at DESC
-                """, [sub["name"], sub["parent_name"]])
+                """, [sid])
 
                 if txns:
                     txns_df = pd.DataFrame(txns)
@@ -1974,11 +1922,12 @@ with tab_settings:
         + (f" — last {backup_label(_backups[0])}" if _backups else " — none yet")
     ):
         st.caption(
-            "A backup is taken automatically before anything irreversible — deleting a "
-            "category or subcategory, wiping labels, bulk-reassigning transactions, or "
-            f"wiping the taxonomy. The most recent {BACKUPS_KEPT} are kept; older ones are "
-            "pruned, and any of them can be deleted by hand below. Restore one with "
-            "DuckDB's `IMPORT DATABASE '<folder>'`."
+            "The database is backed up every night wherever it lives (for this setup, the "
+            "data box). This is only a copy you take yourself before trying something: every "
+            f"table saved as a Parquet file in a folder under `{backup_dir()}` (set BACKUP_DIR "
+            f"to change it). The most recent {BACKUPS_KEPT} are kept, and any can be deleted below. "
+            "Nothing here is ever taken automatically — and every change to a transaction is "
+            "kept in its history anyway."
         )
         if st.button("Back up now"):
             path = backup_db("manual")
@@ -2021,8 +1970,8 @@ with tab_settings:
                 column_config={
                     "When": st.column_config.Column("When", help="When this backup was taken."),
                     "Reason": st.column_config.Column(
-                        "Reason", help="What triggered it — 'manual' for the button above, "
-                                       "otherwise the destructive action it was taken before."),
+                        "Reason", help="'manual' for the button above; older copies may name "
+                                       "the action they were taken before."),
                     "Transactions": st.column_config.NumberColumn(
                         "Transactions", format="%d",
                         help="Transactions captured in this backup. Blank for a backup taken "
@@ -2036,9 +1985,9 @@ with tab_settings:
                         "Subcats", format="%d", help="Subcategories in the taxonomy."),
                     "Covers": st.column_config.Column(
                         "Covers", help="Date range of the transactions inside this backup."),
-                    "Size": st.column_config.Column("Size", help="Total size of the export on disk."),
+                    "Size": st.column_config.Column("Size", help="Total size of the copy on disk."),
                     "Folder": st.column_config.Column(
-                        "Folder", help="Pass this to IMPORT DATABASE to restore."),
+                        "Folder", help="One Parquet file per table, readable by DuckDB or pandas."),
                 },
             )
 
@@ -2087,14 +2036,14 @@ with tab_settings:
         st.markdown("**Wipe entire taxonomy**")
 
         st.warning(
-            f"This permanently deletes all **{len(tax_parents)} parent categories** and "
+            f"This removes all **{len(tax_parents)} parent categories** and "
             f"**{total_subs_all} subcategories**, and clears the LLM category/subcategory "
             f"labels from **{total_classified} of {total_txns}** transactions.\n\n"
             f"Your raw transactions and context sentences are **never touched** — only the "
-            f"category structure and label assignments are removed. The default taxonomy "
-            f"is re-seeded automatically the next time the pipeline or dashboard starts, and "
-            f"transactions will need to be re-classified from scratch.\n\n"
-            f"A full backup is taken first — see the Backups section above to restore it."
+            f"category structure and label assignments are removed (both stay in the "
+            f"history). The default taxonomy is seeded the next time the pipeline or dashboard "
+            f"starts, and transactions will need to be re-classified from scratch.\n\n"
+            f"Take a copy first with **Back up now** above if you might want this back."
         )
 
         wipe_ack = st.checkbox("I understand this cannot be undone", key="wipe_taxonomy_ack")
@@ -2106,19 +2055,7 @@ with tab_settings:
         wipe_ready = wipe_ack and wipe_text.strip() == "WIPE TAXONOMY"
 
         if st.button("Permanently wipe entire taxonomy", type="primary", disabled=not wipe_ready):
-            backup_db("wipe-taxonomy")
-            con.execute(
-                """UPDATE transactions
-                   SET llm_category = NULL, llm_subcategory = NULL,
-                       classified_at = NULL, llm_model = NULL, llm_confidence = NULL"""
-            )
-            # Without this, a role override left behind here could later attach
-            # itself to an unrelated category re-seeded with the same reused id
-            # (ids restart from MAX(id)+1, which is 1 again once these tables
-            # are empty).
-            con.execute("DELETE FROM category_roles")
-            con.execute("DELETE FROM subcategories")
-            con.execute("DELETE FROM parent_categories")
+            wipe_taxonomy()
             st.session_state.wipe_taxonomy_ack = False
             st.session_state.wipe_taxonomy_text = ""
             st.cache_data.clear()

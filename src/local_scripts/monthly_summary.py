@@ -5,17 +5,15 @@ from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from dotenv import load_dotenv
-import requests
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-DB_PATH = os.getenv("DB_PATH")
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
+import html
 
-LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "monthly_summary.log") if DB_PATH else "monthly_summary.log"
+from alerts import send_telegram
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path
 
-from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role
+LOG_PATH = log_path("monthly_summary.log")
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +31,6 @@ def _configure_standalone_logging():
         ]
     )
 
-HEADERS = {"X-API-Key": LOCAL_API_KEY}
 
 
 def get_missing_months() -> list[str]:
@@ -41,7 +38,7 @@ def get_missing_months() -> list[str]:
     earliest = con.execute("SELECT MIN(created_at) FROM transactions").fetchone()[0]
     if not earliest:
         return []
-    sent = {r[0] for r in con.execute("SELECT send_date FROM monthly_summaries").fetchall()}
+    sent = {r[0] for r in con.execute("SELECT period_key FROM summaries WHERE period = 'month'").fetchall()}
     today = date.today()
     last_completed = today.replace(day=1) - timedelta(days=1)
     missing = []
@@ -112,19 +109,15 @@ def format_monthly_message(stats: dict) -> str:
 
 def send_monthly_report(month_str: str, message: str) -> None:
     con = get_con()
-    response = requests.post(
-        f"{SERVER_URL}/monthly-report",
-        headers=HEADERS,
-        json={"message": message},
-        timeout=30,
-    )
-    response.raise_for_status()
-    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM monthly_summaries").fetchone()[0]
+    # Escaped: category names like "Food & Drink" would otherwise break
+    # Telegram's HTML parsing and the message would be rejected.
+    if not send_telegram(html.escape(message)):
+        raise RuntimeError("Telegram didn't take the message -- not recorded, so it's retried next run")
     stats = get_month_stats(month_str)
     con.execute(
-        """INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, total_invested, total_saved, sent_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        [next_id, month_str, stats["total_spend"], stats["total_income"], stats["net"],
+        """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
+           VALUES ('month', ?, ?, ?, ?, ?, ?, ?)""",
+        [month_str, stats["total_spend"], stats["total_income"], stats["net"],
          stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )
     log.info(f"Monthly report sent and recorded for {month_str}")

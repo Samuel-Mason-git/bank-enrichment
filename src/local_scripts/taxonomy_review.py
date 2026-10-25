@@ -19,7 +19,6 @@ from datetime import date
 from pathlib import Path
 
 import anthropic
-import requests
 from dotenv import load_dotenv
 
 from database_functions import get_con, init_db
@@ -27,8 +26,6 @@ from database_functions import get_con, init_db
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 2048
 
@@ -252,6 +249,7 @@ def full_taxonomy() -> dict[str, list[str]]:
     rows = get_con().execute(
         """SELECT p.name, s.name FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
+           WHERE s.archived_at IS NULL AND p.archived_at IS NULL
            ORDER BY p.name, s.name"""
     ).fetchall()
     taxonomy: dict[str, list[str]] = {}
@@ -262,8 +260,8 @@ def full_taxonomy() -> dict[str, list[str]]:
 
 def taken_category_names() -> set[str]:
     con = get_con()
-    names = {r[0] for r in con.execute("SELECT name FROM parent_categories").fetchall()}
-    names |= {r[0] for r in con.execute("SELECT name FROM subcategories").fetchall()}
+    names = {r[0] for r in con.execute("SELECT name FROM parent_categories WHERE archived_at IS NULL").fetchall()}
+    names |= {r[0] for r in con.execute("SELECT name FROM subcategories WHERE archived_at IS NULL").fetchall()}
     return {n.lower() for n in names}
 
 
@@ -323,10 +321,14 @@ def review_subcategory(client, parent: str, subcategory: str, rows: list[dict],
     return filtered
 
 
-# ── Persistence + sync ────────────────────────────────────────────────────────
+# ── Persistence ───────────────────────────────────────────────────────────────
 
 def store_proposals(proposals: list[dict], key: str) -> list[dict]:
+    """Write this month's proposals, whole -- the server sends the card for any
+    pending proposal it hasn't sent yet. Anything still undecided from an
+    earlier month is superseded by these, so it expires."""
     con = get_con()
+    con.execute("UPDATE taxonomy_proposals SET status = 'expired' WHERE status = 'pending'")
     stored = []
     for p in proposals:
         next_id = con.execute(
@@ -334,11 +336,11 @@ def store_proposals(proposals: list[dict], key: str) -> list[dict]:
         con.execute(
             """INSERT INTO taxonomy_proposals
                (id, parent_name, source_sub, action, target_parent, proposed_sub,
-                rationale, evidence_ids, evidence_count, status, proposed_at, run_key)
+                rationale, evidence_ids, examples, status, proposed_at, run_key)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
             [next_id, p["parent_name"], p["source_sub"], p["action"], p["target_parent"],
              p["target_sub"], p["rationale"], json.dumps(p["evidence_ids"]),
-             p["evidence_count"], time.strftime("%Y-%m-%d %H:%M:%S"), key],
+             json.dumps(p.get("examples", [])), time.strftime("%Y-%m-%d %H:%M:%S"), key],
         )
         stored.append({**p, "id": next_id})
     return stored
@@ -354,95 +356,28 @@ def _record_empty_run(key: str) -> None:
     con.execute(
         """INSERT INTO taxonomy_proposals
            (id, parent_name, source_sub, action, target_parent, proposed_sub,
-            rationale, evidence_ids, evidence_count, status, proposed_at, run_key)
+            rationale, evidence_ids, status, proposed_at, run_key)
            VALUES (?, '—', '—', 'create', '—', ?,
-                   'No clusters met the guardrails.', '[]', 0, 'expired', ?, ?)""",
+                   'No clusters met the guardrails.', '[]', 'expired', ?, ?)""",
         [next_id, f"(no proposals {key})", time.strftime("%Y-%m-%d %H:%M:%S"), key],
     )
 
 
-def sync_to_server(proposals: list[dict]) -> None:
-    """Hand the proposals to the server, which owns Telegram and the approve/
-    deny callbacks. Only the category names, the rationale and a few example
-    contexts go across -- the same restraint the quick-category sync uses."""
-    if not proposals:
-        return
-    payload = {"proposals": [{
-        "id": p["id"],
-        "parent_name": p["parent_name"],
-        "source_sub": p["source_sub"],
-        "action": p["action"],
-        "target_parent": p["target_parent"],
-        "proposed_sub": p["target_sub"],
-        "rationale": p["rationale"],
-        "evidence_count": p["evidence_count"],
-        "examples": p.get("examples", []),
-    } for p in proposals]}
-    response = requests.post(
-        f"{SERVER_URL}/sync-taxonomy-proposals",
-        headers={"X-API-Key": LOCAL_API_KEY}, json=payload, timeout=30,
-    )
-    response.raise_for_status()
-    log.info(f"Synced {len(proposals)} taxonomy proposal(s) to the server")
-
-
-def server_supports_proposals() -> bool:
-    """Whether the server has been deployed with the taxonomy endpoints yet.
-
-    The local pipeline updates the moment the code is pulled, but the server
-    only updates on deploy, so the two are routinely out of step. Without this
-    check the review spends a paid API call per subcategory building proposals
-    that the sync then cannot deliver."""
-    try:
-        response = requests.get(
-            f"{SERVER_URL}/taxonomy-decisions",
-            headers={"X-API-Key": LOCAL_API_KEY}, timeout=30,
-        )
-    except Exception as e:
-        log.warning(f"Could not reach the server for taxonomy proposals: {e}")
-        return False
-    if response.status_code == 404:
-        log.info("Server has no taxonomy endpoints yet — skipping review until it is deployed")
-        return False
-    return response.ok
-
-
-def fetch_decisions() -> list[dict]:
-    response = requests.get(
-        f"{SERVER_URL}/taxonomy-decisions",
-        headers={"X-API-Key": LOCAL_API_KEY}, timeout=30,
-    )
-    response.raise_for_status()
-    return response.json().get("decisions", [])
-
-
-def confirm_collected(ids: list[int]) -> None:
-    """Tell the server the decisions landed. Done only after they are applied,
-    so a local crash mid-apply leaves them to be retried rather than lost."""
-    if not ids:
-        return
-    requests.post(
-        f"{SERVER_URL}/taxonomy-decisions/collected",
-        headers={"X-API-Key": LOCAL_API_KEY},
-        json={"ids": [str(i) for i in ids]}, timeout=30,
-    ).raise_for_status()
-
-
 def apply_approved(proposal: dict) -> int:
     """Create the subcategory and move exactly the transactions whose ids were
-    shown on the card. Returns how many moved.
+    shown on the card. Returns how many are now under it.
 
     Re-checks each transaction is still where it was: the user may have
     recategorised some by hand in the dashboard between the card being sent and
     approved, and an approval should never override a later manual decision."""
-    from database_functions import upsert_parent, upsert_subcategory
+    from database_functions import update_classification, upsert_parent, upsert_subcategory
 
     con = get_con()
     ids = json.loads(proposal["evidence_ids"])
     if not ids:
         return 0
     # A "move" targets a category that already exists, so target_parent may
-    # differ from the source parent -- both columns have to be updated, or the
+    # differ from the source parent -- the label has to name both, or the
     # transaction ends up with a subcategory that doesn't belong to its parent
     # and disappears from every category-based view.
     target_parent = proposal.get("target_parent") or proposal["parent_name"]
@@ -451,13 +386,13 @@ def apply_approved(proposal: dict) -> int:
         upsert_subcategory(target_sub, upsert_parent(target_parent))
 
     placeholders = ", ".join("?" for _ in ids)
-    con.execute(
-        f"""UPDATE transactions SET llm_category = ?, llm_subcategory = ?
-            WHERE id IN ({placeholders})
-              AND llm_category = ? AND llm_subcategory = ?""",
-        [target_parent, target_sub, *ids,
-         proposal["parent_name"], proposal["source_sub"]],
-    )
+    still_there = [r[0] for r in con.execute(
+        f"""SELECT id FROM transactions
+            WHERE id IN ({placeholders}) AND llm_category = ? AND llm_subcategory = ?""",
+        [*ids, proposal["parent_name"], proposal["source_sub"]],
+    ).fetchall()]
+    for txn_id in still_there:
+        update_classification(txn_id, target_parent, target_sub, None, "taxonomy-proposal")
     count = con.execute(
         "SELECT COUNT(*) FROM transactions WHERE llm_category = ? AND llm_subcategory = ?",
         [target_parent, target_sub],
@@ -467,55 +402,25 @@ def apply_approved(proposal: dict) -> int:
 
 
 def collect_decisions() -> int:
-    """Pull Telegram decisions and act on them. Returns how many were applied."""
+    """Apply what was approved on Telegram since the last run (the server
+    records the decision on the proposal itself). Returns how many were applied.
+    A denial needs nothing doing: it's already recorded, and it keeps that name
+    from being proposed again."""
     con = get_con()
-    try:
-        decisions = fetch_decisions()
-    except Exception as e:
-        log.error(f"Could not fetch taxonomy decisions: {e}")
-        return 0
-    if not decisions:
-        return 0
-
     applied = 0
-    handled: list[int] = []
-    approvals = [d for d in decisions if d["status"] == "approved"]
-    if approvals:
-        # One backup covers the whole batch, taken before anything moves.
-        from database_functions import backup_db
-        backup_db("taxonomy-proposal-approved")
-
-    for d in decisions:
-        row = con.execute(
-            """SELECT id, parent_name, source_sub, action, target_parent,
-                      proposed_sub, evidence_ids, status
-               FROM taxonomy_proposals WHERE id = ?""", [d["id"]]
-        ).fetchone()
-        if not row or row[7] != "pending":
-            handled.append(d["id"])
-            continue
+    for row in con.execute(
+        """SELECT id, parent_name, source_sub, action, target_parent, proposed_sub, evidence_ids
+           FROM taxonomy_proposals WHERE status = 'approved' ORDER BY id"""
+    ).fetchall():
         proposal = dict(zip(
-            ("id", "parent_name", "source_sub", "action", "target_parent",
-             "proposed_sub", "evidence_ids", "status"), row))
+            ("id", "parent_name", "source_sub", "action", "target_parent", "proposed_sub", "evidence_ids"), row))
         try:
-            if d["status"] == "approved":
-                apply_approved(proposal)
-                con.execute(
-                    "UPDATE taxonomy_proposals SET status='applied', decided_at=?, applied_at=? WHERE id=?",
-                    [time.strftime("%Y-%m-%d %H:%M:%S"), time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]])
-                applied += 1
-            else:
-                con.execute(
-                    "UPDATE taxonomy_proposals SET status='denied', decided_at=? WHERE id=?",
-                    [time.strftime("%Y-%m-%d %H:%M:%S"), d["id"]])
-            handled.append(d["id"])
+            apply_approved(proposal)
+            con.execute("UPDATE taxonomy_proposals SET status = 'applied', applied_at = ? WHERE id = ?",
+                        [time.strftime("%Y-%m-%d %H:%M:%S"), proposal["id"]])
+            applied += 1
         except Exception as e:
-            log.error(f"Failed to apply taxonomy decision {d['id']}: {e}", exc_info=True)
-
-    try:
-        confirm_collected(handled)
-    except Exception as e:
-        log.error(f"Applied decisions but could not confirm collection: {e}")
+            log.error(f"Failed to apply taxonomy decision {proposal['id']}: {e}", exc_info=True)
     return applied
 
 
@@ -529,12 +434,6 @@ def run(today: date | None = None) -> list[dict]:
     if not CLAUDE_SECRET:
         log.error("CLAUDE_SECRET not set — skipping taxonomy review")
         return []
-    # Checked BEFORE any LLM work, and deliberately without recording the run:
-    # an undeployed server is a temporary condition, so the month must still be
-    # reviewable once it catches up.
-    if not server_supports_proposals():
-        return []
-
     run_start = time.time()
     log.info(f"--- Taxonomy review started ({key}) ---")
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
@@ -586,24 +485,8 @@ def run(today: date | None = None) -> list[dict]:
     found.sort(key=lambda p: p["evidence_count"], reverse=True)
     found = found[:MAX_PROPOSALS_PER_RUN]
     stored = store_proposals(found, key)
-    try:
-        sync_to_server(stored)
-    except Exception:
-        # Storing marks the month as reviewed, so leaving these rows behind
-        # after a failed send would silently burn it: the user never sees the
-        # cards, and already_reviewed() stops the month being retried. Roll the
-        # rows back so the next run reviews again from scratch.
-        ids = [p["id"] for p in stored]
-        get_con().execute(
-            f"DELETE FROM taxonomy_proposals WHERE id IN ({', '.join('?' for _ in ids)})", ids
-        )
-        log.error(
-            f"Could not send {len(stored)} taxonomy proposal(s) — rolled them back "
-            f"so {key} is reviewed again on the next run", exc_info=True,
-        )
-        return []
     log.info(
         f"--- Taxonomy review complete in {time.time() - run_start:.1f}s "
-        f"— sent {len(stored)} proposal(s) to Telegram ---"
+        f"— {len(stored)} proposal(s); the server sends their cards ---"
     )
     return stored

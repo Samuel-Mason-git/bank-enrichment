@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import anthropic
 
 from database_functions import (
-    init_db, get_unclassified, update_classification,
+    init_db, get_unclassified, update_classification, log_path,
     get_parents, get_subcategories,
     upsert_parent, upsert_subcategory,
     get_subcategory_stats, format_subcategory_stats,
@@ -20,7 +20,6 @@ import placement_judge
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-DB_PATH = os.getenv("DB_PATH")
 CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
 MODEL = "claude-sonnet-4-6"
 BATCH_SIZE = 15
@@ -36,7 +35,7 @@ MAX_TOKENS = 4096
 # Telegram card into an unreadable wall of buttons.
 MAX_OPTIONS = 3
 
-LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "llm_classifier.log") if DB_PATH else "llm_classifier.log"
+LOG_PATH = log_path("llm_classifier.log")
 
 log = logging.getLogger(__name__)
 
@@ -526,9 +525,7 @@ def make_placement_reviewer() -> placement_judge.PlacementReviewer:
     client of its own. Without a key the reviewer is simply off and every tap
     is applied as tapped."""
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET) if CLAUDE_SECRET else None
-    return placement_judge.PlacementReviewer(
-        client, MODEL, _format_transaction, gate_check=category_proposals.server_supports_proposals
-    )
+    return placement_judge.PlacementReviewer(client, MODEL, _format_transaction, gate_check=lambda: True)
 
 
 # ── Regenerate ────────────────────────────────────────────────────────────────
@@ -585,12 +582,7 @@ def regenerate_category_proposals() -> int:
         regenerated += 1
         log.info(f"  [REGENERATED] proposal {item['old_id']} -> {proposal_id} ({len(options)} option(s))")
 
-    if new_proposal_ids:
-        try:
-            category_proposals.sync_new_proposals(new_proposal_ids)
-        except Exception as e:
-            log.error(f"Failed to sync regenerated category proposal(s) to the server: {e}", exc_info=True)
-
+    category_proposals.sync_new_proposals(new_proposal_ids)
     return regenerated
 
 
@@ -605,9 +597,9 @@ def run():
         exit(1)
 
     t0 = time.time()
-    log.info(f"Connecting to local DB at {DB_PATH}")
+    log.info("Connecting to the database")
     init_db()
-    log.info(f"Local DB ready ({time.time() - t0:.2f}s)")
+    log.info(f"Database ready ({time.time() - t0:.2f}s)")
 
     t0 = time.time()
     log.info("Fetching unclassified transactions")
@@ -620,17 +612,13 @@ def run():
 
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
 
-    # Whether the server has the category-proposal endpoints deployed yet. If
-    # not, fall back to creating new categories immediately (today's
-    # behaviour) rather than locking transactions behind a card nobody can
-    # ever see. Checked once per run, not per batch -- it's an HTTP round trip.
-    gate_novel = category_proposals.server_supports_proposals()
-    denied_parents = category_proposals.denied_parent_names() if gate_novel else set()
-    denied_subs = category_proposals.denied_sub_names() if gate_novel else set()
-    if gate_novel:
-        log.info("Category-proposal gate active — new parent/subcategory names will be held for Telegram approval")
-    else:
-        log.info("Category-proposal endpoints unavailable — creating new categories immediately")
+    # A new parent/subcategory name is held for approval on Telegram rather than
+    # created outright. (The switch once fell back to creating names straight
+    # away while the server couldn't yet deliver the cards; with one shared
+    # database it always can.)
+    gate_novel = True
+    denied_parents = category_proposals.denied_parent_names()
+    denied_subs = category_proposals.denied_sub_names()
     new_proposal_ids: list[int] = []
 
     # A questioned placement is held behind the same kind of card as a new
@@ -821,11 +809,7 @@ def run():
                 )
 
     new_proposal_ids.extend(reviewer.new_proposal_ids)
-    if new_proposal_ids:
-        try:
-            category_proposals.sync_new_proposals(new_proposal_ids)
-        except Exception as e:
-            log.error(f"Failed to sync category proposal(s) to the server: {e}", exc_info=True)
+    category_proposals.sync_new_proposals(new_proposal_ids)
 
     if reviewer.unavailable_count:
         log.error(

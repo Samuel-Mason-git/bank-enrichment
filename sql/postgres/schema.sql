@@ -240,6 +240,10 @@ DROP VIEW IF EXISTS quick_categories, needs_label, needs_context, transaction_ro
 -- come out of the payload exactly as database_functions.write_to_db flattened
 -- them (amount from pence; '' dates as NULL). parent_id/subcategory_id are
 -- extra, for joining by id.
+--
+-- A labelled transaction's parent is its subcategory's parent *now*, not the
+-- one recorded with the label, so moving a subcategory to another parent takes
+-- its transactions with it. Only a parent-only label uses its own parent_id.
 CREATE OR REPLACE VIEW transactions AS
 SELECT
     r.id,
@@ -267,7 +271,7 @@ SELECT
     (SELECT p.id FROM category_proposals p
       WHERE p.txn_ids ? r.id
       ORDER BY p.id LIMIT 1)                                        AS pending_category_proposal_id,
-    l.parent_id,
+    pc.id                                                           AS parent_id,
     l.subcategory_id
 FROM transactions_raw r
 CROSS JOIN LATERAL (SELECT r.payload->'data' AS data) d
@@ -281,8 +285,8 @@ LEFT JOIN LATERAL (
     WHERE e.txn_id = r.id
     ORDER BY e.event_id DESC LIMIT 1
 ) l ON TRUE
-LEFT JOIN parent_categories pc ON pc.id = l.parent_id
-LEFT JOIN subcategories sc ON sc.id = l.subcategory_id;
+LEFT JOIN subcategories sc ON sc.id = l.subcategory_id
+LEFT JOIN parent_categories pc ON pc.id = COALESCE(sc.parent_id, l.parent_id);
 
 -- Built-in default role by category name, used when no role is set.
 CREATE OR REPLACE FUNCTION default_role_for_parent(parent_name VARCHAR) RETURNS VARCHAR

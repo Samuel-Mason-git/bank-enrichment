@@ -1,15 +1,15 @@
+"""The pipeline's run (Task Scheduler runs it daily; safe to run by hand).
+
+The server stores every transaction as it arrives and records your answers,
+so there's nothing to fetch: this works through what's waiting in the shared
+database -- quick-taps, decisions made on Telegram, the classifier, the
+monthly review, rule suggestions and the summaries. Any card it creates (a
+category or taxonomy proposal, a rule suggestion) is sent by the server."""
 import logging
-import os
 import time
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from dotenv import load_dotenv
-import requests
 
-from database_functions import (
-    init_db, write_to_db, get_top_subcategories, get_top_merchant_subcategories,
-    apply_quick_tap_classifications, apply_rule_classifications, get_subcategories,
-)
+from database_functions import init_db, apply_quick_tap_classifications, log_path
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
@@ -17,13 +17,7 @@ from taxonomy_review import run as run_taxonomy_review, collect_decisions as col
 from category_proposals import collect_decisions as collect_category_decisions
 from rule_suggestions import sync_candidates as sync_rule_candidates
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
-
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
-DB_PATH = os.getenv("DB_PATH")
-
-LOG_PATH = os.path.splitext(DB_PATH)[0] + ".log" if DB_PATH else "process.log"
+LOG_PATH = log_path("bank_enrichment.log")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,116 +29,18 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-HEADERS = {"X-API-Key": LOCAL_API_KEY}
-
-
-def fetch_enriched():
-    response = requests.get(f"{SERVER_URL}/export", headers=HEADERS, timeout=30)
-    response.raise_for_status()
-    return response.json()
-
-
-def mark_processed(ids: list[str]):
-    response = requests.post(
-        f"{SERVER_URL}/mark-processed",
-        headers=HEADERS,
-        json={"ids": ids},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def sync_quick_categories():
-    entries = [
-        {"category": row["category"], "subcategory": row["subcategory"], "merchant_name": None, "rank": i}
-        for i, row in enumerate(get_top_subcategories(limit=10))
-    ]
-    entries += [
-        {
-            "category": row["category"],
-            "subcategory": row["subcategory"],
-            "merchant_name": row["merchant_name"],
-            "rank": row["rank"] - 1,
-        }
-        for row in get_top_merchant_subcategories(merchant_limit=50, per_merchant_limit=3)
-    ]
-    response = requests.post(
-        f"{SERVER_URL}/sync-quick-categories",
-        headers=HEADERS,
-        json={"entries": entries},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def sync_taxonomy():
-    """Every (category, subcategory) name pair, for the server's Rules page
-    dropdowns -- names only, no transactions or amounts."""
-    entries = [{"category": s["parent_name"], "subcategory": s["name"]} for s in get_subcategories()]
-    response = requests.post(
-        f"{SERVER_URL}/sync-taxonomy",
-        headers=HEADERS,
-        json={"entries": entries},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
 
 if __name__ == "__main__":
     run_start = time.time()
     log.info("--- Process run started ---")
 
     t0 = time.time()
-    log.info(f"Connecting to local DB at {DB_PATH}")
     try:
         init_db()
-        log.info(f"Local DB ready ({time.time() - t0:.2f}s)")
+        log.info(f"Database ready ({time.time() - t0:.2f}s)")
     except Exception as e:
-        log.error(
-            f"Failed to connect to local DB at {DB_PATH} "
-            f"(is the Streamlit dashboard open and holding the write lock?): {e}",
-            exc_info=True,
-        )
+        log.error(f"Couldn't connect to the database (is the VPN up?): {e}", exc_info=True)
         raise SystemExit(1)
-
-    t0 = time.time()
-    log.info(f"Fetching enriched transactions from {SERVER_URL}")
-    try:
-        enriched = fetch_enriched()
-        log.info(f"Fetch complete ({time.time() - t0:.2f}s)")
-    except Exception as e:
-        log.error(f"Failed to fetch enriched transactions: {e}", exc_info=True)
-        enriched = None
-
-    if enriched is None:
-        pass  # failure already logged above
-    elif not enriched:
-        log.info("Nothing to process — queue is empty")
-    else:
-        log.info(f"Fetched {len(enriched)} transactions")
-        try:
-            t0 = time.time()
-            write_to_db(enriched)
-            log.info(f"Stored {len(enriched)} transactions ({time.time() - t0:.2f}s)")
-
-            try:
-                filed = apply_rule_classifications(enriched)
-                if filed:
-                    log.info(f"Filed {filed} transaction(s) by fixed-category rule, skipping the classifier")
-            except Exception as e:
-                log.error(f"Applying fixed-category rules failed: {e}", exc_info=True)
-
-            t0 = time.time()
-            ids = [r["id"] for r in enriched]
-            mark_processed(ids)
-            log.info(f"Marked as processed on server ({time.time() - t0:.2f}s)")
-        except Exception as e:
-            log.error(f"Processing failed: {e}", exc_info=True)
-
-    log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
 
     try:
         t0 = time.time()
@@ -159,7 +55,7 @@ if __name__ == "__main__":
     except Exception as e:
         log.error(f"Quick-tap classification failed: {e}", exc_info=True)
 
-    # Category-creation decisions first, so a transaction unlocked by a denial
+    # Category-creation decisions first, so a transaction released by a denial
     # (or classified by an approval) is settled before this run's classifier
     # batches touch it again.
     try:
@@ -170,10 +66,9 @@ if __name__ == "__main__":
         log.error(f"Collecting category decisions failed: {e}", exc_info=True)
 
     # After decisions, before the classifier: a "Try again" tap leaves its
-    # transactions locked to the (now-denied) old proposal on purpose, so this
+    # transactions held by the (now-denied) old proposal on purpose, so this
     # has to run before run_classifier() would otherwise leave them alone
-    # (they're not in get_unclassified() while locked) and after
-    # collect_category_decisions() has recorded the tap.
+    # (they're not in get_unclassified() while held).
     try:
         regenerated = regenerate_category_proposals()
         if regenerated:
@@ -198,16 +93,16 @@ if __name__ == "__main__":
     try:
         proposed = run_taxonomy_review()
         if proposed:
-            log.info(f"Sent {len(proposed)} taxonomy proposal(s) for review")
+            log.info(f"Proposed {len(proposed)} taxonomy change(s) for review")
     except Exception as e:
         log.error(f"Taxonomy review run failed: {e}", exc_info=True)
 
     try:
-        synced = sync_rule_candidates()
-        if synced:
-            log.info(f"Synced {synced} rule suggestion candidate(s) to the server")
+        suggested = sync_rule_candidates()
+        if suggested:
+            log.info(f"Suggested {suggested} rule(s)")
     except Exception as e:
-        log.error(f"Rule suggestion sync failed: {e}", exc_info=True)
+        log.error(f"Rule suggestions failed: {e}", exc_info=True)
 
     try:
         run_monthly_summary()
@@ -219,20 +114,4 @@ if __name__ == "__main__":
     except Exception as e:
         log.error(f"Weekly summary run failed: {e}", exc_info=True)
 
-    try:
-        t0 = time.time()
-        result = sync_quick_categories()
-        log.info(f"Synced {result.get('synced', 0)} quick categories to server ({time.time() - t0:.2f}s)")
-    except Exception as e:
-        log.error(f"Failed to sync quick categories: {e}", exc_info=True)
-
-    try:
-        result = sync_taxonomy()
-        log.info(f"Synced {result.get('synced', 0)} taxonomy entries to server")
-    except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
-            log.info("Server has no /sync-taxonomy endpoint yet — skipping until it is deployed")
-        else:
-            log.error(f"Failed to sync taxonomy: {e}", exc_info=True)
-    except Exception as e:
-        log.error(f"Failed to sync taxonomy: {e}", exc_info=True)
+    log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
