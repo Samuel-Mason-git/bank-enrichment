@@ -218,3 +218,17 @@ def test_the_check_notices_a_difference(seeded, pg):
 
 def test_every_new_table_is_covered():
     assert len(NEW_TABLES) == 13
+
+
+def test_an_old_proposal_only_on_the_server_is_left_out_if_it_was_collected(seeded, pg):
+    local, server = seeded
+    server.execute("INSERT INTO category_proposals (local_id, options, status, sent_at) "
+                   "VALUES (7, '[]', 'collected', '2026-08-20')")
+    _, notes = copy_all(local, server, pg)
+    assert notes["old category proposals left out: already collected, no longer on the PC"] == 1
+    assert check_all(local, server, pg)[0] == []
+
+    # One the PC never collected is a decision it never saw: that stops the copy.
+    server.execute("UPDATE category_proposals SET status = 'selected' WHERE local_id = 7")
+    with pytest.raises(CopyProblems):
+        copy_all(local, server, pg)

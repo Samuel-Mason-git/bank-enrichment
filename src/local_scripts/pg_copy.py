@@ -118,6 +118,19 @@ def _json(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def _server_only(left: dict, kind: str, problems: list[str], notes: Counter) -> None:
+    """Proposals the server still has but the PC doesn't. One the PC already
+    collected is history from before the PC's own copy was cleared (the PC's
+    proposals were wiped and renumbered from 999001 once), so it's left out
+    and counted. One it never collected would be a Telegram decision the PC
+    never saw, so that stops the copy."""
+    for local_id, p in left.items():
+        if p.get("status") == "collected":
+            notes[f"old {kind}s left out: already collected, no longer on the PC"] += 1
+        else:
+            problems.append(f"{kind} {local_id} is on the server ({p.get('status')}) but not the PC")
+
+
 # ── Building the new rows ────────────────────────────────────────────────────
 
 def build(local, server) -> tuple[dict[str, list[dict]], dict]:
@@ -245,8 +258,7 @@ def build(local, server) -> tuple[dict[str, list[dict]], dict]:
             "applied_at": p["applied_at"], "follow_up_count": s.get("follow_up_count") or 0,
             "last_nudged_at": s.get("last_nudged_at"),
         })
-    for local_id in server_tax:
-        problems.append(f"taxonomy proposal {local_id} is on the server but not the PC")
+    _server_only(server_tax, "taxonomy proposal", problems, notes)
 
     # Category proposals, the same way, with the transactions each one holds.
     server_cat = {p["local_id"]: p for p in _rows(server, "SELECT * FROM category_proposals")}
@@ -263,8 +275,7 @@ def build(local, server) -> tuple[dict[str, list[dict]], dict]:
             "proposed_at": p["proposed_at"], "sent_at": s.get("sent_at"), "decided_at": decided_at,
             "applied_at": p["applied_at"],
         })
-    for local_id in server_cat:
-        problems.append(f"category proposal {local_id} is on the server but not the PC")
+    _server_only(server_cat, "category proposal", problems, notes)
     for proposal_id, txn_ids in held.items():
         problems.append(f"{len(txn_ids)} transaction(s) held by category proposal {proposal_id}, which doesn't exist")
 
