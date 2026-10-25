@@ -26,7 +26,7 @@ def _add_rule(con, match_field="scheme", match_type="exact",
     con.execute(
         """INSERT INTO rules (id, name, match_field, match_type, match_value,
                               auto_context, enabled, auto_skip, match_field_2, match_type_2, match_value_2)
-           VALUES (?, 'Monzo pot transfer', ?, ?, ?, ?, TRUE, ?, ?, ?, ?)""",
+           VALUES (%s, 'Monzo pot transfer', %s, %s, %s, %s, TRUE, %s, %s, %s, %s)""",
         [rule_id, match_field, match_type, match_value, context, skip,
          match_field_2, match_type_2, match_value_2])
 
@@ -107,8 +107,8 @@ class TestTheRuleTesterCanExerciseSchemeRules:
         import json as _json
         import main
         server_con.execute(
-            """INSERT INTO webhook_queue (id, payload, received_at)
-               VALUES ('tx_pot', ?, NOW())""",
+            """INSERT INTO transactions_raw (id, payload, received_at)
+               VALUES ('tx_pot', %s, NOW())""",
             [_json.dumps({"data": {
                 "id": "tx_pot", "amount": 10000, "scheme": "uk_retail_pot",
                 "description": "pot_0000B7cenLixHWSDlwwxKD", "category": "general",
@@ -124,8 +124,8 @@ class TestTheRuleTesterCanExerciseSchemeRules:
         import json as _json
         import main
         server_con.execute(
-            """INSERT INTO webhook_queue (id, payload, received_at)
-               VALUES ('tx_old', ?, NOW())""",
+            """INSERT INTO transactions_raw (id, payload, received_at)
+               VALUES ('tx_old', %s, NOW())""",
             [_json.dumps({"data": {"id": "tx_old", "amount": -500,
                                    "description": "OLD", "category": "general"}})],
         )

@@ -42,8 +42,8 @@ class TestSendCardKeyboard:
         _, kwargs = mock_post.call_args
         keyboard = kwargs["json"]["reply_markup"]["inline_keyboard"]
         assert keyboard[0] == [
-            {"text": "Groceries", "callback_data": "quickcat:tx_001:1"},
-            {"text": "Snacks", "callback_data": "quickcat:tx_001:2"},
+            {"text": "Groceries", "callback_data": "qcat:tx_001:1"},
+            {"text": "Snacks", "callback_data": "qcat:tx_001:2"},
         ]
         assert [b["text"] for b in keyboard[-1]] == ["✏️ Enrich", "⏭ Skip"]
 
@@ -71,7 +71,7 @@ class TestSendCardKeyboard:
             bot.send_card(_payload(txn_id="tx_999"), quick_categories=quick_categories)
         _, kwargs = mock_post.call_args
         keyboard = kwargs["json"]["reply_markup"]["inline_keyboard"]
-        assert keyboard[0][0]["callback_data"] == "quickcat:tx_999:7"
+        assert keyboard[0][0]["callback_data"] == "qcat:tx_999:7"
 
     def test_empty_quick_categories_list_same_as_none(self):
         bot = TelegramBot()
@@ -145,7 +145,7 @@ class TestSendCardFollowUpText:
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload(), follow_up=1, quick_categories=quick_categories)
         keyboard = mock_post.call_args[1]["json"]["reply_markup"]["inline_keyboard"]
-        assert keyboard[0][0]["callback_data"] == "quickcat:tx_001:1"
+        assert keyboard[0][0]["callback_data"] == "qcat:tx_001:1"
 
 
 class TestSendRuleSuggestion:

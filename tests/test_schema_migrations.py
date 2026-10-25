@@ -65,10 +65,11 @@ CREATE TABLE proposals (id INTEGER PRIMARY KEY, name VARCHAR)"""
 
 
 class TestAdditiveMigrations:
-    @pytest.fixture(params=["local", "server"])
-    def apply(self, request):
-        return (database_functions._apply_migrations if request.param == "local"
-                else server_db._apply_migrations)
+    # The local DuckDB's. The server's Postgres schema adds columns with
+    # ADD COLUMN IF NOT EXISTS in schema.sql instead (test_postgres_schema).
+    @pytest.fixture
+    def apply(self):
+        return database_functions._apply_migrations
 
     def test_a_missing_column_is_added(self, apply):
         con = duckdb.connect(":memory:")

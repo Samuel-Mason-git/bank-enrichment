@@ -7,9 +7,8 @@ import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import main
+from tests.server_helpers import status, stored, transaction
 
 
 def _run(coro):
@@ -45,15 +44,13 @@ def _post(server_con, req, bot=None):
         return _run(main.recieve_monzo(req))
 
 
-class TestDeclinedTransactionsAreNotQueued:
+class TestDeclinedTransactionsAreSkipped:
     def test_a_declined_payment_is_auto_skipped(self, server_con):
         _post(server_con, _webhook(decline_reason="INSUFFICIENT_FUNDS"))
-        row = server_con.execute(
-            "SELECT status, skipped, user_context FROM webhook_queue WHERE id = 'tx_declined'"
-        ).fetchone()
-        assert row[0] == "enriched"
-        assert row[1] is True
-        assert row[2] == "Declined (INSUFFICIENT_FUNDS)"
+        t = transaction(server_con, "tx_declined")
+        assert status(server_con, "tx_declined") == "skipped"
+        assert t["skipped"] is True
+        assert t["user_context"] == "Declined (INSUFFICIENT_FUNDS)"
 
     def test_no_telegram_card_is_sent_for_a_decline(self, server_con):
         """The whole point -- being asked "what was this?" about a payment that
@@ -63,11 +60,11 @@ class TestDeclinedTransactionsAreNotQueued:
         bot.send_card.assert_not_called()
 
     def test_it_is_still_recorded_rather_than_dropped(self, server_con):
-        """The attempt is a true record, and keeping the row keeps its id in the
-        dedup buffer."""
+        """The attempt is a true record, and keeping it keeps its id, so the
+        duplicate webhooks that follow are recognised as duplicates."""
         _post(server_con, _webhook(decline_reason="INSUFFICIENT_FUNDS"))
         assert server_con.execute(
-            "SELECT COUNT(*) FROM webhook_queue WHERE id = 'tx_declined'").fetchone()[0] == 1
+            "SELECT COUNT(*) FROM transactions_raw WHERE id = 'tx_declined'").fetchone()[0] == 1
 
     def test_rules_are_not_run_for_a_decline(self, server_con):
         """A rule matching the merchant would otherwise auto-enrich a payment
@@ -81,19 +78,14 @@ class TestDeclinedTransactionsAreNotQueued:
 
     def test_any_decline_reason_is_handled_not_just_insufficient_funds(self, server_con):
         _post(server_con, _webhook(decline_reason="CARD_BLOCKED"))
-        assert server_con.execute(
-            "SELECT user_context FROM webhook_queue WHERE id = 'tx_declined'"
-        ).fetchone()[0] == "Declined (CARD_BLOCKED)"
+        assert transaction(server_con, "tx_declined")["user_context"] == "Declined (CARD_BLOCKED)"
 
 
 class TestNormalTransactionsAreUnaffected:
     def test_a_successful_payment_still_queues_and_notifies(self, server_con):
         bot = MagicMock()
         _post(server_con, _webhook(txn_id="tx_ok"), bot)
-        row = server_con.execute(
-            "SELECT status, skipped FROM webhook_queue WHERE id = 'tx_ok'").fetchone()
-        assert row[0] == "pending"
-        assert row[1] is False
+        assert status(server_con, "tx_ok") == "pending"
         bot.send_card.assert_called_once()
 
     def test_the_retry_after_a_decline_is_treated_normally(self, server_con):
@@ -102,9 +94,7 @@ class TestNormalTransactionsAreUnaffected:
         bot = MagicMock()
         _post(server_con, _webhook(txn_id="tx_declined", decline_reason="INSUFFICIENT_FUNDS"), bot)
         _post(server_con, _webhook(txn_id="tx_retry"), bot)
-        rows = dict(server_con.execute(
-            "SELECT id, status FROM webhook_queue").fetchall())
-        assert rows == {"tx_declined": "enriched", "tx_retry": "pending"}
+        assert stored(server_con) == {"tx_declined": "skipped", "tx_retry": "pending"}
         assert bot.send_card.call_count == 1
 
     def test_a_pot_transfer_is_not_mistaken_for_a_decline(self, server_con):
@@ -112,5 +102,4 @@ class TestNormalTransactionsAreUnaffected:
         flag is too broad to use here -- only decline_reason is decisive."""
         bot = MagicMock()
         _post(server_con, _webhook(txn_id="tx_pot", amount=10000, merchant=None), bot)
-        assert server_con.execute(
-            "SELECT status FROM webhook_queue WHERE id = 'tx_pot'").fetchone()[0] == "pending"
+        assert status(server_con, "tx_pot") == "pending"

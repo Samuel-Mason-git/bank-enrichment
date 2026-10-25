@@ -48,8 +48,8 @@ def _post(server_con, req, fetched=None, bot=None):
 
 
 def _stored_merchant(server_con, txn_id="tx_1"):
-    payload = json.loads(server_con.execute(
-        "SELECT payload FROM webhook_queue WHERE id = ?", [txn_id]).fetchone()[0])
+    payload = server_con.execute(
+        "SELECT payload FROM transactions_raw WHERE id = %s", [txn_id]).fetchone()[0]
     return payload["data"]["merchant"]
 
 
@@ -61,7 +61,7 @@ class TestACardPaymentWithoutAMerchant:
 
     def test_the_payload_keeps_monzos_own_shape(self, server_con):
         _post(server_con, _webhook(), fetched=API_TRANSACTION)
-        payload = json.loads(server_con.execute("SELECT payload FROM webhook_queue").fetchone()[0])
+        payload = server_con.execute("SELECT payload FROM transactions_raw").fetchone()[0]
         assert payload["type"] == "transaction.updated"
         assert payload["data"]["id"] == "tx_1"
 

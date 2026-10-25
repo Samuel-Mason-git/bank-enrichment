@@ -123,15 +123,10 @@ def _reset_server_db():
 
 
 @pytest.fixture
-def server_con():
-    """In-memory DuckDB with the full server schema applied."""
+def server_con(pg):
+    """The server's database: a throwaway Postgres schema with the new tables
+    (the `pg` fixture), set as the connection server_db hands out."""
     import server_db
-    con = duckdb.connect(":memory:")
-    for stmt in _SERVER_SQL_PATH.read_text().split(";"):
-        s = stmt.strip()
-        if s:
-            con.execute(s)
-    server_db._con = con
-    yield con
-    con.close()
+    server_db._con = pg
+    yield pg
     server_db._con = None
