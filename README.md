@@ -40,13 +40,13 @@ context sentences tell it exactly what each transaction was.
 ## How It Works
 
 1. Monzo transaction fires a webhook
-2. Always-on server receives and stores the raw payload
+2. Always-on server stores the raw payload in the Postgres database (on a separate data box, backed up nightly)
 3. Server checks your rules — if a rule matches, the transaction is auto-enriched and/or marked as skipped, and Telegram is skipped entirely
 4. Otherwise, a Telegram notification is sent to your phone with transaction details
 5. You reply with one sentence of context, tap a quick-category button if one's shown, or tap Skip to dismiss
-6. Enrichment stored alongside the raw transaction in the queue
+6. Your context is stored as an event alongside the raw transaction — every answer and every label is kept, so nothing is ever overwritten
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-8. Daily local script pulls enriched transactions from the server into a local DuckDB database, then immediately runs the LLM classifier in the same process — one scheduled task does everything. Processed transactions remain on the server for 5 days to catch delayed settlement webhooks, then are cleaned up automatically
+8. A daily script on your own machine (the compute) runs the LLM classifier against the same database, over a VPN — one scheduled task does everything
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time — a genuinely new category is never created silently; it's proposed with a Telegram approval card first (see [New Category Approval](#new-category-approval) below)
 10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
@@ -55,36 +55,35 @@ context sentences tell it exactly what each transaction was.
 
 The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard`.
 
-**Lifetime Stats** — persistent counters that survive queue clears:
-- Total transactions received and total monetary value processed
-- Total Telegram notifications sent, enriched, and processed
+**Lifetime Stats** — counted from the transactions themselves:
+- Total transactions received and total monetary value
+- Telegram requests sent, and how many were enriched and classified
 
-**Current Queue** — live state of unprocessed transactions:
-- Status breakdown (pending / enriched / skipped) with counts
+**Current Queue** — where each transaction is up to:
+- Status breakdown (pending / enriched / classified / skipped) with counts
 - Paginated transaction list with amount and status
 - Enrich any pending transaction directly from the dashboard via a modal
-- Skip or delete transactions inline
+- Skip, unskip or delete transactions inline
 
-Each transaction links to a detail page showing the full payload, 
-merchant/counterparty info, enrichment context, and controls to enrich, 
-skip, reset, or delete.
+Each transaction links to a detail page showing the full payload,
+merchant/counterparty info, enrichment context, and controls to enrich,
+skip, unskip, or delete.
 
 A **Rules view** at `/dashboard/rules` lets you define auto-enrichment rules. 
 When a transaction matches a rule, it is enriched automatically and no Telegram 
 notification is sent — useful for recurring transactions like rent, gym memberships, 
 or regular transfers where you already know the context.
 
-A **Database view** at `/dashboard/db` lets you inspect the raw tables directly 
-without needing to exec into the container.
+A **Database view** at `/dashboard/db` lets you inspect the raw tables directly
+without needing to connect to the database.
 
 A **Logout** button sits in the header. HTTP Basic Auth has no real server-side 
 session for it to end, so it links to a page explaining this plainly rather than 
 attempting a fake login challenge — closing the browser tab is the only way to 
 actually clear cached credentials.
 
-**Who can reach what.** The dashboard needs your login, and the endpoints the local
-pipeline uses need `LOCAL_API_KEY`. The two webhooks can't use either — Telegram and
-Monzo have to be able to call them — so each checks a shared secret instead: Telegram
+**Who can reach what.** The dashboard needs your login. The two webhooks can't use
+one — Telegram and Monzo have to be able to call them — so each checks a shared secret instead: Telegram
 sends `TELEGRAM_WEBHOOK_SECRET` in a header, and Monzo's registered webhook URL carries
 `MONZO_WEBHOOK_SECRET` (redacted from the request logs). On top of that, the bot only
 acts on updates from your own `TELEGRAM_CHAT_ID`, so someone who finds it can't use it.
@@ -93,11 +92,9 @@ another website triggers, dashboard changes are refused unless they come from th
 dashboard's own pages. Monzo authorization starts from `/oauth/start` behind your login,
 and the callback only completes an authorization the server issued itself.
 
-Processed transactions are retained on the server for 5 days before being automatically 
-cleaned up. This acts as a deduplication buffer — some merchants (e.g. Aldi, Lidl) do 
-not send a pending webhook and only fire when the transaction settles, which can be days 
-after the original purchase. Without this buffer, the settlement webhook would be treated 
-as a new transaction.
+Every transaction is kept. A webhook for a transaction already stored is ignored — some
+merchants (e.g. Aldi, Lidl) only fire when the transaction settles, days after the purchase,
+and that must not become a second transaction.
 
 ## Rules
 
@@ -139,13 +136,12 @@ the transaction labelled but not notified.
 **Auto Context vs Fixed Category.** An Auto Context rule only supplies the context
 sentence — the transaction still goes through quick-tap or Claude to be placed, which
 costs a classification call and can, in principle, land somewhere different from last
-time. A **Fixed Category** rule skips all of that: the local pipeline files the match
-straight into the chosen category (logged with model `rule`) and the classifier never
+time. A **Fixed Category** rule skips all of that: the server files the match straight
+into the chosen category as it arrives (logged as source `rule`) and the classifier never
 sees it. Use it when the answer is never in doubt — a phone bill, a subscription, rent.
-The dropdowns list your real categories, synced up from the local taxonomy on each
-pipeline run, so a typo can't quietly create a near-duplicate category. If a rule's
-category is later renamed or deleted locally, matches are left for the classifier
-instead of recreating the old name. Editing or resetting a transaction's context by hand
+The dropdowns list your real categories, so a typo can't quietly create a near-duplicate
+category. The rule points at the category itself, so renaming it carries the rule along;
+if it's deleted, matches are left for the classifier instead. Editing or resetting a transaction's context by hand
 clears any rule placement on it, so what you typed always wins.
 
 **A card payment's amount isn't always final.** A provisional authorisation hold (the
@@ -166,15 +162,14 @@ gone through each, set that subcategory's Role to **Saving** in the Settings tab
 Picking a transaction from the dropdown above the Add Rule form pre-fills it for you —
 merchant name if present, else counterparty name, else description (the same fallback
 order used throughout), plus that transaction's existing context if it has one.
-**Test this rule** runs the not-yet-saved rule against everything still in the queue
-(roughly a week of transactions before cleanup) and lists exactly which ones it would
-catch, with their status and current context, right under the form — so you see its
+**Test this rule** runs the not-yet-saved rule against the last 30 days of transactions
+and lists exactly which ones it would catch, with their status and current context, right under the form — so you see its
 real reach before saving, not just that it matches the transaction you built it from.
 The form stays filled in afterwards.
 
 ### Rule Suggestions
 
-Each local pipeline run also scans your already-classified transactions for a merchant or
+Each pipeline run also scans your already-classified transactions for a merchant or
 counterparty that has shown up 5+ times with the *exact same* category/subcategory every
 single time — one disagreement anywhere in its history disqualifies it, since the whole
 point is a pattern reliable enough to automate.
@@ -184,7 +179,7 @@ automate, though — a supermarket that's happened to be Groceries every time so
 just as easily be something else next time, while a single-purpose merchant (a phone
 bill, a subscription) realistically never will be. Every qualifying pattern is checked by
 Claude for exactly this before anything is suggested — one small batched call per run, 
-only when there's a new pattern to check — and anything judged a general-purpose
+only when there's a pattern it hasn't asked about before — and anything judged a general-purpose
 retailer/marketplace is dropped rather than suggested. (Fails closed: if that check
 itself fails, nothing is suggested that run rather than risk suggesting something
 unverified — it's simply reconsidered next time.)
@@ -196,20 +191,19 @@ pre-filled from whichever context sentence you've typed most often for that merc
 one) and Claude's own reasoning for why it's safe to automate. Tapping **Create rule**
 adds it immediately as a **Fixed Category** rule — future matches go straight into that
 category without a classification call, which is safe precisely because the pattern has
-never once varied and was judged single-purpose first. No local round trip is needed,
-since Rules already live entirely on the server. Tapping **No thanks** means that exact
-pattern is never suggested again.
+never once varied and was judged single-purpose first. Tapping **No thanks** means that
+exact pattern is never suggested again.
 
 ## Quick Categories
 
-Typing a sentence for every transaction adds up. Each time the local pipeline runs, 
-it computes your most-used subcategories overall and per-merchant, and syncs a small 
-summary (category names only — no amounts, dates, or raw transaction data) to the server. 
-The next Telegram notification for a matching merchant shows up to 3 one-tap buttons for 
+Typing a sentence for every transaction adds up. The server works out your most-used
+subcategories overall and per-merchant from your labelled transactions, so the next
+Telegram notification for a matching merchant shows up to 3 one-tap buttons for 
 that merchant's usual categories, or 5 general ones if the merchant hasn't built up enough 
-history yet, alongside the usual Enrich and Skip buttons. Tapping one instantly saves that 
-category as your context — no typing required, and the LLM classifier still runs afterwards 
-as normal so it stays part of the same taxonomy.
+history yet, alongside the usual Enrich and Skip buttons. Tapping one instantly saves that
+category as your context — no typing required, and the next pipeline run files it there
+(after the second look below). Each button names its category by id, so a card tapped
+days later still files exactly what it said, even if the buttons have changed since.
 
 The per-merchant personalization depends on Monzo actually sending a `merchant` name on new
 transactions, which in turn depends on Monzo's own access confirmation staying current — see
@@ -234,11 +228,11 @@ The daily processing script automatically sends two types of Telegram summary.
 - Net (saved or overspent)
 - Full breakdown by parent category for both spend and income
 
-Both summaries catch up automatically if the script was inactive — a summary is sent for each missed period in order, and each is recorded locally so it is never sent twice.
+Both summaries catch up automatically if the script was inactive — a summary is sent for each missed period in order, and each is recorded in the database so it is never sent twice.
 
 ## LLM Classification
 
-A multi-pass classification system runs locally against your DuckDB database:
+A multi-pass classification system runs on your machine against the shared database:
 
 **Pass 0 — Match existing taxonomy:** Claude first checks whether each transaction 
 confidently matches an already-existing subcategory. If it does, the transaction is 
@@ -361,13 +355,12 @@ any category name.
 It fails **closed**: if the judge is switched on but can't reach a verdict (API down, 
 balance out, unparseable reply), the transaction is left unclassified and retried on the 
 next run rather than saved unreviewed — a check that quietly steps aside whenever 
-something is wrong only works when nothing is. This applies to quick-taps too. Set 
-`PLACEMENT_JUDGE=off` in `config/.env` to turn it off deliberately, which releases 
-anything it was holding back; it is also off when there is no API key or the server 
-can't show a card.
+something is wrong only works when nothing is. This applies to quick-taps too. Set
+`PLACEMENT_JUDGE=off` in `config/.env` to turn it off deliberately, which releases
+anything it was holding back; it is also off when there is no API key.
 
-The card is worded for what it is ("🔍 Second look", the keep option marked ↩️, buttons 
-"Neither — try again" / "Skip — no change"), which needs the server deployed.
+The card is worded for what it is ("🔍 Second look", the keep option marked ↩️, buttons
+"Neither — try again" / "Skip — no change").
 
 #### Reviewing history
 
@@ -379,19 +372,18 @@ change it, `--list-only` to see them without sending any); a held transaction **
 classified where it is**, so your totals don't move while a card waits, and declining or
 ignoring one leaves it exactly as it was. Each transaction is judged once, so re-running only
 reviews what's left, and your own decisions (dashboard edits, card choices) are never
-second-guessed. Close the dashboard first: it holds the database's write lock.
+second-guessed.
 
 ### Failure Alerts
 
-Every Anthropic error the pipeline catches — most importantly **running out of credit** — 
-also sends a Telegram alert through the server's `/send-alert` endpoint, so it doesn't 
+Every Anthropic error the pipeline catches — most importantly **running out of credit** —
+also sends you a Telegram alert, with the same bot, so it doesn't 
 sit unseen in a log file while transactions quietly stop being classified. Each kind is 
 sent at most once per run (a run that fails 40 calls sends one message, not 40): credit 
 balance too low, API key rejected, other Claude API errors, and the judge holding 
 transactions back. Alerts contain a kind, what to do about it, and counts — never 
 transaction text, and never an error's own message, since a parse error quotes the 
-model's output. An older server without the endpoint is tolerated: the alert is simply 
-not sent and the log line stands.
+model's output. An alert that can't be sent is dropped, and the log line stands.
 
 ### Monthly Taxonomy Review
 
@@ -405,7 +397,8 @@ Nothing changes until you approve one.
 
 ## Local Dashboard
 
-A Streamlit dashboard runs on your machine and reads directly from the local DuckDB database.
+A Streamlit dashboard runs on your machine and reads the shared database directly (through
+DuckDB, over the VPN).
 Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
 filters, a text search across merchant/description/context, toggles for skipped/unclassified
 transactions, and an **Exclude** block for hiding noise — pick merchants/counterparties from a
@@ -426,35 +419,32 @@ excluding something hides it from view, it does not delete or reclassify it.
 
 ### Backups
 
-A full backup of the local database is taken automatically before anything irreversible —
-deleting a category or subcategory, wiping labels, bulk-reassigning transactions to another
-subcategory, or wiping the entire taxonomy. There is nothing to enable; the Backups section in
-the Settings tab also has a **Back up now** button for taking one by hand.
+The database is backed up every night wherever it lives — for this setup, by the data box
+(see the data-vault repo) — and every change to a transaction is kept in its history anyway,
+so nothing here is needed to stay safe.
 
-Backups are written to a `backups/` folder next to your database, one directory per backup, named
-`<timestamp>_<reason>`. Each is a DuckDB `EXPORT DATABASE` — a logical dump (`schema.sql`,
-`load.sql`, and one Parquet file per table) rather than a copy of the `.db` file, which is open
-and may have un-checkpointed changes sitting in its WAL. Restore one with:
+**Back up now** in the Settings tab takes a copy of your own before you try something: every
+table saved as a Parquet file, in a folder named `<timestamp>_<reason>` under `BACKUP_DIR`
+(default `~/bank-enrichment-backups`). Nothing is ever backed up automatically. Read one back
+with DuckDB or pandas, e.g.
 
 ```sql
-IMPORT DATABASE 'path/to/backups/20260813-220341_manual';
+SELECT * FROM '~/bank-enrichment-backups/20261025-220341_manual/transactions_raw.parquet';
 ```
 
-Every backup carries a `manifest.json` recording what it captured at the time it was taken, so the
-Settings tab can tell you what you'd get back before you restore: transaction count, how many were
-classified, taxonomy size, subscription count, the date range covered, and size on disk. The most
-recent 10 are kept and older ones pruned automatically; any backup can also be deleted by hand
-from the same section (behind a confirmation, since it's the safety net for everything else).
+Each copy carries a `manifest.json` recording what it captured, so the Settings tab can tell you
+what's in it: transaction count, how many were classified, taxonomy size, subscription count,
+the date range covered, and size on disk. The most recent 10 are kept and older ones pruned;
+any can also be deleted by hand from the same section (behind a confirmation).
 
 ## What You End Up With
 
-A local DuckDB database of every transaction, each row containing:
+A Postgres database (schema `bank_enrichment`) of every transaction:
 
-- The raw bank data (amount, merchant, timestamp, counterparty, full JSON payload)
-- Your one-sentence human context (what it actually was)
-- LLM-assigned parent category and subcategory
-- Status tracking (enriched / skipped / auto-skipped)
-- Full audit trail (received, enriched, processed, classified timestamps)
+- The raw bank data exactly as Monzo sent it (amount, merchant, timestamp, counterparty — the full payload)
+- Your one-sentence human context (what it actually was), and every answer before it
+- Every label it has had — LLM, quick-tap, rule or your own — with when and by what
+- A `transactions` view that puts the latest of each together, one row per transaction
 
 Because context is stored separately from classification, you can re-run labelling 
 at any point using a new taxonomy and it will classify correctly every time.
@@ -468,20 +458,22 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── check_rules.py     # Rule matching logic
 │   │   ├── telegram.py        # Telegram bot logic
 │   │   ├── follow_up_tg.py    # Follow-up notification scheduler
-│   │   └── server_db.py       # Server-side database functions
+│   │   └── server_db.py       # Server-side database functions (psycopg)
 │   └── local_scripts/         # Runs on your local machine
-│       ├── process.py         # Pull, classify, and send summaries — one task does all
+│       ├── process.py         # Classify and send summaries — one task does all
 │       ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
-│       ├── category_proposals.py  # Real-time new-category approval (holds + syncs Telegram cards)
+│       ├── category_proposals.py  # Real-time new-category approval (holds transactions behind a Telegram card)
 │       ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
-│       ├── database_functions.py  # Shared DuckDB library — includes a CLI (run the file directly) to print stats/transactions
+│       ├── database_functions.py  # The pipeline's database library (DuckDB attached to Postgres) — includes a CLI (run the file directly) to print stats/transactions
+│       ├── pg_copy.py         # One-off: copies the old DuckDB files into Postgres
 │       ├── dashboard.py       # Streamlit dashboard
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
 ├── sql/
-│   ├── tables.sql             # Local database schema (transactions, categories)
-│   └── server_tables.sql      # Server database schema (queue, stats, rules)
+│   ├── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
+│   ├── tables.sql             # The old local DuckDB schema — read only by pg_copy.py
+│   └── server_tables.sql      # The old server DuckDB schema — read only by pg_copy.py
 ├── config/
 │   └── .env.example           # Environment variable template
 ├── Dockerfile                 # Server container (server dependencies + server files only)
@@ -493,14 +485,14 @@ at any point using a new taxonomy and it will classify correctly every time.
 
 | Layer | Technology |
 |-------|-----------|
-| Server | Python, FastAPI, DuckDB |
+| Server | Python, FastAPI, psycopg |
 | Reverse proxy | Caddy (automatic HTTPS) |
 | Notifications | Telegram Bot API |
-| Local database | DuckDB |
+| Database | Postgres 18 on a separate data box, reached over WireGuard; the pipeline and dashboard read it through DuckDB |
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose |
-| CI/CD | GitHub Actions — tests and a server-image build/smoke test run on every PR; merging to `main` auto-deploys over SSH, but only when something the server is built from changed (`src/server_scripts/`, `sql/server_tables.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — pipeline and dashboard changes don't restart it. Deploys never overlap. |
+| CI/CD | GitHub Actions — tests and a server-image build/smoke test run on every PR; merging to `main` auto-deploys over SSH, but only when something the server is built from changed (`src/server_scripts/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — pipeline and dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
 

@@ -360,7 +360,7 @@ version = "1.5.2"
 description = "DuckDB in-process database"
 optional = false
 python-versions = ">=3.10.0"
-groups = ["main"]
+groups = ["local"]
 files = [
     {file = "duckdb-1.5.2-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:63bf8687feefeed51adf45fa3b062ab8b1b1c350492b7518491b86bae68b1da1"},
     {file = "duckdb-1.5.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:84b193aca20565dedb3172de15f843c659c3a6c773bf14843a9bd781c850e7db"},
@@ -2175,4 +2175,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "46da85a99aa84baaeee90502c13953a098c7ee0cc60c2323fbdb650bc1e14805"
+content-hash = "a19a7a161a9bc9e5a9fd5c1f22a93d721c4ca470ed3054cfc47f8f50f9d6b2ed"

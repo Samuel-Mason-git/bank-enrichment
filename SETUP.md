@@ -2,6 +2,11 @@
 
 - A Monzo account with developer access enabled at [developers.monzo.com](https://developers.monzo.com)
 - A server with a public IP address and Docker installed (e.g. Oracle Cloud free tier)
+- A Postgres database for it — this setup uses a second free-tier box running the
+  [data-vault](https://github.com/your-username/data-vault) repo, which also backs it up
+  nightly and runs the WireGuard VPN your local machine reaches it through. Its
+  `new_project.sh` makes this project's schema and login (`DB_*` below), and its
+  `wg_add_device.sh` makes your local machine's VPN config.
 - A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
 - Python 3.11+ and [Poetry](https://python-poetry.org/docs/#installation) installed on your local machine
 - Git installed on both your local machine and the server
@@ -68,11 +73,11 @@ Then open `config/.env` and fill in all values:
 |---|---|---|
 | `DASHBOARD_USER` | Server | Username for the dashboard login |
 | `DASHBOARD_PASSWORD` | Server | Password for the dashboard login |
-| `TELEGRAM_API` | Server | Your Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Server | Your personal Telegram chat ID (see step 3) |
-| `LOCAL_API_KEY` | Both | A random hex key — generate one at [browserling.com/tools/random-hex](https://www.browserling.com/tools/random-hex) (set length to 64) |
-| `SERVER_URL` | Local | Your server's full URL with no trailing slash — e.g. `https://your-name.duckdns.org` |
-| `DB_PATH` | Local | Full path for your local DuckDB database — e.g. `C:/Users/you/Documents/bank_enrichment.db` |
+| `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
+| `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login — from `~/.vault-secrets/bank_enrichment.env` on the data box, made by data-vault's `new_project.sh`. `DB_HOST` is the data box's private address (`10.0.0.252` here), which the server reaches inside the cloud network and your local machine through the VPN |
+| `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies — default `~/bank-enrichment-backups` |
+| `LOG_DIR` | Local (optional) | Where the pipeline's log files go — default `logs/` in the repo |
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
 | `MONZO_CLIENT_ID` | Server | OAuth client ID from a **confidential** client registered at [developers.monzo.com](https://developers.monzo.com) — used to silently refresh Monzo API access instead of needing to re-confirm it in the Monzo app |
 | `MONZO_CLIENT_SECRET` | Server | OAuth client secret for the same client — keep this out of anywhere it could be committed |
@@ -124,9 +129,14 @@ Docker builds the app image and pulls Caddy, then starts both containers. Caddy 
 
 The containers restart automatically on failure and on server reboot.
 
+On every start the server brings the database up to date by applying `sql/postgres/schema.sql`
+(it only ever adds tables, columns and views), so there's nothing to set up by hand beyond the
+login. If it can't reach the database, check the data box allows this server in its `pg_hba.conf`
+and its security list (port 5432 from the server's private address).
+
 A `data/` directory is created automatically containing:
-- `bank_enrichment_server.db` — the server DuckDB database
 - `server.log` — rotating log file (capped at ~3MB total)
+- `monzo_oauth.json` — Monzo access tokens, once step 10 is done
 
 To view live logs:
 ```bash
@@ -208,9 +218,9 @@ Whether a silent refresh alone is enough to keep `merchant` populated (as oppose
 
 Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
 
-- **Lifetime Stats** — persistent counters (total received, total amount, notifications sent, enriched, processed)
-- **Current Queue** — paginated list of all unprocessed transactions with inline controls to enrich, skip, or delete. Each row links to a detail page with the full payload and all actions.
-- **Database view** at `/dashboard/db` — inspect the raw `stats` and `webhook_queue` tables directly
+- **Lifetime Stats** — counted from the transactions (total received, total amount, requests sent, enriched, classified)
+- **Current Queue** — paginated list of transactions with where each is up to, and inline controls to enrich, skip, unskip or delete. Each row links to a detail page with the full payload and all actions.
+- **Database view** at `/dashboard/db` — the latest raw transactions and context/label events
 
 A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
 
@@ -218,7 +228,11 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 ## Part 2 — Local Script Setup
 
-The local processing script runs on your own machine and pulls enriched transactions from the server into a local DuckDB database.
+The processing script and dashboard run on your own machine — the compute — against the same database
+the server uses, reached over the data box's WireGuard VPN. Import the config data-vault's
+`wg_add_device.sh` made for this machine into the WireGuard app and switch it on; it only routes
+the data box's addresses, so the rest of your traffic is unaffected. (On Windows with WSL, WSL
+reaches the database through the Windows tunnel — nothing to set up inside WSL.)
 
 > **Windows note — Smart App Control:** Windows 11's Smart App Control can block pandas' compiled binaries from
 > loading, even for a normal `pip`/Poetry install, with an error like `ImportError: DLL load failed ... An
@@ -254,7 +268,7 @@ poetry install
 
 ### 3. Check config/.env
 
-If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains `SERVER_URL`, `DB_PATH`, `LOCAL_API_KEY`, and `CLAUDE_SECRET` — these are the values the local scripts need.
+If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` and `CLAUDE_SECRET` — these are the values the local scripts need.
 
 If you created `config/.env` directly on the server and don't have a local copy, create one now:
 
@@ -262,7 +276,7 @@ If you created `config/.env` directly on the server and don't have a local copy,
 cp config/.env.example config/.env
 ```
 
-Then fill in at minimum `LOCAL_API_KEY`, `SERVER_URL`, and `DB_PATH` (see the table in step 4 of Part 1).
+Then fill in at minimum the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` and `CLAUDE_SECRET` (see the table in step 4 of Part 1).
 
 ### 4. Run the Scripts
 
@@ -272,21 +286,23 @@ poetry run python src/local_scripts/process.py
 ```
 
 This single command does everything in sequence:
-1. Create the local database file at `DB_PATH` (first run only), create all tables, and seed the default taxonomy — 13 parent categories and ~70 subcategories are inserted on first run (skipped if they already exist)
-2. Fetch all enriched transactions from the server, write them to the local database, and mark them as processed on the server
-3. Apply any exact quick-tap matches without calling the LLM
-4. Collect any new-category decisions made via Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](README.md#new-category-approval) in the README)
-5. Collect any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](README.md#monthly-taxonomy-review))
+1. Connect to the database (it stops here, saying so, if the VPN is down) and seed the default taxonomy if there isn't one — 13 parent categories and ~70 subcategories
+2. File any quick-tap answers without calling the LLM (after the second look)
+3. Act on any new-category decisions made on Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](README.md#new-category-approval) in the README)
+4. Act on any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](README.md#monthly-taxonomy-review))
+5. Look for new rule suggestions
 6. Send any missing weekly or monthly summaries to Telegram
-7. Sync quick-category suggestions to the server for the next batch of Telegram cards
+
+Proposals and suggestions are written to the database; the server sends their Telegram cards
+within five minutes.
 
 The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
-Two log files are created automatically alongside the database:
-- `bank_enrichment.log` — pull and processing log
+Log files are written to `logs/` in the repo (or `LOG_DIR`):
+- `bank_enrichment.log` — the run's own log
 - `llm_classifier.log` — LLM classification log
 
-`llm_labelling.py` can also be run standalone at any time if you want to re-classify without pulling new transactions.
+`llm_labelling.py` can also be run standalone at any time if you only want to classify.
 
 ### 5. Schedule the Task
 
@@ -377,13 +393,13 @@ The default taxonomy is seeded automatically on first run, but you own it entire
 - **Rename** a parent or subcategory — all transaction labels update immediately, and a custom Role you've set is kept
 - **Move** a subcategory to a different parent
 - **Add** new subcategories inside any parent, or add entirely new parent categories
-- **Delete** subcategories or whole parent categories (clears labels from affected transactions)
+- **Delete** subcategories or whole parent categories (clears labels from affected transactions; the old labels stay in each transaction's history)
 - **Wipe labels** for a parent category — transactions keep their context but lose their LLM label, so they'll be re-classified on the next `process.py` run against your updated structure
 - **View transactions** per subcategory — see exactly what's in each bucket and bulk-reassign if needed
 
 If you want to start fresh with a completely different taxonomy, use the Danger Zone at the
 bottom of the Settings tab to wipe the entire taxonomy structure, then build your own from
-scratch. The default taxonomy is only ever seeded into a genuinely empty database, so it
+scratch. The default taxonomy is only ever seeded when there are no categories at all, so it
 won't get added back in alongside whatever you build. Your context sentences are never
 touched — only the labels change.
 
@@ -401,14 +417,17 @@ confirmation guardrails rather than a bare CLI script.
 
 ### 8. Running Tests Locally
 
-The test suite mocks all network/DB dependencies, so it runs without a live server or real credentials:
+The test suite mocks every network service, so it runs without a live server or real credentials.
+The database tests need an empty Postgres to build throwaway schemas in — point `TEST_POSTGRES_URL`
+at one (never the real database), or they're skipped:
 
 ```bash
 poetry install --with dev
-poetry run pytest
+TEST_POSTGRES_URL=postgresql://postgres@localhost:5432/postgres poetry run pytest
 ```
 
-This is the same command the `test` job in CI runs on every pull request.
+This is the same command the `test` job in CI runs on every pull request, against a Postgres
+service it starts empty for the run.
 
 ---
 
@@ -469,14 +488,9 @@ git pull
 sudo docker compose up -d --build && sudo docker image prune -f
 ```
 
-**If the database schema has changed**, most additive changes (new columns, new tables) apply automatically on restart via migrations in `init_db()` — no wipe needed. If a breaking change requires a full reset:
-
-```bash
-sudo docker compose down
-git pull
-rm -f data/bank_enrichment_server.db
-sudo docker compose up -d --build && sudo docker image prune -f
-```
+**If the database schema has changed**, the server applies `sql/postgres/schema.sql` on restart,
+which adds new tables, columns and views — nothing to do by hand. It never drops or rewrites
+data; a change that needs to is a one-off script, run deliberately, after a backup.
 
 **If the `Caddyfile` changed**, note that `docker compose up -d --build` won't pick it up — Caddy only reads its config at container start, and docker compose doesn't detect content-only changes to bind-mounted files. Reload it manually:
 ```bash
