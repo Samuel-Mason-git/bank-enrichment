@@ -192,7 +192,13 @@ def test_needs_label_is_the_classifiers_to_do_list(pg):
     assert _one(pg, "SELECT pending_category_proposal_id FROM transactions WHERE id = 'held'") == \
         {"pending_category_proposal_id": 1}
 
-    pg.execute("UPDATE category_proposals SET status = 'denied'")
+    # "Try again": denied, but the hold stays until the new proposal takes over.
+    pg.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE")
+    todo = {r[0] for r in pg.execute("SELECT id FROM needs_label").fetchall()}
+    assert todo == {"ready", "parent_only"}
+
+    # Released: the list is emptied.
+    pg.execute("UPDATE category_proposals SET txn_ids = '[]'")
     todo = {r[0] for r in pg.execute("SELECT id FROM needs_label").fetchall()}
     assert todo == {"ready", "parent_only", "held"}
 
