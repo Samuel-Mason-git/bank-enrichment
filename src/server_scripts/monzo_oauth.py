@@ -149,6 +149,30 @@ def ping() -> bool:
     return response.status_code == 200
 
 
+def fetch_transaction(transaction_id: str) -> dict | None:
+    """One transaction as Monzo's API has it, with its merchant expanded -- or
+    None if it can't be had (not authorized yet, an expired token, Monzo
+    down). Never raises: a webhook mustn't fail over something it can do
+    without."""
+    try:
+        tokens = _load_tokens()
+        if not tokens:
+            return None
+        response = requests.get(
+            f"https://api.monzo.com/transactions/{transaction_id}",
+            params={"expand[]": "merchant"},
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            timeout=5,
+        )
+    except Exception as e:
+        log.warning(f"Couldn't fetch {transaction_id} from Monzo's API: {e}")
+        return None
+    if response.status_code != 200:
+        log.warning(f"Monzo's API answered {response.status_code} for {transaction_id}")
+        return None
+    return response.json().get("transaction")
+
+
 def run_monzo_refresh(bot) -> None:
     global _alerted_for_current_failure
     had_tokens_before = _load_tokens() is not None

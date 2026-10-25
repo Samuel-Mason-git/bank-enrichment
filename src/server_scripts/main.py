@@ -25,7 +25,9 @@ from server_db import init_db, get_con, get_quick_categories
 from telegram import TelegramBot
 from check_rules import check_rules, NO_MATCH
 from follow_up_tg import requester_loop
-from monzo_oauth import begin_authorization, complete_authorization, monzo_refresh_loop, MONZO_CLIENT_ID
+from monzo_oauth import (
+    begin_authorization, complete_authorization, fetch_transaction, monzo_refresh_loop, MONZO_CLIENT_ID,
+)
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -498,6 +500,29 @@ async def recieve_monzo(request: Request):
         except Exception as e:
             log.error(f"Failed to auto-skip pending-amount {transaction_id}: {e}", exc_info=True)
         return {"status": "pending_hold"}
+
+    # Monzo fires several webhooks per payment within half a second, in no set
+    # order, and only the first is kept. Since mid-October 2026 the first has
+    # usually been a transaction.updated carrying merchant: null, so the
+    # merchant was lost -- and with it merchant rules, the merchant's own
+    # quick-tap buttons, and what the classifier knows. So a card payment that
+    # arrives without one is looked up in Monzo's API, which has it, and stored
+    # in full. A transfer has no merchant to find (it has a counterparty), so
+    # it isn't looked up. If the API can't be reached, this one carries on as
+    # it arrived.
+    if is_new and not monzo_data.data.merchant and not (monzo_data.data.counterparty or {}).get("name"):
+        fetched = await asyncio.to_thread(fetch_transaction, transaction_id)
+        if fetched and isinstance(fetched.get("merchant"), dict):
+            try:
+                full = {"type": monzo_data.type, "data": fetched}
+                monzo_data = MonzoOuter.model_validate(full)
+                con.execute(
+                    "UPDATE webhook_queue SET payload = ? WHERE id = ?", [json.dumps(full), transaction_id]
+                )
+                log.info(f"Merchant filled in from Monzo's API for {transaction_id}: "
+                         f"{fetched['merchant'].get('name')!r}")
+            except Exception as e:
+                log.warning(f"Couldn't use Monzo's API copy of {transaction_id}, keeping the webhook's: {e}")
 
     # Check rules for auto-enrichment / auto-skip / a fixed placement
     match = NO_MATCH

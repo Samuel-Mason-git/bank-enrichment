@@ -99,6 +99,16 @@ def alert_post():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_monzo_tokens(tmp_path):
+    """Point the server at a token file that doesn't exist, so a test webhook
+    arriving without a merchant can never reach Monzo's real API, even on a
+    machine that holds real tokens."""
+    import monzo_oauth
+    with patch.object(monzo_oauth, "TOKENS_PATH", str(tmp_path / "no-tokens.json")):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_server_db():
     """Ensure server_db._con is None before and after every test."""
     import server_db
