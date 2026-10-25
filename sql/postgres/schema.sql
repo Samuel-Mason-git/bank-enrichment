@@ -152,8 +152,10 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
 );
 
 -- The classifier's "new category?" cards. One copy, replacing both the local
--- table and the server's. txn_ids = the transactions held back from the
--- classifier until it's decided (today: transactions.pending_category_proposal_id).
+-- table and the server's. txn_ids = the transactions it's holding back from the
+-- classifier right now (today: transactions.pending_category_proposal_id). A
+-- hold is released by emptying the list: when the proposal is applied, or turned
+-- down with "None of these". "Try again" keeps it until the new proposal takes over.
 CREATE TABLE IF NOT EXISTS category_proposals (
     id                   INTEGER   PRIMARY KEY,
     options              JSONB     NOT NULL,
@@ -239,7 +241,7 @@ SELECT
     l.model                                                         AS llm_model,
     l.set_at                                                        AS classified_at,
     (SELECT p.id FROM category_proposals p
-      WHERE p.status = 'pending' AND p.txn_ids ? r.id
+      WHERE p.txn_ids ? r.id
       ORDER BY p.id LIMIT 1)                                        AS pending_category_proposal_id,
     l.parent_id,
     l.subcategory_id
@@ -299,7 +301,7 @@ WHERE NOT EXISTS (
 GROUP BY r.id, r.received_at;
 
 -- The classifier's to-do list: context settled, not skipped, not fully
--- labelled, and not held back behind a pending category proposal.
+-- labelled, and not held back by a category proposal.
 CREATE OR REPLACE VIEW needs_label AS
 SELECT t.*
 FROM transactions t
