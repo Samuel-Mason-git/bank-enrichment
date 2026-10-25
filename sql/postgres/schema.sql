@@ -121,9 +121,13 @@ CREATE TABLE IF NOT EXISTS rule_suggestions (
     subcategory  VARCHAR(255) NOT NULL,
     txn_count    INTEGER      NOT NULL DEFAULT 0,
     auto_context VARCHAR(255) NOT NULL DEFAULT '',
+    -- Shown on the card: why the classifier thought it worth a rule.
+    llm_reasoning TEXT        NOT NULL DEFAULT '',
     status       VARCHAR(20)  NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'approved', 'denied')),
     proposed_at  TIMESTAMP    NOT NULL,
+    -- NULL until its Telegram card has gone out; the server sends any that haven't.
+    sent_at      TIMESTAMP,
     decided_at   TIMESTAMP,
     UNIQUE (match_field, match_value)
 );
@@ -140,10 +144,13 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
     proposed_sub    VARCHAR   NOT NULL,
     rationale       VARCHAR   NOT NULL,
     evidence_ids    JSONB     NOT NULL,
+    -- Shown on the card: a few of those transactions, as one line each.
+    examples        JSONB     NOT NULL DEFAULT '[]',
     status          VARCHAR   NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
     run_key         VARCHAR   NOT NULL,              -- the month, e.g. '2026-08'
     proposed_at     TIMESTAMP NOT NULL,
+    -- NULL until its Telegram card has gone out; the server sends any that haven't.
     sent_at         TIMESTAMP,
     decided_at      TIMESTAMP,
     applied_at      TIMESTAMP,
@@ -160,6 +167,8 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     id                   INTEGER   PRIMARY KEY,
     options              JSONB     NOT NULL,
     txn_ids              JSONB     NOT NULL DEFAULT '[]',
+    -- Shown on the card: the held transactions, as one line each.
+    examples             JSONB     NOT NULL DEFAULT '[]',
     status               VARCHAR   NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
     selected_option      INTEGER,
@@ -167,6 +176,7 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     -- time, but not blocked for good.
     regenerate_requested BOOLEAN   NOT NULL DEFAULT FALSE,
     proposed_at          TIMESTAMP NOT NULL,
+    -- NULL until its Telegram card has gone out; the server sends any that haven't.
     sent_at              TIMESTAMP,
     decided_at           TIMESTAMP,
     applied_at           TIMESTAMP
@@ -209,7 +219,21 @@ CREATE TABLE IF NOT EXISTS summaries (
     PRIMARY KEY (period, period_key)
 );
 
+-- ── Columns added since a table was first created ────────────────────────────
+-- CREATE TABLE IF NOT EXISTS does nothing to a table that's already there, so
+-- every column added to an existing table is also added here. The server
+-- applies this file on every start, so a deploy brings the database up to date.
+
+ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS llm_reasoning TEXT NOT NULL DEFAULT '';
+ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP;
+ALTER TABLE taxonomy_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
+
 -- ── Views (silver: worked out on every read, nothing stored) ─────────────────
+
+-- Dropped and made again every time, since a view stores nothing and Postgres
+-- won't change the columns of one in place.
+DROP VIEW IF EXISTS quick_categories, needs_label, needs_context, transaction_roles, transactions;
 
 -- One row per transaction, under the column names the old transactions table
 -- had, so the dashboards and summaries read it the same way. Monzo's fields
@@ -313,19 +337,21 @@ WHERE t.enriched_at IS NOT NULL
 -- The quick-tap buttons on a card: the 10 most-used categories overall
 -- (merchant_name NULL), plus each of the 50 busiest merchants' top 3. A
 -- merchant is merchant_name, falling back to the counterparty (direct debits
--- and transfers rarely have a merchant). rank starts at 0.
+-- and transfers rarely have a merchant). rank starts at 0. subcategory_id is
+-- what a button carries, so a tap files exactly the category shown even if
+-- the list has moved on since the card was sent.
 CREATE OR REPLACE VIEW quick_categories AS
 WITH labelled AS (
     SELECT COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) AS merchant,
-           llm_category AS category, llm_subcategory AS subcategory
+           subcategory_id, llm_category AS category, llm_subcategory AS subcategory
     FROM transactions
-    WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
+    WHERE subcategory_id IS NOT NULL
 ),
 overall AS (
-    SELECT category, subcategory,
+    SELECT subcategory_id, category, subcategory,
            ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, category, subcategory) AS n
     FROM labelled
-    GROUP BY category, subcategory
+    GROUP BY subcategory_id, category, subcategory
 ),
 busiest AS (
     SELECT merchant FROM labelled
@@ -335,15 +361,15 @@ busiest AS (
     LIMIT 50
 ),
 per_merchant AS (
-    SELECT l.merchant, l.category, l.subcategory,
+    SELECT l.merchant, l.subcategory_id, l.category, l.subcategory,
            ROW_NUMBER() OVER (PARTITION BY l.merchant
                               ORDER BY COUNT(*) DESC, l.category, l.subcategory) AS n
     FROM labelled l
     JOIN busiest b ON b.merchant = l.merchant
-    GROUP BY l.merchant, l.category, l.subcategory
+    GROUP BY l.merchant, l.subcategory_id, l.category, l.subcategory
 )
-SELECT NULL::VARCHAR AS merchant_name, category, subcategory, n - 1 AS rank
+SELECT NULL::VARCHAR AS merchant_name, subcategory_id, category, subcategory, n - 1 AS rank
 FROM overall WHERE n <= 10
 UNION ALL
-SELECT merchant, category, subcategory, n - 1
+SELECT merchant, subcategory_id, category, subcategory, n - 1
 FROM per_merchant WHERE n <= 3;

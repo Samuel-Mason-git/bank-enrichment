@@ -1,14 +1,14 @@
 import asyncio
-import json
 import logging
+import os
 import time
 
-from server_db import get_con, get_quick_categories
+from server_db import get_con, get_quick_categories, now, record_context, record_request
 
 log = logging.getLogger(__name__)
 
-# (request_count when due, seconds since last_requested_at)
-# At request_count=4, no further message is sent — transaction is auto-skipped.
+# (request_count when due, seconds since the last request)
+# At request_count=4, no further message is sent — the transaction is auto-skipped.
 FOLLOW_UP_SCHEDULE = [
     (1, 3_600),          # 1 hour  after initial send
     (2, 86_400),         # 1 day   after first follow-up
@@ -19,102 +19,126 @@ FOLLOW_UP_SCHEDULE = [
 FOLLOW_UP_LABELS = {1: "1 hour", 2: "1 day", 3: "2 days"}
 
 
+def _cutoff(seconds_ago: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - seconds_ago))
+
+
+def _send(bot, con, transaction_id: str, payload: dict, follow_up: int = 0) -> None:
+    # Falls back to counterparty for direct debits/bank transfers, which
+    # rarely populate merchant -- otherwise recurring bills never get a
+    # merchant-specific quick-tap suggestion, only the generic top-5.
+    data = payload.get("data") or {}
+    merchant_name = (data.get("merchant") or {}).get("name") or (data.get("counterparty") or {}).get("name")
+    try:
+        quick_categories = get_quick_categories(merchant_name)
+    except Exception as e:
+        log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
+        quick_categories = []
+    log.info(f"{'Follow-up ' + str(follow_up) if follow_up else 'Missed-send recovery'} for {transaction_id}: "
+             f"merchant={merchant_name!r}, quick_categories={quick_categories}")
+    bot.send_card(payload, follow_up=follow_up, quick_categories=quick_categories)
+    record_request(con, transaction_id)
+
+
 def run_requester(bot) -> None:
+    """One card per call at most: the oldest one due."""
     con = get_con()
 
-    # Handle transactions where the initial send never happened (bot was down, send failed, etc.)
-    # Use received_at as the reference since last_requested_at will be NULL
-    missed_cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400))
+    # Transactions whose first card never went out (bot was down, send failed).
     missed = con.execute(
-        """SELECT id, payload FROM webhook_queue
-           WHERE status = 'pending'
-           AND skipped = FALSE
-           AND request_count = 0
-           AND received_at <= ?
-           LIMIT 1""",
-        [missed_cutoff]
-    ).fetchall()
-
-    for row in missed:
-        transaction_id, payload_str = row[0], row[1]
+        """SELECT n.id, r.payload FROM needs_context n JOIN transactions_raw r ON r.id = n.id
+           WHERE n.request_count = 0 AND n.received_at <= %s ORDER BY n.received_at LIMIT 1""",
+        [_cutoff(86_400)]
+    ).fetchone()
+    if missed:
         try:
-            data = json.loads(payload_str)
-            # Falls back to counterparty for direct debits/bank transfers, which
-            # rarely populate merchant -- otherwise recurring bills never get a
-            # merchant-specific quick-tap suggestion, only the generic top-5.
-            txn_data = data.get('data') or {}
-            merchant_name = (txn_data.get('merchant') or {}).get('name') or (txn_data.get('counterparty') or {}).get('name')
-            try:
-                quick_categories = get_quick_categories(merchant_name)
-            except Exception as e:
-                log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
-                quick_categories = []
-            log.info(f"Missed-send recovery for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
-            bot.send_card(data, quick_categories=quick_categories)
-            con.execute(
-                "UPDATE webhook_queue SET request_count = 1, last_requested_at = ? WHERE id = ?",
-                [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-            )
-            con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
-            log.info(f"Missed initial send recovered for {transaction_id}")
-            return
+            _send(bot, con, missed[0], missed[1])
+            log.info(f"Missed initial send recovered for {missed[0]}")
         except Exception as e:
-            log.error(f"Missed send recovery failed for {transaction_id}: {e}", exc_info=True)
+            log.error(f"Missed send recovery failed for {missed[0]}: {e}", exc_info=True)
+        return
 
     for request_count, delay_seconds in FOLLOW_UP_SCHEDULE:
-        cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - delay_seconds))
-        rows = con.execute(
-            """SELECT id, payload FROM webhook_queue
-               WHERE status = 'pending'
-               AND skipped = FALSE
-               AND request_count = ?
-               AND last_requested_at <= ?
-               LIMIT 1""",
-            [request_count, cutoff]
-        ).fetchall()
+        row = con.execute(
+            """SELECT n.id, r.payload FROM needs_context n JOIN transactions_raw r ON r.id = n.id
+               WHERE n.request_count = %s AND n.last_requested_at <= %s
+               ORDER BY n.last_requested_at LIMIT 1""",
+            [request_count, _cutoff(delay_seconds)]
+        ).fetchone()
+        if not row:
+            continue
+        transaction_id, payload = row
+        if request_count == 4:
+            try:
+                record_context(con, transaction_id, "Auto-skipped", skipped=True, source="timeout")
+                log.info(f"Transaction auto-skipped after no response: {transaction_id}")
+            except Exception as e:
+                log.error(f"Auto-skip failed for {transaction_id}: {e}", exc_info=True)
+        else:
+            try:
+                _send(bot, con, transaction_id, payload, follow_up=request_count)
+                log.info(f"Follow-up {request_count} sent for {transaction_id}")
+                return
+            except Exception as e:
+                log.error(f"Follow-up {request_count} failed for {transaction_id}: {e}", exc_info=True)
 
-        for row in rows:
-            transaction_id, payload_str = row[0], row[1]
 
-            if request_count == 4:
-                try:
-                    con.execute(
-                        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Auto-skipped', enriched_at = ? WHERE id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-                    )
-                    log.info(f"Transaction auto-skipped after no response: {transaction_id}")
-                except Exception as e:
-                    log.error(f"Auto-skip failed for {transaction_id}: {e}", exc_info=True)
-            else:
-                try:
-                    data = json.loads(payload_str)
-                    # Falls back to counterparty for direct debits/bank transfers, which
-                    # rarely populate merchant -- otherwise recurring bills never get a
-                    # merchant-specific quick-tap suggestion, only the generic top-5.
-                    txn_data = data.get('data') or {}
-                    merchant_name = (txn_data.get('merchant') or {}).get('name') or (txn_data.get('counterparty') or {}).get('name')
-                    try:
-                        quick_categories = get_quick_categories(merchant_name)
-                    except Exception as e:
-                        log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
-                        quick_categories = []
-                    log.info(f"Follow-up {request_count} for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
-                    bot.send_card(data, follow_up=request_count, quick_categories=quick_categories)
-                    con.execute(
-                        "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-                    )
-                    con.execute("UPDATE stats SET requests_sent = requests_sent + 1 WHERE id = 1")
-                    log.info(f"Follow-up {request_count} sent for {transaction_id}")
-                    return
-                except Exception as e:
-                    log.error(f"Follow-up {request_count} failed for {transaction_id}: {e}", exc_info=True)
+def _taxonomy_card(row) -> dict:
+    proposal_id, parent_name, source_sub, proposed_sub, rationale, evidence_ids, examples, action, target_parent = row
+    return {
+        "local_id": proposal_id, "parent_name": parent_name, "source_sub": source_sub,
+        "proposed_sub": proposed_sub, "rationale": rationale, "evidence_count": len(evidence_ids),
+        "examples": examples, "action": action, "target_parent": target_parent,
+    }
+
+
+_TAXONOMY_COLUMNS = ("id, parent_name, source_sub, proposed_sub, rationale, evidence_ids, examples, "
+                     "action, target_parent")
+
+
+def run_new_cards(bot) -> None:
+    """Send the card for every proposal and rule suggestion the pipeline has
+    added since the last look -- those still pending that haven't been sent.
+    sent_at is set only once a card has gone, so a failed send is retried."""
+    con = get_con()
+    chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+
+    taxonomy = con.execute(
+        f"SELECT {_TAXONOMY_COLUMNS} FROM taxonomy_proposals "
+        "WHERE status = 'pending' AND sent_at IS NULL ORDER BY id"
+    ).fetchall()
+    if taxonomy:
+        bot.send_taxonomy_intro(chat_id, len(taxonomy))
+        for row in taxonomy:
+            bot.send_taxonomy_proposal(chat_id, _taxonomy_card(row))
+            con.execute("UPDATE taxonomy_proposals SET sent_at = %s WHERE id = %s", [now(), row[0]])
+        log.info(f"Sent {len(taxonomy)} taxonomy proposal card(s)")
+
+    for proposal_id, options, txn_ids, examples in con.execute(
+        "SELECT id, options, txn_ids, examples FROM category_proposals "
+        "WHERE status = 'pending' AND sent_at IS NULL ORDER BY id"
+    ).fetchall():
+        bot.send_category_proposal(chat_id, {
+            "local_id": proposal_id, "options": options, "txn_count": len(txn_ids), "examples": examples,
+        })
+        con.execute("UPDATE category_proposals SET sent_at = %s WHERE id = %s", [now(), proposal_id])
+        log.info(f"Sent category proposal card {proposal_id}")
+
+    for row in con.execute(
+        """SELECT id, match_field, match_value, category, subcategory, txn_count, auto_context, llm_reasoning
+           FROM rule_suggestions WHERE status = 'pending' AND sent_at IS NULL ORDER BY id"""
+    ).fetchall():
+        bot.send_rule_suggestion(chat_id, dict(zip(
+            ["id", "match_field", "match_value", "category", "subcategory", "txn_count", "auto_context",
+             "llm_reasoning"], row)))
+        con.execute("UPDATE rule_suggestions SET sent_at = %s WHERE id = %s", [now(), row[0]])
+        log.info(f"Sent rule suggestion card {row[0]}")
 
 
 # Taxonomy proposals are not urgent and the monthly cadence means a nudge that
 # arrives too fast reads as nagging about something the user consciously left.
 # Two gentle reminders, then it stops asking and the proposal simply waits --
-# an undecided proposal is cleared by the next month's run, never auto-applied.
+# an undecided proposal is expired by the next month's run, never auto-applied.
 TAXONOMY_FOLLOW_UPS = [
     (0, 86_400 * 3),   # 3 days after the cards were sent
     (1, 86_400 * 7),   # a week after that
@@ -122,36 +146,26 @@ TAXONOMY_FOLLOW_UPS = [
 
 
 def run_taxonomy_follow_ups(bot) -> None:
-    """Re-send the intro card for proposals still awaiting a decision."""
-    import os
+    """Re-send the cards for proposals still awaiting a decision."""
     con = get_con()
     for follow_up_count, delay_seconds in TAXONOMY_FOLLOW_UPS:
-        cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - delay_seconds))
         rows = con.execute(
-            """SELECT local_id, parent_name, source_sub, proposed_sub, rationale,
-                      evidence_count, examples, action, target_parent
-               FROM taxonomy_proposals
-               WHERE status = 'pending' AND follow_up_count = ?
-                 AND COALESCE(last_nudged_at, sent_at) <= ?""",
-            [follow_up_count, cutoff]
+            f"""SELECT {_TAXONOMY_COLUMNS} FROM taxonomy_proposals
+                WHERE status = 'pending' AND sent_at IS NOT NULL AND follow_up_count = %s
+                  AND COALESCE(last_nudged_at, sent_at) <= %s ORDER BY id""",
+            [follow_up_count, _cutoff(delay_seconds)]
         ).fetchall()
         if not rows:
             continue
         try:
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
             bot.send_taxonomy_intro(chat_id, len(rows), follow_up=follow_up_count + 1)
-            for r in rows:
-                bot.send_taxonomy_proposal(chat_id, {
-                    "local_id": r[0], "parent_name": r[1], "source_sub": r[2],
-                    "proposed_sub": r[3], "rationale": r[4], "evidence_count": r[5],
-                    "examples": json.loads(r[6] or "[]"),
-                    "action": r[7], "target_parent": r[8],
-                })
+            for row in rows:
+                bot.send_taxonomy_proposal(chat_id, _taxonomy_card(row))
             con.execute(
-                """UPDATE taxonomy_proposals
-                   SET follow_up_count = follow_up_count + 1, last_nudged_at = ?
-                   WHERE status = 'pending' AND follow_up_count = ?""",
-                [time.strftime("%Y-%m-%d %H:%M:%S"), follow_up_count]
+                """UPDATE taxonomy_proposals SET follow_up_count = follow_up_count + 1, last_nudged_at = %s
+                   WHERE id = ANY(%s)""",
+                [now(), [row[0] for row in rows]]
             )
             log.info(f"Taxonomy follow-up {follow_up_count + 1} sent for {len(rows)} proposal(s)")
         except Exception as e:
@@ -159,29 +173,11 @@ def run_taxonomy_follow_ups(bot) -> None:
         return
 
 
-def run_cleanup() -> None:
-    con = get_con()
-    cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86_400 * 5))
-    deleted = con.execute(
-        "DELETE FROM webhook_queue WHERE status = 'processed' AND enriched_at <= ? RETURNING id",
-        [cutoff]
-    ).fetchall()
-    if deleted:
-        log.info(f"Cleaned up {len(deleted)} processed transactions older than 5 days")
-
-
 async def requester_loop(bot) -> None:
     while True:
         await asyncio.sleep(300)  # check every 5 minutes
-        try:
-            run_requester(bot)
-        except Exception as e:
-            log.error(f"Requester loop error: {e}", exc_info=True)
-        try:
-            run_taxonomy_follow_ups(bot)
-        except Exception as e:
-            log.error(f"Taxonomy follow-up loop error: {e}", exc_info=True)
-        try:
-            run_cleanup()
-        except Exception as e:
-            log.error(f"Cleanup loop error: {e}", exc_info=True)
+        for job in (run_new_cards, run_requester, run_taxonomy_follow_ups):
+            try:
+                job(bot)
+            except Exception as e:
+                log.error(f"{job.__name__} failed: {e}", exc_info=True)

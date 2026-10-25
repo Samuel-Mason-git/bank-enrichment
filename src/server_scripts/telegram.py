@@ -322,7 +322,7 @@ class TelegramBot:
         keyboard_rows = []
         row = []
         for qc in (quick_categories or []):
-            row.append({"text": qc["subcategory"], "callback_data": f"quickcat:{data['id']}:{qc['id']}"})
+            row.append({"text": qc["subcategory"], "callback_data": f"qcat:{data['id']}:{qc['id']}"})
             if len(row) == 3:
                 keyboard_rows.append(row)
                 row = []

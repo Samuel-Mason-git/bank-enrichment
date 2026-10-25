@@ -239,7 +239,9 @@ def build(local, server) -> tuple[dict[str, list[dict]], dict]:
 
     rows["rule_suggestions"] = _rows(server, """
         SELECT id, match_field, match_value, category, subcategory, txn_count, auto_context,
-               status, proposed_at, decided_at FROM rule_suggestions ORDER BY id""")
+               status, proposed_at, decided_at,
+               -- Every suggestion here already had its card: the server sent it on arrival.
+               proposed_at AS sent_at FROM rule_suggestions ORDER BY id""")
 
     # Taxonomy proposals: the local proposal, plus the server's record of the
     # Telegram side. A decision the PC hasn't collected yet counts.
@@ -253,7 +255,8 @@ def build(local, server) -> tuple[dict[str, list[dict]], dict]:
             "id": p["id"], "action": p["action"], "parent_name": p["parent_name"],
             "source_sub": p["source_sub"], "target_parent": p["target_parent"] or "",
             "proposed_sub": p["proposed_sub"], "rationale": p["rationale"],
-            "evidence_ids": _json(p["evidence_ids"]), "status": status, "run_key": p["run_key"],
+            "evidence_ids": _json(p["evidence_ids"]), "examples": _json(s.get("examples") or "[]"),
+            "status": status, "run_key": p["run_key"],
             "proposed_at": p["proposed_at"], "sent_at": s.get("sent_at"), "decided_at": decided_at,
             "applied_at": p["applied_at"], "follow_up_count": s.get("follow_up_count") or 0,
             "last_nudged_at": s.get("last_nudged_at"),
@@ -271,6 +274,7 @@ def build(local, server) -> tuple[dict[str, list[dict]], dict]:
             regenerate = bool(s["regenerate_requested"])
         rows["category_proposals"].append({
             "id": p["id"], "options": _json(p["options"]), "txn_ids": sorted(held.pop(p["id"], [])),
+            "examples": _json(s.get("examples") or "[]"),
             "status": status, "selected_option": selected, "regenerate_requested": regenerate,
             "proposed_at": p["proposed_at"], "sent_at": s.get("sent_at"), "decided_at": decided_at,
             "applied_at": p["applied_at"],
