@@ -75,7 +75,7 @@ Then open `config/.env` and fill in all values:
 | `DASHBOARD_PASSWORD` | Server | Password for the dashboard login |
 | `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login — from `~/.vault-secrets/bank_enrichment.env` on the data box, made by data-vault's `new_project.sh`. `DB_HOST` is the data box's private address (`10.0.0.252` here), which the server reaches inside the cloud network and your local machine through the VPN |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login, which data-vault's `new_project.sh` prints and saves on the data box. `DB_HOST` is the data box's private address, which the server reaches inside the cloud network and your local machine through the VPN |
 | `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies — default `~/bank-enrichment-backups` |
 | `LOG_DIR` | Local (optional) | Where the pipeline's log files go — default `logs/` in the repo |
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
