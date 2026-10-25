@@ -34,6 +34,6 @@ poetry run pytest -v
 
 - **`db`** — an in-memory DuckDB connection with the full schema applied. Inject it into any test that needs a database. The connection is set on the `database_functions._con` global so all DB functions work without touching the real DB file.
 - **`_reset_db`** (autouse) — resets `database_functions._con` to `None` before and after every test, keeping state isolated.
-- **`pg`** — a throwaway Postgres schema with today's tables (`sql/postgres/schema.sql`), dropped after the test. It needs `TEST_POSTGRES_URL`. CI sets it, pointing at an empty Postgres it starts for each run. Without it, these tests are skipped, so the suite still runs on a machine with no Postgres. To run them locally, start a scratch Postgres (`docker run --rm -e POSTGRES_PASSWORD=x -p 5432:5432 postgres:18`) and set `TEST_POSTGRES_URL=postgresql://postgres:x@localhost:5432/postgres`.
+- **`pg`** — a throwaway Postgres schema with the new tables and views (`sql/postgres/schema.sql`), dropped after the test. It needs `TEST_POSTGRES_URL`. CI sets it, pointing at an empty Postgres it starts for each run. Without it, these tests are skipped, so the suite still runs on a machine with no Postgres. To run them locally, start a scratch Postgres (`docker run --rm -e POSTGRES_PASSWORD=x -p 5432:5432 postgres:18`) and set `TEST_POSTGRES_URL=postgresql://postgres:x@localhost:5432/postgres`.
 
 Tests that don't touch the database (pure functions, mocked HTTP calls) need no fixtures.

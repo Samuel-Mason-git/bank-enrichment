@@ -31,7 +31,7 @@ _PG_SCHEMA_PATH = _repo / "sql" / "postgres" / "schema.sql"
 
 @pytest.fixture
 def pg():
-    """A throwaway Postgres schema with today's tables in it
+    """A throwaway Postgres schema with the new tables and views in it
     (sql/postgres/schema.sql), dropped again afterwards. Each test gets its own
     schema, so tests can't see each other's rows.
 

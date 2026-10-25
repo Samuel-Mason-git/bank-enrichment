@@ -1,132 +1,45 @@
--- Today's tables, for Postgres: both sql/tables.sql (the local pipeline) and
--- sql/server_tables.sql (the server), in one schema, column for column.
+-- bank-enrichment's tables in Postgres: the design in docs/server-move.md §4.
 --
--- This is stage 1 of docs/server-move.md: the same tables on a different
--- engine, nothing redesigned. tests/test_postgres_schema.py checks it still
--- matches the two DuckDB files, so a column added there must be added here too.
+-- Three kinds of table:
+--   history   transactions_raw, context_events, label_events. Only ever added
+--             to, never edited: every arrival, context and label is a new row.
+--             Bronze: the nightly dump takes the rows added since the last one.
+--   settings  categories, roles, rules, proposals, reviews, subscriptions.
+--             Edited in place. Bronze: a copy of the table on any day it changed.
+--   gold      summaries: the figures each weekly/monthly summary sent.
+--             Backed up like the settings.
+-- and views, which store nothing: they're worked out from the tables every time
+-- they're read, so they aren't backed up -- they come back with this file.
 --
--- The two files share two table names, so the server's copies are renamed:
---   server taxonomy_proposals  -> server_taxonomy_proposals
---   server category_proposals  -> server_category_proposals
---
--- Dialect differences from the DuckDB files:
---   * default_role_for_parent is a SQL function here (DuckDB calls it a MACRO).
---   * Everything else -- types, defaults, CHECKs, keys -- is unchanged.
+-- Only live links use ids (labels, rules, roles). Proposals, judge reviews and
+-- rule suggestions keep category *names*: they record what was shown or decided
+-- at the time, including categories since renamed or deleted.
 
--- ── Local pipeline (sql/tables.sql) ──────────────────────────────────────────
+-- ── Settings: the taxonomy ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS parent_categories (
-    id       INTEGER PRIMARY KEY,
-    name     VARCHAR NOT NULL UNIQUE,
-    created_at TIMESTAMP NOT NULL
+    id          INTEGER   PRIMARY KEY,
+    name        VARCHAR   NOT NULL,
+    created_at  TIMESTAMP NOT NULL,
+    -- A deleted category is archived rather than removed, so old labels still
+    -- resolve to a name.
+    archived_at TIMESTAMP
 );
+-- Unique among live categories only, so an archived name can be used again.
+CREATE UNIQUE INDEX IF NOT EXISTS parent_categories_live_name
+    ON parent_categories (name) WHERE archived_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS subcategories (
-    id         INTEGER PRIMARY KEY,
-    name       VARCHAR NOT NULL,
-    parent_id  INTEGER NOT NULL REFERENCES parent_categories(id),
-    created_at TIMESTAMP NOT NULL,
-    UNIQUE (name, parent_id)
+    id          INTEGER   PRIMARY KEY,
+    name        VARCHAR   NOT NULL,
+    parent_id   INTEGER   NOT NULL REFERENCES parent_categories(id),
+    created_at  TIMESTAMP NOT NULL,
+    archived_at TIMESTAMP
 );
+CREATE UNIQUE INDEX IF NOT EXISTS subcategories_live_name
+    ON subcategories (parent_id, name) WHERE archived_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id            INTEGER PRIMARY KEY,
-    name          VARCHAR(255) NOT NULL,
-    merchant_name VARCHAR(255),
-    amount        DECIMAL(19,4) NOT NULL,
-    frequency     VARCHAR(20) NOT NULL CHECK (frequency IN ('weekly', 'fortnightly', 'monthly', 'annual')),
-    active        BOOLEAN DEFAULT TRUE,
-    created_at    TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    id VARCHAR PRIMARY KEY,
-    amount DECIMAL(19,4) NOT NULL,
-    currency VARCHAR(3) NOT NULL,
-    description TEXT,
-    monzo_category VARCHAR(255),
-    merchant_name VARCHAR(255),
-    merchant_category VARCHAR(255),
-    counterparty_name VARCHAR(255),
-    is_load BOOLEAN,
-    created_at TIMESTAMP,
-    settled_at TIMESTAMP,
-    raw_payload JSON,
-    user_context TEXT,
-    skipped BOOLEAN DEFAULT FALSE,
-    received_at TIMESTAMP,
-    enriched_at TIMESTAMP,
-    processed_at TIMESTAMP,
-    llm_category VARCHAR(255),
-    llm_subcategory VARCHAR(255),
-    llm_confidence DECIMAL(5,4),
-    llm_model VARCHAR(255),
-    classified_at TIMESTAMP,
-    pending_category_proposal_id INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS monthly_summaries (
-    id           INTEGER PRIMARY KEY,
-    send_date    VARCHAR(7) NOT NULL UNIQUE,
-    total_spend  DECIMAL(19,4) NOT NULL,
-    total_income DECIMAL(19,4) NOT NULL,
-    net          DECIMAL(19,4) NOT NULL,
-    total_invested DECIMAL(19,4),
-    total_saved  DECIMAL(19,4),
-    sent_at      TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS weekly_summaries (
-    id           INTEGER PRIMARY KEY,
-    send_date    VARCHAR(10) NOT NULL UNIQUE,
-    total_spend  DECIMAL(19,4) NOT NULL,
-    total_income DECIMAL(19,4) NOT NULL,
-    net          DECIMAL(19,4) NOT NULL,
-    total_invested DECIMAL(19,4),
-    total_saved  DECIMAL(19,4),
-    sent_at      TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS taxonomy_proposals (
-    id             INTEGER PRIMARY KEY,
-    parent_name    VARCHAR NOT NULL,
-    source_sub     VARCHAR NOT NULL,
-    action         VARCHAR NOT NULL DEFAULT 'create'
-        CHECK (action IN ('create', 'move')),
-    target_parent  VARCHAR NOT NULL DEFAULT '',
-    proposed_sub   VARCHAR NOT NULL,
-    rationale      VARCHAR NOT NULL,
-    evidence_ids   JSON    NOT NULL,
-    evidence_count INTEGER NOT NULL,
-    status         VARCHAR NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
-    proposed_at    TIMESTAMP NOT NULL,
-    decided_at     TIMESTAMP,
-    applied_at     TIMESTAMP,
-    run_key        VARCHAR NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS category_proposals (
-    id                INTEGER PRIMARY KEY,
-    options           JSON    NOT NULL,
-    status            VARCHAR NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
-    selected_option   INTEGER,
-    regenerate_requested BOOLEAN DEFAULT FALSE,
-    proposed_at       TIMESTAMP NOT NULL,
-    decided_at        TIMESTAMP,
-    applied_at        TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS judge_reviews (
-    txn_id       VARCHAR PRIMARY KEY,
-    merchant_key VARCHAR,
-    category     VARCHAR NOT NULL,
-    subcategory  VARCHAR NOT NULL,
-    outcome      VARCHAR NOT NULL CHECK (outcome IN ('approved', 'held', 'kept', 'changed')),
-    reviewed_at  TIMESTAMP NOT NULL
-);
-
+-- What each category counts as. subcategory_id NULL = the whole parent.
 CREATE TABLE IF NOT EXISTS category_roles (
     parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
     subcategory_id INTEGER REFERENCES subcategories(id),
@@ -134,6 +47,218 @@ CREATE TABLE IF NOT EXISTS category_roles (
     UNIQUE (parent_id, subcategory_id)
 );
 
+-- ── History ──────────────────────────────────────────────────────────────────
+
+-- Every transaction exactly as Monzo sent it.
+CREATE TABLE IF NOT EXISTS transactions_raw (
+    id          VARCHAR   PRIMARY KEY,   -- Monzo's transaction id
+    payload     JSONB     NOT NULL,      -- the webhook body, untouched
+    received_at TIMESTAMP NOT NULL
+);
+
+-- Every time context is given, changed, skipped, timed out or asked for. Each
+-- row holds the full values, not a change: a transaction's context is its
+-- latest row that isn't a request.
+CREATE TABLE IF NOT EXISTS context_events (
+    event_id            BIGINT    GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    txn_id              VARCHAR   NOT NULL REFERENCES transactions_raw(id),
+    user_context        TEXT,
+    skipped             BOOLEAN   NOT NULL DEFAULT FALSE,
+    -- A date corrected in the dashboard; NULL = Monzo's own date.
+    created_at_override TIMESTAMP,
+    --   telegram   a reply or a tap        rule      a rule's auto-context/skip
+    --   dashboard  an edit in either one   timeout   no answer in time
+    --   request    a card or nudge sent (no context: counts the follow-ups)
+    --   migration  converted from the DuckDB setup
+    source              VARCHAR   NOT NULL CHECK (source IN
+        ('telegram', 'rule', 'dashboard', 'timeout', 'request', 'migration')),
+    set_at              TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS context_events_by_txn ON context_events (txn_id, event_id);
+
+-- Every time a category is set, changed or cleared. A transaction's label is
+-- its latest row. subcategory_id NULL with a parent_id = parent only (what
+-- deleting a subcategory leaves); both NULL = cleared.
+CREATE TABLE IF NOT EXISTS label_events (
+    event_id       BIGINT    GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    txn_id         VARCHAR   NOT NULL REFERENCES transactions_raw(id),
+    parent_id      INTEGER   REFERENCES parent_categories(id),
+    subcategory_id INTEGER   REFERENCES subcategories(id),
+    source         VARCHAR   NOT NULL CHECK (source IN
+        ('llm', 'rule', 'quick_tap', 'manual', 'judge', 'proposal', 'migration')),
+    model          VARCHAR(255),
+    confidence     DECIMAL(5,4),
+    set_at         TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
+    CHECK (subcategory_id IS NULL OR parent_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS label_events_by_txn ON label_events (txn_id, event_id);
+
+-- ── Settings: everything else ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS rules (
+    id            INTEGER      PRIMARY KEY,
+    name          VARCHAR(255) NOT NULL,
+    match_field   VARCHAR(255) NOT NULL,
+    match_type    VARCHAR(50)  NOT NULL DEFAULT 'contains',
+    match_value   VARCHAR(255) NOT NULL,
+    match_field_2 VARCHAR(255),
+    match_type_2  VARCHAR(50),
+    match_value_2 VARCHAR(255),
+    auto_context  VARCHAR(255) NOT NULL DEFAULT '',
+    auto_skip     BOOLEAN      NOT NULL DEFAULT FALSE,
+    -- A fixed category: a match skips the classifier. NULL = none.
+    subcategory_id INTEGER     REFERENCES subcategories(id),
+    enabled       BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+-- Suggested rules waiting for a tap. Names as suggested; approving one makes a
+-- rule pointing at that subcategory's id.
+CREATE TABLE IF NOT EXISTS rule_suggestions (
+    id           INTEGER      PRIMARY KEY,
+    match_field  VARCHAR(255) NOT NULL,
+    match_value  VARCHAR(255) NOT NULL,
+    category     VARCHAR(255) NOT NULL,
+    subcategory  VARCHAR(255) NOT NULL,
+    txn_count    INTEGER      NOT NULL DEFAULT 0,
+    auto_context VARCHAR(255) NOT NULL DEFAULT '',
+    status       VARCHAR(20)  NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied')),
+    proposed_at  TIMESTAMP    NOT NULL,
+    decided_at   TIMESTAMP,
+    UNIQUE (match_field, match_value)
+);
+
+-- The monthly "split or move this category" cards. One copy, replacing both
+-- the local table and the server's. evidence_ids = exactly the transactions
+-- shown on the card, so approving moves precisely what was reviewed.
+CREATE TABLE IF NOT EXISTS taxonomy_proposals (
+    id              INTEGER   PRIMARY KEY,
+    action          VARCHAR   NOT NULL DEFAULT 'create' CHECK (action IN ('create', 'move')),
+    parent_name     VARCHAR   NOT NULL,
+    source_sub      VARCHAR   NOT NULL,
+    target_parent   VARCHAR   NOT NULL DEFAULT '',   -- for 'move'
+    proposed_sub    VARCHAR   NOT NULL,
+    rationale       VARCHAR   NOT NULL,
+    evidence_ids    JSONB     NOT NULL,
+    status          VARCHAR   NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
+    run_key         VARCHAR   NOT NULL,              -- the month, e.g. '2026-08'
+    proposed_at     TIMESTAMP NOT NULL,
+    sent_at         TIMESTAMP,
+    decided_at      TIMESTAMP,
+    applied_at      TIMESTAMP,
+    follow_up_count INTEGER   NOT NULL DEFAULT 0,
+    last_nudged_at  TIMESTAMP
+);
+
+-- The classifier's "new category?" cards. One copy, replacing both the local
+-- table and the server's. txn_ids = the transactions held back from the
+-- classifier until it's decided (today: transactions.pending_category_proposal_id).
+CREATE TABLE IF NOT EXISTS category_proposals (
+    id                   INTEGER   PRIMARY KEY,
+    options              JSONB     NOT NULL,
+    txn_ids              JSONB     NOT NULL DEFAULT '[]',
+    status               VARCHAR   NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'selected', 'denied', 'applied', 'expired')),
+    selected_option      INTEGER,
+    -- "Try again" rather than "None of these": those options are avoided next
+    -- time, but not blocked for good.
+    regenerate_requested BOOLEAN   NOT NULL DEFAULT FALSE,
+    proposed_at          TIMESTAMP NOT NULL,
+    sent_at              TIMESTAMP,
+    decided_at           TIMESTAMP,
+    applied_at           TIMESTAMP
+);
+
+-- What the placement judge made of each transaction, so it never asks twice.
+-- category/subcategory = the placement judged, by name.
+CREATE TABLE IF NOT EXISTS judge_reviews (
+    txn_id       VARCHAR   PRIMARY KEY,
+    merchant_key VARCHAR,
+    category     VARCHAR   NOT NULL,
+    subcategory  VARCHAR   NOT NULL,
+    outcome      VARCHAR   NOT NULL CHECK (outcome IN ('approved', 'held', 'kept', 'changed')),
+    reviewed_at  TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id            INTEGER       PRIMARY KEY,
+    name          VARCHAR(255)  NOT NULL,
+    merchant_name VARCHAR(255),
+    amount        DECIMAL(19,4) NOT NULL,
+    frequency     VARCHAR(20)   NOT NULL CHECK (frequency IN ('weekly', 'fortnightly', 'monthly', 'annual')),
+    active        BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMP     NOT NULL
+);
+
+-- ── Gold ─────────────────────────────────────────────────────────────────────
+
+-- The figures each weekly and monthly summary sent, and the record that it was
+-- sent, so none goes out twice. Replaces weekly_summaries and monthly_summaries.
+CREATE TABLE IF NOT EXISTS summaries (
+    period         VARCHAR(5)    NOT NULL CHECK (period IN ('week', 'month')),
+    period_key     VARCHAR(10)   NOT NULL,   -- '2026-W43' / '2026-10'
+    total_spend    DECIMAL(19,4) NOT NULL,
+    total_income   DECIMAL(19,4) NOT NULL,
+    net            DECIMAL(19,4) NOT NULL,
+    total_invested DECIMAL(19,4),
+    total_saved    DECIMAL(19,4),
+    sent_at        TIMESTAMP     NOT NULL,
+    PRIMARY KEY (period, period_key)
+);
+
+-- ── Views (silver: worked out on every read, nothing stored) ─────────────────
+
+-- One row per transaction, under the column names the old transactions table
+-- had, so the dashboards and summaries read it the same way. Monzo's fields
+-- come out of the payload exactly as database_functions.write_to_db flattened
+-- them (amount from pence; '' dates as NULL). parent_id/subcategory_id are
+-- extra, for joining by id.
+CREATE OR REPLACE VIEW transactions AS
+SELECT
+    r.id,
+    (COALESCE((d.data->>'amount')::NUMERIC, 0) / 100)::DECIMAL(19,4) AS amount,
+    COALESCE(d.data->>'currency', 'GBP')::VARCHAR(3)                AS currency,
+    d.data->>'description'                                          AS description,
+    d.data->>'category'                                             AS monzo_category,
+    d.data->'merchant'->>'name'                                     AS merchant_name,
+    d.data->'merchant'->>'category'                                 AS merchant_category,
+    d.data->'counterparty'->>'name'                                 AS counterparty_name,
+    (d.data->>'is_load')::BOOLEAN                                   AS is_load,
+    COALESCE(c.created_at_override,
+             NULLIF(d.data->>'created', '')::TIMESTAMPTZ AT TIME ZONE 'UTC') AS created_at,
+    NULLIF(d.data->>'settled', '')::TIMESTAMPTZ AT TIME ZONE 'UTC'  AS settled_at,
+    r.payload                                                       AS raw_payload,
+    c.user_context,
+    COALESCE(c.skipped, FALSE)                                      AS skipped,
+    r.received_at,
+    c.set_at                                                        AS enriched_at,
+    pc.name                                                         AS llm_category,
+    sc.name                                                         AS llm_subcategory,
+    l.confidence                                                    AS llm_confidence,
+    l.model                                                         AS llm_model,
+    l.set_at                                                        AS classified_at,
+    (SELECT p.id FROM category_proposals p
+      WHERE p.status = 'pending' AND p.txn_ids ? r.id
+      ORDER BY p.id LIMIT 1)                                        AS pending_category_proposal_id,
+    l.parent_id,
+    l.subcategory_id
+FROM transactions_raw r
+CROSS JOIN LATERAL (SELECT r.payload->'data' AS data) d
+LEFT JOIN LATERAL (
+    SELECT * FROM context_events e
+    WHERE e.txn_id = r.id AND e.source <> 'request'
+    ORDER BY e.event_id DESC LIMIT 1
+) c ON TRUE
+LEFT JOIN LATERAL (
+    SELECT * FROM label_events e
+    WHERE e.txn_id = r.id
+    ORDER BY e.event_id DESC LIMIT 1
+) l ON TRUE
+LEFT JOIN parent_categories pc ON pc.id = l.parent_id
+LEFT JOIN subcategories sc ON sc.id = l.subcategory_id;
+
+-- Built-in default role by category name, used when no role is set.
 CREATE OR REPLACE FUNCTION default_role_for_parent(parent_name VARCHAR) RETURNS VARCHAR
 LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE parent_name
@@ -143,121 +268,80 @@ LANGUAGE sql IMMUTABLE AS $$
     END
 $$;
 
+-- Each transaction's role: the subcategory's, else the parent's, else the
+-- built-in default, else spend, else (only if unclassified) by the amount's sign.
 CREATE OR REPLACE VIEW transaction_roles AS
 SELECT t.*, COALESCE(
     sub_role.role,
     parent_role.role,
-    default_role_for_parent(pc.name),
-    CASE WHEN pc.name IS NOT NULL THEN 'spend' END,
+    default_role_for_parent(t.llm_category),
+    CASE WHEN t.llm_category IS NOT NULL THEN 'spend' END,
     CASE WHEN t.amount >= 0 THEN 'income' ELSE 'spend' END
 ) AS role
 FROM transactions t
-LEFT JOIN parent_categories pc ON pc.name = t.llm_category
-LEFT JOIN subcategories sc ON sc.name = t.llm_subcategory AND sc.parent_id = pc.id
-LEFT JOIN category_roles sub_role ON sub_role.subcategory_id = sc.id
-LEFT JOIN category_roles parent_role ON parent_role.parent_id = pc.id AND parent_role.subcategory_id IS NULL;
+LEFT JOIN category_roles sub_role ON sub_role.subcategory_id = t.subcategory_id
+LEFT JOIN category_roles parent_role
+    ON parent_role.parent_id = t.parent_id AND parent_role.subcategory_id IS NULL;
 
--- ── Server (sql/server_tables.sql) ───────────────────────────────────────────
+-- Transactions waiting for an answer: no context yet, not even a timeout. Drives
+-- the Telegram card and its follow-ups.
+CREATE OR REPLACE VIEW needs_context AS
+SELECT
+    r.id,
+    r.received_at,
+    COUNT(e.event_id)  AS request_count,
+    MAX(e.set_at)      AS last_requested_at
+FROM transactions_raw r
+LEFT JOIN context_events e ON e.txn_id = r.id AND e.source = 'request'
+WHERE NOT EXISTS (
+    SELECT 1 FROM context_events x WHERE x.txn_id = r.id AND x.source <> 'request'
+)
+GROUP BY r.id, r.received_at;
 
-CREATE TABLE IF NOT EXISTS stats (
-    id                  INTEGER     PRIMARY KEY DEFAULT 1,
-    total_received      INTEGER     DEFAULT 0,
-    total_amount_pence  BIGINT      DEFAULT 0,
-    requests_sent       INTEGER     DEFAULT 0,
-    total_enriched      INTEGER     DEFAULT 0,
-    total_processed     INTEGER     DEFAULT 0
-);
+-- The classifier's to-do list: context settled, not skipped, not fully
+-- labelled, and not held back behind a pending category proposal.
+CREATE OR REPLACE VIEW needs_label AS
+SELECT t.*
+FROM transactions t
+WHERE t.enriched_at IS NOT NULL
+  AND NOT t.skipped
+  AND (t.llm_category IS NULL OR t.llm_subcategory IS NULL)
+  AND t.pending_category_proposal_id IS NULL;
 
-INSERT INTO stats (id) VALUES (1) ON CONFLICT DO NOTHING;
-
-CREATE TABLE IF NOT EXISTS webhook_queue (
-    id                  VARCHAR(255) NOT NULL PRIMARY KEY,
-    payload             TEXT         NOT NULL,
-    received_at         TIMESTAMP    NOT NULL,
-    status              VARCHAR(20)  DEFAULT 'pending'
-        CHECK (status IN ('pending', 'enriched', 'processed')),
-    user_context        TEXT,
-    enriched_at         TIMESTAMP,
-    request_count       INTEGER      DEFAULT 0,
-    skipped             BOOLEAN      DEFAULT FALSE,
-    last_requested_at   TIMESTAMP,
-    rule_category       VARCHAR(255),
-    rule_subcategory    VARCHAR(255)
-);
-
-CREATE TABLE IF NOT EXISTS rules (
-    id            INTEGER      PRIMARY KEY,
-    name          VARCHAR(255) NOT NULL,
-    match_field   VARCHAR(255) NOT NULL,
-    match_type    VARCHAR(50)  NOT NULL DEFAULT 'contains',
-    match_value   VARCHAR(255) NOT NULL,
-    auto_context  VARCHAR(255) NOT NULL DEFAULT '',
-    enabled       BOOLEAN      DEFAULT TRUE,
-    match_field_2 VARCHAR(255),
-    match_type_2  VARCHAR(50),
-    match_value_2 VARCHAR(255),
-    auto_skip     BOOLEAN      DEFAULT FALSE,
-    category      VARCHAR(255),
-    subcategory   VARCHAR(255)
-);
-
-CREATE TABLE IF NOT EXISTS taxonomy (
-    category      VARCHAR(255) NOT NULL,
-    subcategory   VARCHAR(255) NOT NULL,
-    PRIMARY KEY (category, subcategory)
-);
-
-CREATE TABLE IF NOT EXISTS server_taxonomy_proposals (
-    local_id       INTEGER      PRIMARY KEY,
-    parent_name    VARCHAR(255) NOT NULL,
-    source_sub     VARCHAR(255) NOT NULL,
-    action         VARCHAR(10)  NOT NULL DEFAULT 'create'
-        CHECK (action IN ('create', 'move')),
-    target_parent  VARCHAR(255) NOT NULL DEFAULT '',
-    proposed_sub   VARCHAR(255) NOT NULL,
-    rationale      TEXT         NOT NULL,
-    evidence_count INTEGER      NOT NULL DEFAULT 0,
-    examples       TEXT,
-    status         VARCHAR(20)  NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'denied', 'collected')),
-    sent_at        TIMESTAMP    NOT NULL,
-    decided_at     TIMESTAMP,
-    follow_up_count INTEGER     DEFAULT 0,
-    last_nudged_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS server_category_proposals (
-    local_id          INTEGER      PRIMARY KEY,
-    options           TEXT         NOT NULL,
-    txn_count         INTEGER      NOT NULL DEFAULT 0,
-    examples          TEXT,
-    status            VARCHAR(20)  NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'selected', 'denied', 'collected')),
-    selected_option   INTEGER,
-    regenerate_requested BOOLEAN   DEFAULT FALSE,
-    sent_at           TIMESTAMP    NOT NULL,
-    decided_at        TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS rule_suggestions (
-    id            INTEGER      PRIMARY KEY,
-    match_field   VARCHAR(255) NOT NULL,
-    match_value   VARCHAR(255) NOT NULL,
-    category      VARCHAR(255) NOT NULL,
-    subcategory   VARCHAR(255) NOT NULL,
-    txn_count     INTEGER      NOT NULL DEFAULT 0,
-    auto_context  VARCHAR(255) NOT NULL DEFAULT '',
-    status        VARCHAR(20)  NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'denied')),
-    proposed_at   TIMESTAMP    NOT NULL,
-    decided_at    TIMESTAMP,
-    UNIQUE (match_field, match_value)
-);
-
-CREATE TABLE IF NOT EXISTS quick_categories (
-    id            INTEGER      PRIMARY KEY,
-    category      VARCHAR(255) NOT NULL,
-    subcategory   VARCHAR(255) NOT NULL,
-    merchant_name VARCHAR(255),
-    rank          INTEGER      NOT NULL DEFAULT 0
-);
+-- The quick-tap buttons on a card: the 10 most-used categories overall
+-- (merchant_name NULL), plus each of the 50 busiest merchants' top 3. A
+-- merchant is merchant_name, falling back to the counterparty (direct debits
+-- and transfers rarely have a merchant). rank starts at 0.
+CREATE OR REPLACE VIEW quick_categories AS
+WITH labelled AS (
+    SELECT COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) AS merchant,
+           llm_category AS category, llm_subcategory AS subcategory
+    FROM transactions
+    WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
+),
+overall AS (
+    SELECT category, subcategory,
+           ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, category, subcategory) AS n
+    FROM labelled
+    GROUP BY category, subcategory
+),
+busiest AS (
+    SELECT merchant FROM labelled
+    WHERE merchant IS NOT NULL
+    GROUP BY merchant
+    ORDER BY COUNT(*) DESC, merchant
+    LIMIT 50
+),
+per_merchant AS (
+    SELECT l.merchant, l.category, l.subcategory,
+           ROW_NUMBER() OVER (PARTITION BY l.merchant
+                              ORDER BY COUNT(*) DESC, l.category, l.subcategory) AS n
+    FROM labelled l
+    JOIN busiest b ON b.merchant = l.merchant
+    GROUP BY l.merchant, l.category, l.subcategory
+)
+SELECT NULL::VARCHAR AS merchant_name, category, subcategory, n - 1 AS rank
+FROM overall WHERE n <= 10
+UNION ALL
+SELECT merchant, category, subcategory, n - 1
+FROM per_merchant WHERE n <= 3;
