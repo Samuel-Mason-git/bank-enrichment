@@ -467,13 +467,10 @@ at any point using a new taxonomy and it will classify correctly every time.
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
 │       ├── database_functions.py  # The pipeline's and dashboard's database library (psycopg) — includes a CLI (run the file directly) to print stats/transactions
-│       ├── pg_copy.py         # One-off: copies the old DuckDB files into Postgres
 │       ├── dashboard.py       # Streamlit dashboard
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
 ├── sql/
-│   ├── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
-│   ├── tables.sql             # The old local DuckDB schema — read only by pg_copy.py
-│   └── server_tables.sql      # The old server DuckDB schema — read only by pg_copy.py
+│   └── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
 ├── config/
 │   └── .env.example           # Environment variable template
 ├── Dockerfile                 # Server container (server dependencies + server files only)

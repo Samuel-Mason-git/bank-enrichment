@@ -19,8 +19,8 @@ TABLES = {
 }
 VIEWS = {"transactions", "transaction_roles", "needs_context", "needs_label", "quick_categories"}
 
-# The columns today's transactions table has (sql/tables.sql), minus
-# processed_at, which nothing reads. The view must offer every one of them.
+# The columns the old DuckDB transactions table had, minus processed_at,
+# which nothing read. The view offers every one of them, under the same names.
 OLD_TRANSACTION_COLUMNS = [
     "id", "amount", "currency", "description", "monzo_category", "merchant_name",
     "merchant_category", "counterparty_name", "is_load", "created_at", "settled_at",
@@ -226,9 +226,10 @@ def test_needs_label_is_the_classifiers_to_do_list(pg):
     assert todo == {"ready", "parent_only", "held"}
 
 
-def test_transaction_roles_gives_the_same_answers_as_today(old_local_db, pg):
-    """The same transactions, set up the old way in DuckDB and the new way in
-    Postgres, must get the same role, for every way a role can be decided."""
+def test_transaction_roles_decides_every_role_as_the_old_tables_did(pg):
+    """One transaction for every way a role can be decided. The answers are
+    the ones the old DuckDB tables gave for the same transactions (checked
+    side by side until those tables went), so this pins the view to them."""
     cases = [
         # (id, amount, parent_id, subcategory_id)
         ("sub_override", -5, 1, 1),        # subcategory role set: saving
@@ -240,36 +241,19 @@ def test_transaction_roles_gives_the_same_answers_as_today(old_local_db, pg):
         ("unclassified_in", 7, None, None),
         ("unclassified_out", -7, None, None),
     ]
-    parents = {1: "Food", 2: "Fun", 3: "Income", 4: "Investments", 5: "Transfers"}
-    subs = {1: ("Groceries", 1), 2: ("Takeaway", 1), 3: ("Gigs", 2), 4: ("Salary", 3), 5: ("ISA", 4), 6: ("Pot", 5)}
-
-    db = old_local_db
     _taxonomy(pg)
-    for pid, name in parents.items():
-        db.execute("INSERT INTO parent_categories VALUES (?, ?, '2026-01-01')", [pid, name])
-    for sid, (name, parent) in subs.items():
-        db.execute("INSERT INTO subcategories VALUES (?, ?, ?, '2026-01-01')", [sid, name, parent])
-    for con in (db, pg):
-        con.execute("INSERT INTO category_roles VALUES (1, 1, 'saving')")
-        con.execute("INSERT INTO category_roles VALUES (2, NULL, 'excluded')")
-
+    pg.execute("INSERT INTO category_roles VALUES (1, 1, 'saving')")
+    pg.execute("INSERT INTO category_roles VALUES (2, NULL, 'excluded')")
     for txn_id, amount, parent_id, sub_id in cases:
-        category = parents.get(parent_id)
-        subcategory = subs[sub_id][0] if sub_id else None
-        db.execute(
-            "INSERT INTO transactions (id, amount, currency, llm_category, llm_subcategory) "
-            "VALUES (?, ?, 'GBP', ?, ?)",
-            [txn_id, Decimal(amount), category, subcategory],
-        )
         _txn(pg, txn_id, amount=amount * 100)
         if parent_id:
             _label(pg, txn_id, parent_id, sub_id)
 
-    query = "SELECT id, role FROM transaction_roles ORDER BY id"
-    old = db.execute(query).fetchall()
-    assert pg.execute(query).fetchall() == old
-    assert dict(old)["sub_override"] == "saving"
-    assert dict(old)["parent_override"] == "excluded"
+    assert pg.execute("SELECT id, role FROM transaction_roles ORDER BY id").fetchall() == [
+        ("default_income", "income"), ("default_invest", "investment"), ("default_transfer", "transfer"),
+        ("parent_override", "excluded"), ("plain_spend", "spend"), ("sub_override", "saving"),
+        ("unclassified_in", "income"), ("unclassified_out", "spend"),
+    ]
 
 
 def test_quick_categories_are_the_top_overall_and_each_merchants_top_three(pg):

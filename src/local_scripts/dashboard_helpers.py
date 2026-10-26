@@ -181,7 +181,7 @@ def sanitize_classification_edit(new_category: str | None, new_subcategory: str 
     A blanked SelectboxColumn cell round-trips through st.data_editor as a
     float NaN, not "" or None -- and `not float('nan')` is False in Python
     (NaN is truthy), so a plain falsiness check lets it straight through to
-    upsert_parent(nan), which DuckDB rejects when it tries to compare that
+    upsert_parent(nan), which the database rejects when it tries to compare that
     float-typed parameter against the VARCHAR name column. pd.isna() catches
     NaN and None alike; the truthiness check still catches "" alongside it."""
     if pd.isna(new_category) or not new_category:

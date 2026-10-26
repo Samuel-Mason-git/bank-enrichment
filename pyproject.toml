@@ -28,11 +28,9 @@ dependencies = [
 python-dotenv = ">=1.2.2,<2.0.0"
 anthropic = ">=0.104.1,<0.105.0"
 
-# The Streamlit dashboard, on your own machine, and the one-off copy script
-# (pg_copy.py, the only thing still using DuckDB). Installed by a plain
+# The Streamlit dashboard, on your own machine. Installed by a plain
 # `poetry install` like any other group, so local setup and CI are unchanged.
 [tool.poetry.group.local.dependencies]
-duckdb = ">=1.5.2,<2.0.0"
 streamlit = ">=1.57.0,<2.0.0"
 plotly = ">=6.7.0,<7.0.0"
 pandas = ">=3.0.3,<4.0.0"

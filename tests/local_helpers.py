@@ -1,5 +1,5 @@
 """Building blocks for the pipeline's tests, on the shared Postgres tables
-through the DuckDB connection the pipeline uses (the `db` fixture).
+through the connection the pipeline uses (the `db` fixture).
 
 The pipeline's tests describe a transaction the way the old local table held
 one -- amount, merchant, context, category -- so `insert_transaction` takes

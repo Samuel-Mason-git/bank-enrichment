@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,10 +8,6 @@ from unittest.mock import MagicMock, patch
 patch("dotenv.load_dotenv", return_value=False).start()
 
 # Set all required env vars to safe, test-only values.
-_tmp = tempfile.gettempdir()
-os.environ["DB_PATH"] = os.path.join(_tmp, "test_bank.db")
-os.environ["SERVER_URL"] = "http://test-server"
-os.environ["LOCAL_API_KEY"] = "test-api-key"
 os.environ["CLAUDE_SECRET"] = "test-claude-secret"
 os.environ["TELEGRAM_API"] = "test-telegram-token"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
@@ -22,10 +17,7 @@ sys.path.insert(0, str(_repo / "src" / "local_scripts"))
 sys.path.insert(0, str(_repo / "src" / "server_scripts"))
 
 import pytest
-import duckdb
 
-_SQL_PATH = _repo / "sql" / "tables.sql"
-_SERVER_SQL_PATH = _repo / "sql" / "server_tables.sql"
 _PG_SCHEMA_PATH = _repo / "sql" / "postgres" / "schema.sql"
 
 

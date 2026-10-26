@@ -3,7 +3,7 @@
 The pipeline holds transactions behind a proposal of new (parent, subcategory)
 options -> the server sends its card -> you tap one option, "None of these" or
 "Try again" -> the server records it on the proposal -> the next pipeline run
-acts on it. The pipeline side goes through DuckDB (`db`), the server side
+acts on it. The pipeline side goes through its own connection (`db`), the server side
 through psycopg (`server_con`), both on the same Postgres schema.
 """
 import json
