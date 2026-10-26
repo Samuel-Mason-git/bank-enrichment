@@ -1,6 +1,6 @@
-"""The daily run on the server: when it runs, what happens when it can't, and
-that two runs never overlap."""
-from datetime import datetime, timezone
+"""The hourly runs on the server: when they happen, what Telegram hears when
+they can't, and that two runs never overlap."""
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 import alerts
@@ -13,78 +13,105 @@ def utc(*args):
     return datetime(*args, tzinfo=timezone.utc)
 
 
+def london(*args):
+    return datetime(*args, tzinfo=LONDON)
+
+
+def sent(alert_post):
+    return [c.kwargs["json"]["text"] for c in alert_post.call_args_list]
+
+
 class TestNextRun:
-    def test_before_eight_runs_today(self):
-        assert next_run(datetime(2026, 7, 1, 6, 0, tzinfo=LONDON)) == datetime(2026, 7, 1, 8, 0, tzinfo=LONDON)
+    def test_before_eight_the_first_run_is_at_eight(self):
+        assert next_run(london(2026, 7, 1, 6, 0)) == london(2026, 7, 1, 8, 0)
 
-    def test_after_eight_runs_tomorrow(self):
-        assert next_run(datetime(2026, 7, 1, 9, 0, tzinfo=LONDON)) == datetime(2026, 7, 2, 8, 0, tzinfo=LONDON)
+    def test_during_the_day_it_is_the_next_hour(self):
+        assert next_run(london(2026, 7, 1, 9, 20)) == london(2026, 7, 1, 10, 0)
 
-    def test_at_eight_exactly_waits_for_tomorrow(self):
-        """Never twice in one morning: a run that finishes within the same
-        minute must not schedule itself again."""
-        assert next_run(datetime(2026, 7, 1, 8, 0, tzinfo=LONDON)) == datetime(2026, 7, 2, 8, 0, tzinfo=LONDON)
+    def test_on_the_hour_exactly_waits_for_the_next(self):
+        """A run that finishes within the minute it started must not
+        schedule itself again."""
+        assert next_run(london(2026, 7, 1, 9, 0)) == london(2026, 7, 1, 10, 0)
 
-    def test_stays_at_eight_london_across_the_clocks_going_back(self):
+    def test_the_last_run_is_at_ten_at_night(self):
+        assert next_run(london(2026, 7, 1, 21, 59)) == london(2026, 7, 1, 22, 0)
+
+    def test_nothing_overnight(self):
+        assert next_run(london(2026, 7, 1, 22, 0)) == london(2026, 7, 2, 8, 0)
+        assert next_run(london(2026, 7, 1, 23, 30)) == london(2026, 7, 2, 8, 0)
+        assert next_run(london(2026, 7, 2, 3, 0)) == london(2026, 7, 2, 8, 0)
+
+    def test_stays_on_londons_hours_across_the_clocks_going_back(self):
         """25 Oct 2026: BST ends. 08:00 London is 07:00 UTC before, 08:00 after."""
-        due = next_run(utc(2026, 10, 24, 12, 0))
-        assert due == datetime(2026, 10, 25, 8, 0, tzinfo=LONDON)
-        assert due.astimezone(timezone.utc) == utc(2026, 10, 25, 8, 0)
-        assert next_run(utc(2026, 10, 23, 12, 0)).astimezone(timezone.utc) == utc(2026, 10, 24, 7, 0)
+        assert next_run(utc(2026, 10, 24, 22, 0)).astimezone(timezone.utc) == utc(2026, 10, 25, 8, 0)
+        assert next_run(utc(2026, 10, 23, 22, 0)).astimezone(timezone.utc) == utc(2026, 10, 24, 7, 0)
 
-    def test_stays_at_eight_london_across_the_clocks_going_forward(self):
+    def test_stays_on_londons_hours_across_the_clocks_going_forward(self):
         """29 Mar 2026: BST starts, so 08:00 London becomes 07:00 UTC."""
-        due = next_run(utc(2026, 3, 28, 12, 0))
-        assert due.astimezone(timezone.utc) == utc(2026, 3, 29, 7, 0)
+        assert next_run(utc(2026, 3, 28, 22, 0)).astimezone(timezone.utc) == utc(2026, 3, 29, 7, 0)
+        assert next_run(utc(2026, 3, 29, 12, 30)) == london(2026, 3, 29, 14, 0)
 
-    def test_a_utc_time_late_in_the_evening_is_read_on_londons_date(self):
-        # 23:30 UTC on 30 June is 00:30 on 1 July in London: today's 08:00 is still ahead.
-        assert next_run(utc(2026, 6, 30, 23, 30)) == datetime(2026, 7, 1, 8, 0, tzinfo=LONDON)
+    def test_a_utc_time_late_in_the_evening_is_read_on_londons_clock(self):
+        # 21:30 UTC on 1 July is 22:30 in London: today's runs are over.
+        assert next_run(utc(2026, 7, 1, 21, 30)) == london(2026, 7, 2, 8, 0)
+        # 23:30 UTC on 30 June is 00:30 on 1 July in London: 08:00 is still ahead.
+        assert next_run(utc(2026, 6, 30, 23, 30)) == london(2026, 7, 1, 8, 0)
 
 
 class TestRunOnce:
     def test_a_good_run_sends_nothing(self, alert_post):
-        with patch.object(process, "main", return_value=0):
-            assert worker.run_once() == 0
+        with patch.object(process, "main", return_value=process.RAN):
+            assert worker.run_once(london(2026, 7, 1, 9, 0)) == process.RAN
         alert_post.assert_not_called()
 
-    def test_a_run_that_cannot_start_says_so(self, alert_post):
+    def test_a_run_that_cannot_reach_the_database_says_so(self, alert_post):
         with patch.object(process, "main", return_value=process.NO_DATABASE):
-            assert worker.run_once() == process.NO_DATABASE
-        assert "The daily run didn&#x27;t start" in alert_post.call_args.kwargs["json"]["text"]
-
-    def test_no_database_is_retried_every_half_hour_before_alerting(self, alert_post, retry_waits):
-        with patch.object(process, "main", return_value=process.NO_DATABASE) as main:
-            worker.run_once()
-        assert main.call_count == 1 + worker.RETRIES
-        assert retry_waits == [worker.RETRY_EVERY] * worker.RETRIES
-        assert alert_post.call_count == 1, "one alert, after the last try"
-
-    def test_a_database_back_on_a_retry_runs_with_no_alert(self, alert_post, retry_waits):
-        with patch.object(process, "main", side_effect=[process.NO_DATABASE, process.RAN]) as main:
-            assert worker.run_once() == process.RAN
-        assert main.call_count == 2 and retry_waits == [worker.RETRY_EVERY]
-        alert_post.assert_not_called()
-
-    def test_another_run_going_is_not_retried(self, alert_post, retry_waits):
-        with patch.object(process, "main", return_value=process.ALREADY_RUNNING) as main:
-            assert worker.run_once() == process.ALREADY_RUNNING
-        assert main.call_count == 1 and retry_waits == []
-        assert "Another run was already going" in alert_post.call_args.kwargs["json"]["text"]
+            assert worker.run_once(london(2026, 7, 1, 9, 0)) == process.NO_DATABASE
+        [text] = sent(alert_post)
+        assert "stopped working" in text and "09:00" in text and "database" in text
 
     def test_a_crash_is_reported_and_the_worker_carries_on(self, alert_post):
         with patch.object(process, "main", side_effect=RuntimeError("boom")):
-            assert worker.run_once() == 1
-        text = alert_post.call_args.kwargs["json"]["text"]
+            assert worker.run_once(london(2026, 7, 1, 9, 0)) == 1
+        [text] = sent(alert_post)
         assert "crashed" in text and "RuntimeError" in text and "boom" not in text
 
-    def test_every_run_can_alert_again(self, alert_post):
-        """The worker lives for weeks; an alert sent yesterday must not
-        silence the same alert today."""
+    def test_failing_hour_after_hour_alerts_once(self, alert_post):
+        with patch.object(process, "main", return_value=process.NO_DATABASE):
+            for hour in range(9, 14):
+                worker.run_once(london(2026, 7, 1, hour, 0))
+        assert len(sent(alert_post)) == 1
+
+    def test_working_again_is_said_once(self, alert_post):
+        with patch.object(process, "main", side_effect=[process.NO_DATABASE, RuntimeError("x"),
+                                                        process.RAN, process.RAN]):
+            for hour in range(9, 13):
+                worker.run_once(london(2026, 7, 1, hour, 0))
+        first, back = sent(alert_post)
+        assert "stopped working" in first
+        assert "running again" in back and "since Wed 09:00" in back and "11:00" in back
+
+    def test_a_new_failure_after_recovering_alerts_again(self, alert_post):
+        with patch.object(process, "main", side_effect=[process.NO_DATABASE, process.RAN, process.NO_DATABASE]):
+            for hour in range(9, 12):
+                worker.run_once(london(2026, 7, 1, hour, 0))
+        texts = sent(alert_post)
+        assert len(texts) == 3
+        assert "stopped working" in texts[0] and "running again" in texts[1] and "stopped working" in texts[2]
+
+    def test_another_run_going_is_only_logged(self, alert_post):
+        """A run started by hand overlapping the hourly one is harmless: the
+        next hour picks up whatever it didn't."""
         with patch.object(process, "main", return_value=process.ALREADY_RUNNING):
-            worker.run_once()
-            worker.run_once()
-        assert alert_post.call_count == 2
+            assert worker.run_once(london(2026, 7, 1, 9, 0)) == process.ALREADY_RUNNING
+        alert_post.assert_not_called()
+
+    def test_another_run_going_neither_starts_nor_ends_a_failing_streak(self, alert_post):
+        with patch.object(process, "main", side_effect=[process.NO_DATABASE, process.ALREADY_RUNNING,
+                                                        process.NO_DATABASE]):
+            for hour in range(9, 12):
+                worker.run_once(london(2026, 7, 1, hour, 0))
+        assert len(sent(alert_post)) == 1
 
     def test_now_runs_once_and_exits(self):
         with patch.object(worker, "run_once", return_value=0) as run:
@@ -92,13 +119,26 @@ class TestRunOnce:
         run.assert_called_once()
 
 
-class TestAlertsPerRun:
-    def test_the_same_kind_is_sent_once_per_run(self, alert_post):
-        alerts.send_alert("credit", "a", "b")
-        alerts.send_alert("credit", "a", "b")
-        alerts.start_run()
-        alerts.send_alert("credit", "a", "b")
-        assert alert_post.call_count == 2
+class TestAlertsOncePerDay:
+    def test_the_same_kind_is_sent_once_a_day_not_once_an_hour(self, alert_post):
+        """The worker lives for weeks; out of credit at 09:00 is said once
+        that day, and again the next day if it's still true."""
+        def run(*when):
+            worker.run_once(london(*when))
+            alerts.send_alert("credit", "a", "b")
+        with patch.object(process, "main", return_value=process.RAN):
+            run(2026, 7, 1, 9, 0)
+            run(2026, 7, 1, 10, 0)
+            run(2026, 7, 1, 22, 0)
+            run(2026, 7, 2, 8, 0)
+        assert len(sent(alert_post)) == 2
+
+    def test_the_day_is_londons(self):
+        with patch.object(process, "main", return_value=process.RAN), \
+                patch.object(alerts, "start_run") as start:
+            worker.run_once(utc(2026, 6, 30, 22, 0))   # 23:00 on 30 June in London
+            worker.run_once(utc(2026, 6, 30, 23, 30))  # 00:30 on 1 July in London
+        assert start.call_count == 2 and worker._alerts_day == date(2026, 7, 1)
 
 
 class TestOneRunAtATime:

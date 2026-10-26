@@ -591,7 +591,7 @@ async def recieve_telegram(request: Request):
                 bot.send_message(
                     chat_id,
                     f"✅ Approved <b>{proposed_sub}</b>.\n\n"
-                    "It'll be created and the listed transactions moved on the next daily run."
+                    "It'll be created and the listed transactions moved on the next run, within the hour."
                 )
             else:
                 bot.send_message(

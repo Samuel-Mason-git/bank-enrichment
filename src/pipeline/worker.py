@@ -1,69 +1,89 @@
-"""Runs the pipeline every morning, on the server (the `worker` container in
+"""Runs the pipeline on the server (the `worker` container in
 docker-compose.yml) -- so classification, proposals and summaries happen even
 when the PC is off.
 
-Sleeps until the next RUN_AT London time, runs process.py's steps, and
-repeats. If the database can't be reached, it tries again every
-RETRY_EVERY seconds, RETRIES times, before giving up for the day. A run that
-can't start, or crashes, is logged and sent to Telegram, and the worker
-carries on to the next morning. On Sundays it also sends a short "all fine",
-so a worker that has quietly stopped doesn't go unnoticed for long.
+Every hour on the hour from FIRST_RUN to LAST_RUN, London time, it runs
+process.py's steps; nothing runs overnight, so no card ever arrives at 3am. A
+run with nothing new to do makes no Claude calls. The weekly and monthly
+summaries, and the monthly review, go out in the first run after their period
+ends -- the morning's.
+
+A run that can't start or crashes is logged, and Telegram hears about it once
+when runs start failing and once when they work again -- not every hour in
+between. Each kind of alert (out of credit, say) is sent at most once a day.
+On Sundays it also says it's fine, after the day's first good run, so a worker
+that has quietly stopped doesn't go unnoticed for long.
+
 `python worker.py --now` runs once straight away and exits, for trying it by
 hand."""
 import logging
 import sys
 import time
-from datetime import datetime, timedelta, time as clock
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import alerts
 import process
 
-RUN_AT = clock(8, 0)
+FIRST_RUN, LAST_RUN = 8, 22   # hours, London time; runs on the hour, both included
 LONDON = ZoneInfo("Europe/London")
-RETRIES = 3
-RETRY_EVERY = 30 * 60
 
 log = logging.getLogger("worker")
 
-# Waits between retries -- a name of its own, so tests can skip them.
+# The wait until the next run -- a name of its own, so tests can skip it.
 _sleep = time.sleep
+
+# What the worker remembers between runs.
+_failing_since: datetime | None = None   # set while runs aren't working
+_alerts_day: date | None = None          # the day alerts were last reset for
+_checked_in: date | None = None          # the last Sunday it said it's fine
 
 
 def next_run(now: datetime) -> datetime:
-    """The next RUN_AT on London's clock, strictly after `now` (an aware
-    datetime). Worked out on the wall clock, so it stays at 08:00 across the
-    clocks going forward or back."""
+    """The next whole hour from FIRST_RUN to LAST_RUN on London's clock,
+    strictly after `now` (an aware datetime). Worked out on the wall clock, so
+    it stays on the hour across the clocks going forward or back."""
     local = now.astimezone(LONDON)
-    candidate = datetime.combine(local.date(), RUN_AT, tzinfo=LONDON)
-    if candidate <= local:
-        candidate = datetime.combine(local.date() + timedelta(days=1), RUN_AT, tzinfo=LONDON)
-    return candidate
+    for day in (local.date(), local.date() + timedelta(days=1)):
+        for hour in range(FIRST_RUN, LAST_RUN + 1):
+            candidate = datetime(day.year, day.month, day.day, hour, tzinfo=LONDON)
+            if candidate > local:
+                return candidate
+    raise AssertionError("unreachable: tomorrow always has a run")
 
 
-def run_once(retries: int = RETRIES) -> int:
-    alerts.start_run()
+def _reset_alerts_daily(today: date) -> None:
+    global _alerts_day
+    if _alerts_day != today:
+        alerts.start_run()
+        _alerts_day = today
+
+
+def run_once(now: datetime | None = None) -> int:
+    """One run. Returns process.main()'s answer, or 1 if the run crashed."""
+    global _failing_since
+    now = (now or datetime.now(LONDON)).astimezone(LONDON)
+    _reset_alerts_daily(now.date())
     try:
         code = process.main()
-        for attempt in range(retries):
-            if code != process.NO_DATABASE:
-                break
-            log.warning(f"Couldn't reach the database; trying again in {RETRY_EVERY // 60} minutes "
-                        f"({attempt + 1}/{retries})")
-            _sleep(RETRY_EVERY)
-            code = process.main()
+        problem = {process.NO_DATABASE: "it couldn't reach the database",
+                   process.ALREADY_RUNNING: "another run was already going (one started by hand?)"}.get(code)
     except Exception as e:  # the steps catch their own; this is the run itself failing
-        log.error(f"The daily run crashed: {e}", exc_info=True)
-        alerts.send_alert("worker-crash", "The daily run crashed",
-                          f"{type(e).__name__}. The worker carries on and tries again tomorrow at 08:00.")
-        return 1
-    if code == process.NO_DATABASE:
-        alerts.send_alert("worker-not-started", "The daily run didn't start",
-                          f"It couldn't reach the database, {retries + 1} times over "
-                          f"{retries * RETRY_EVERY // 60} minutes. It tries again tomorrow at 08:00.")
+        log.error(f"The run crashed: {e}", exc_info=True)
+        code, problem = 1, f"it crashed ({type(e).__name__})"
+
+    if problem and code != process.ALREADY_RUNNING:
+        if _failing_since is None:
+            _failing_since = now
+            alerts.send_telegram(f"⚠️ <b>The pipeline's runs have stopped working</b>\n\n"
+                                 f"The {now:%H:%M} run didn't happen: {problem}. It tries again every hour, "
+                                 f"and says so once it works.")
     elif code == process.ALREADY_RUNNING:
-        alerts.send_alert("worker-not-started", "The daily run didn't start",
-                          "Another run was already going (one started by hand?). It runs again tomorrow at 08:00.")
+        log.warning("Another run was already going -- skipped this one")
+    elif _failing_since is not None:
+        alerts.send_telegram(f"✅ <b>The pipeline is running again</b>\n\n"
+                             f"Runs had failed since {_failing_since:%a %H:%M}; the {now:%H:%M} one worked.")
+        _failing_since = None
     return code
 
 
@@ -86,8 +106,11 @@ def weekly_check_in() -> None:
     )
 
 
-def _after_run(code: int, today) -> None:
-    if code == process.RAN and today.weekday() == 6:
+def _after_run(code: int, today: date) -> None:
+    """Sunday's check-in, once, after the day's first good run."""
+    global _checked_in
+    if code == process.RAN and today.weekday() == 6 and _checked_in != today:
+        _checked_in = today
         try:
             weekly_check_in()
         except Exception as e:
@@ -97,12 +120,13 @@ def _after_run(code: int, today) -> None:
 def main(argv: list[str]) -> int:
     if "--now" in argv:
         return run_once()
-    log.info(f"Worker started; runs daily at {RUN_AT:%H:%M} London time")
+    log.info(f"Worker started; runs hourly from {FIRST_RUN:02d}:00 to {LAST_RUN:02d}:00 London time")
     while True:
         due = next_run(datetime.now(LONDON))
         log.info(f"Next run {due:%Y-%m-%d %H:%M %Z}")
         _sleep(max(0.0, (due - datetime.now(LONDON)).total_seconds()))
-        _after_run(run_once(), datetime.now(LONDON))
+        now = datetime.now(LONDON)
+        _after_run(run_once(now), now.date())
 
 
 if __name__ == "__main__":

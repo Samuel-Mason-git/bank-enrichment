@@ -81,19 +81,6 @@ def db(pg):
     database_functions._con = None
 
 
-@pytest.fixture
-def old_local_db():
-    """The PC's database as it was before the move: an in-memory DuckDB with
-    sql/tables.sql. Only the copy script, which reads that shape, needs it."""
-    con = duckdb.connect(":memory:")
-    for stmt in _SQL_PATH.read_text().split(";"):
-        s = stmt.strip()
-        if s:
-            con.execute(s)
-    yield con
-    con.close()
-
-
 @pytest.fixture(autouse=True)
 def alert_post(monkeypatch):
     """Keep the pipeline's Telegram messages off the network in every test, and
@@ -120,6 +107,16 @@ def retry_waits(monkeypatch):
     for module in (telegram, monzo_oauth, worker):
         monkeypatch.setattr(module, "_sleep", waits.append)
     yield waits
+
+
+@pytest.fixture(autouse=True)
+def _fresh_worker(monkeypatch):
+    """Each test starts with a worker that has just started: no failing
+    streak, no alerts reset yet today, no check-in sent."""
+    import worker
+    monkeypatch.setattr(worker, "_failing_since", None)
+    monkeypatch.setattr(worker, "_alerts_day", None)
+    monkeypatch.setattr(worker, "_checked_in", None)
 
 
 @pytest.fixture(autouse=True)

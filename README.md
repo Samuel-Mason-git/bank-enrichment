@@ -46,7 +46,7 @@ context sentences tell it exactly what each transaction was.
 5. You reply with one sentence of context, tap a quick-category button if one's shown, or tap Skip to dismiss
 6. Your context is stored as an event alongside the raw transaction — every answer and every label is kept, so nothing is ever overwritten
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-8. Every morning at 08:00 a worker on the server runs the LLM classifier and the rest of the pipeline against the same database — nothing needs your PC to be on
+8. Every hour from 08:00 to 22:00 a worker on the server runs the LLM classifier and the rest of the pipeline against the same database — nothing needs your PC to be on
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time — a genuinely new category is never created silently; it's proposed with a Telegram approval card first (see [New Category Approval](#new-category-approval) below)
 10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
@@ -232,7 +232,7 @@ Both summaries catch up automatically if the script was inactive — a summary i
 
 ## LLM Classification
 
-A multi-pass classification system runs every morning on the server, against the shared database:
+A multi-pass classification system runs every hour through the day on the server, against the shared database:
 
 **Pass 0 — Match existing taxonomy:** Claude first checks whether each transaction 
 confidently matches an already-existing subcategory. If it does, the transaction is 
@@ -462,8 +462,8 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── follow_up_tg.py    # Follow-ups, and sending the cards for new proposals
 │   │   ├── monzo_oauth.py     # Monzo API access, refreshed automatically
 │   │   └── server_db.py       # The server's database functions (psycopg)
-│   ├── pipeline/              # The daily run (the server's worker container; can be run by hand)
-│   │   ├── worker.py          # Runs process.py every morning at 08:00 London time
+│   ├── pipeline/              # The pipeline's runs (the server's worker container; can be run by hand)
+│   │   ├── worker.py          # Runs process.py hourly, 08:00–22:00 London time
 │   │   ├── process.py         # The run: classify, act on decisions, send summaries
 │   │   ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
 │   │   ├── placement_judge.py # The second look at each placement

@@ -50,7 +50,7 @@ TEST_POSTGRES_URL=postgresql://postgres:x@localhost:5432/postgres poetry run pyt
 | `test_placement_judge.py`, `test_judge_backlog.py` | The second-look review of placements |
 | `test_category_proposals.py`, `test_taxonomy_review.py`, `test_rule_suggestions.py` | Proposals, the monthly review, rule suggestions |
 | `test_*_flow.py` | Round trips: the pipeline writes a proposal, the server sends its card, a tap is recorded, the next run acts on it |
-| `test_worker.py` | The daily run on the server: its schedule, alerts, one run at a time |
+| `test_worker.py` | The hourly runs on the server: their schedule, alerts, one run at a time |
 | `test_summaries.py` | Weekly and monthly summaries |
 | `test_dashboard_apptest.py`, `test_dashboard_helpers.py` | The Streamlit dashboard |
 | `test_postgres_schema.py` | The tables and views themselves |

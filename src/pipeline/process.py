@@ -1,5 +1,5 @@
-"""The pipeline's daily run -- the worker on the server runs it every morning
-(worker.py), and it's safe to run by hand too.
+"""One run of the pipeline -- the worker on the server runs it every hour
+through the day (worker.py), and it's safe to run by hand too.
 
 The server stores every transaction as it arrives and records your answers,
 so there's nothing to fetch: this works through what's waiting in the shared

@@ -199,6 +199,17 @@ class TestWeeklyCheckIn:
         worker._after_run(1, date(2026, 11, 1))
         alert_post.assert_not_called()
 
+    def test_once_on_a_sunday_not_after_every_run(self, db, alert_post):
+        for _ in range(3):
+            worker._after_run(0, date(2026, 11, 1))
+        worker._after_run(0, date(2026, 11, 8))
+        assert alert_post.call_count == 2
+
+    def test_a_failed_morning_still_gets_one_later(self, db, alert_post):
+        worker._after_run(1, date(2026, 11, 1))
+        worker._after_run(0, date(2026, 11, 1))
+        assert alert_post.call_count == 1
+
     def test_a_failing_check_in_never_breaks_the_worker(self, alert_post, monkeypatch):
         monkeypatch.setattr(worker, "weekly_check_in", lambda: (_ for _ in ()).throw(RuntimeError("x")))
         worker._after_run(0, date(2026, 11, 1))
