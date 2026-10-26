@@ -1516,7 +1516,7 @@ with tab_settings:
         LEFT JOIN transactions t ON t.parent_id = p.id
         WHERE p.archived_at IS NULL
         GROUP BY p.id, p.name
-        ORDER BY txn_count DESC
+        ORDER BY txn_count DESC, p.name
     """)
     tax_parent_names = [p["name"] for p in tax_parents]
 
@@ -1586,7 +1586,7 @@ with tab_settings:
                 LEFT JOIN transactions t ON t.subcategory_id = s.id
                 WHERE s.parent_id = ? AND s.archived_at IS NULL
                 GROUP BY s.id, s.name
-                ORDER BY txn_count DESC
+                ORDER BY txn_count DESC, s.name
             """, [pid])
 
             active_sub_ids = [
