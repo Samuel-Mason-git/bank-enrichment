@@ -15,3 +15,5 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+# Test coverage data (CI prints the report)
+.coverage
