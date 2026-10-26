@@ -7,12 +7,32 @@ x-logging: &default-logging
 services:
   bank-enrichment:
     build: .
+    image: bank-enrichment
     expose:
       - "8000"
     volumes:
       - ./data:/app/data
     env_file:
       - ./config/.env
+    restart: unless-stopped
+    logging: *default-logging
+
+  # The daily run (src/local_scripts/worker.py): the same image, every morning
+  # at 08:00 London time. Capped, so a run that ever spikes is what gets
+  # stopped, not the webhooks next to it.
+  worker:
+    image: bank-enrichment
+    command: ["python", "src/local_scripts/worker.py"]
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - ./config/.env
+    environment:
+      TZ: Europe/London
+      LOG_DIR: /app/data/logs
+    mem_limit: 350m
+    depends_on:
+      - bank-enrichment
     restart: unless-stopped
     logging: *default-logging
 

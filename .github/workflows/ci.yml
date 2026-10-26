@@ -67,8 +67,17 @@ jobs:
             bank-enrichment-server \
             python -c "import os, sys; sys.path.insert(0, 'src/server_scripts'); import server_db, telegram, check_rules, follow_up_tg, main; assert os.path.isfile(server_db.SCHEMA_PATH), 'schema.sql is missing from the image'; print('server modules import OK')"
 
-  # Only rebuild the server when something the server is made of changed. A pipeline
-  # or dashboard change has no business restarting a service that is receiving live
+      # The worker runs the pipeline from the same image: everything it imports
+      # has to be there, and the dashboard's heavy dependencies must not be.
+      - name: Smoke test the worker
+        run: |
+          docker run --rm -w /app -e TZ=Europe/London \
+            -e TELEGRAM_API=ci -e TELEGRAM_CHAT_ID=1 \
+            bank-enrichment-server \
+            python -c "import importlib.util as u, sys, time; sys.path.insert(0, 'src/local_scripts'); import worker, process; missing = [m for m in ('pandas', 'streamlit', 'plotly') if u.find_spec(m)]; assert not missing, f'dashboard packages in the image: {missing}'; assert time.strftime('%Z') in ('GMT', 'BST'), time.strftime('%Z'); print('worker imports OK, London time')"
+
+  # Only rebuild the server when something it or the worker is made of changed. A
+  # dashboard change has no business restarting a service that is receiving live
   # bank webhooks.
   changes:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -94,7 +103,9 @@ jobs:
           changed=$(git diff --name-only "$before" "${{ github.sha }}")
           echo "Files changed in this push:"
           echo "$changed"
-          if echo "$changed" | grep -E -q '^(src/server_scripts/|sql/postgres/schema\.sql$|Dockerfile$|\.dockerignore$|docker-compose\.yml$|Caddyfile$|pyproject\.toml$|poetry\.lock$)'; then
+          # The worker runs src/local_scripts/ too -- all of it except the dashboard.
+          if echo "$changed" | grep -v -E '^src/local_scripts/dashboard' \
+             | grep -E -q '^(src/server_scripts/|src/local_scripts/|sql/postgres/schema\.sql$|Dockerfile$|\.dockerignore$|docker-compose\.yml$|Caddyfile$|pyproject\.toml$|poetry\.lock$)'; then
             echo "server=true" >> "$GITHUB_OUTPUT"
           else
             echo "Nothing the server is built from changed -- skipping deploy"

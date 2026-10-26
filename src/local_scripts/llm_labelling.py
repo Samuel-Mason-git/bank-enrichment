@@ -593,8 +593,8 @@ def run():
     log.info("--- LLM Classifier run started ---")
 
     if not CLAUDE_SECRET:
-        log.error("CLAUDE_SECRET not set in config/.env -- exiting")
-        exit(1)
+        log.error("CLAUDE_SECRET not set in config/.env -- nothing classified")
+        return
 
     t0 = time.time()
     log.info("Connecting to the database")
