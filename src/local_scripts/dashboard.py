@@ -36,20 +36,16 @@ st.set_page_config(
 
 # ── Connection ─────────────────────────────────────────────────────────────────
 
-def connect():
-    init_db()
-    return get_con()
-
-
-con = connect()
+init_db()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _query(sql: str, params: list = []) -> list[dict]:
-    """Run a query against the cached con and return list of dicts."""
-    result = con.execute(sql, params)
-    cols = [d[0] for d in result.description]
+    """Run a query and return a list of dicts. get_con() each time, so a
+    dropped connection is made again rather than failing every query."""
+    result = get_con().execute(sql, params)
+    cols = [c.name for c in result.description]
     return [dict(zip(cols, row)) for row in result.fetchall()]
 
 
@@ -57,7 +53,7 @@ def _query(sql: str, params: list = []) -> list[dict]:
 
 @st.cache_data(ttl=60, show_spinner="Loading transactions...")
 def load_transactions():
-    result = con.execute("""
+    result = get_con().execute("""
         SELECT
             id, amount, description, monzo_category,
             merchant_name, counterparty_name,
@@ -66,7 +62,7 @@ def load_transactions():
         FROM transaction_roles
         ORDER BY created_at DESC
     """)
-    cols = [d[0] for d in result.description]
+    cols = [c.name for c in result.description]
     df = pd.DataFrame(result.fetchall(), columns=cols)
     df["created_at"] = pd.to_datetime(df["created_at"])
     df["month"] = df["created_at"].dt.to_period("M").astype(str)
@@ -75,8 +71,8 @@ def load_transactions():
 
 @st.cache_data(ttl=60, show_spinner="Loading taxonomy...")
 def load_taxonomy():
-    parents = con.execute("SELECT name FROM parent_categories WHERE archived_at IS NULL ORDER BY name").fetchall()
-    subs = con.execute("""
+    parents = get_con().execute("SELECT name FROM parent_categories WHERE archived_at IS NULL ORDER BY name").fetchall()
+    subs = get_con().execute("""
         SELECT s.name, p.name AS parent_name
         FROM subcategories s
         JOIN parent_categories p ON p.id = s.parent_id
@@ -718,7 +714,7 @@ with tab_time:
             .rename(columns={"month": "Month"})
             .sort_values("Month")
         )
-        # amount columns come back as Decimal via DuckDB -- pct_change() divides
+        # amount columns come back as Decimal -- pct_change() divides
         # raw values with no zero-guard, and Decimal division by zero raises
         # (unlike float, which would just produce inf/nan), so cast to float
         # before any of the derived-ratio columns below.
@@ -1584,7 +1580,7 @@ with tab_settings:
                 SELECT s.id, s.name, COUNT(t.id) AS txn_count
                 FROM subcategories s
                 LEFT JOIN transactions t ON t.subcategory_id = s.id
-                WHERE s.parent_id = ? AND s.archived_at IS NULL
+                WHERE s.parent_id = %s AND s.archived_at IS NULL
                 GROUP BY s.id, s.name
                 ORDER BY txn_count DESC, s.name
             """, [pid])
@@ -1778,7 +1774,7 @@ with tab_settings:
                 FROM subcategories s
                 JOIN parent_categories p ON p.id = s.parent_id
                 LEFT JOIN transactions t ON t.subcategory_id = s.id
-                WHERE s.id = ?
+                WHERE s.id = %s
                 GROUP BY s.id, s.name, p.name
             """, [sid])
             if sub_rows:
@@ -1807,7 +1803,7 @@ with tab_settings:
                 SELECT s.id, s.name, s.parent_id, p.name AS parent_name
                 FROM subcategories s
                 JOIN parent_categories p ON p.id = s.parent_id
-                WHERE s.id = ?
+                WHERE s.id = %s
             """, [sid])
             if sub_rows:
                 sub = sub_rows[0]
@@ -1830,9 +1826,9 @@ with tab_settings:
                         # subcategories has a UNIQUE(name, parent_id) constraint --
                         # saving into a (name, parent) combo that's already taken by
                         # another subcategory would otherwise crash with an uncaught
-                        # DuckDB constraint violation instead of a friendly message.
+                        # constraint violation instead of a friendly message.
                         collision = (name_changed or parent_changed) and _query(
-                            "SELECT 1 AS x FROM subcategories WHERE name = ? AND parent_id = ? AND id != ? AND archived_at IS NULL",
+                            "SELECT 1 AS x FROM subcategories WHERE name = %s AND parent_id = %s AND id != %s AND archived_at IS NULL",
                             [effective_name, target_parent_id, sid],
                         )
                         if collision:
@@ -1858,7 +1854,7 @@ with tab_settings:
                 SELECT s.id, s.name, s.parent_id, p.name AS parent_name
                 FROM subcategories s
                 JOIN parent_categories p ON p.id = s.parent_id
-                WHERE s.id = ?
+                WHERE s.id = %s
             """, [sid])
             if sub_rows:
                 sub = sub_rows[0]
@@ -1869,7 +1865,7 @@ with tab_settings:
                     SELECT s.id, s.name, p.name AS parent_name
                     FROM subcategories s
                     JOIN parent_categories p ON p.id = s.parent_id
-                    WHERE s.id != ? AND s.archived_at IS NULL AND p.archived_at IS NULL
+                    WHERE s.id != %s AND s.archived_at IS NULL AND p.archived_at IS NULL
                     ORDER BY p.name, s.name
                 """, [sid])
                 reassign_map = {f"{s['name']} ({s['parent_name']})": s for s in reassign_raw}
@@ -1888,7 +1884,7 @@ with tab_settings:
                 txns = _query("""
                     SELECT id, description, merchant_name, counterparty_name, amount, created_at, user_context
                     FROM transactions
-                    WHERE subcategory_id = ?
+                    WHERE subcategory_id = %s
                     ORDER BY created_at DESC
                 """, [sid])
 

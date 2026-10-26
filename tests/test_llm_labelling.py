@@ -428,8 +428,8 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
 
     def _options(self, db, proposal_id):
         import json
-        row = db.execute("SELECT options FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
-        return json.loads(row[0])
+        row = db.execute("SELECT options FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()
+        return row[0]
 
     def test_a_new_category_is_held_not_created(self, db, monkeypatch):
         self._seed(db)
@@ -456,7 +456,7 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         assert db.execute("SELECT COUNT(*) FROM parent_categories WHERE name = 'Tax'").fetchone()[0] == 0, \
             "the new category must not exist until approved"
 
-        status = db.execute("SELECT status FROM category_proposals WHERE id = ?", [tax[2]]).fetchone()[0]
+        status = db.execute("SELECT status FROM category_proposals WHERE id = %s", [tax[2]]).fetchone()[0]
         assert status == "pending"
         options = self._options(db, tax[2])
         assert options == [{
@@ -547,7 +547,7 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         import json
         self._seed(db)
         db.execute(
-            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
             [json.dumps([{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}])],
         )
         seen_denied_parents = []
@@ -574,7 +574,7 @@ class TestNoveltyGateHoldsNewCategoriesForApproval:
         row = db.execute(
             "SELECT options FROM category_proposals WHERE status = 'pending'"
         ).fetchone()
-        options = json.loads(row[0])
+        options = row[0]
         assert [(o["parent_name"], o["subcategory_name"]) for o in options] == [("Miscellaneous", "One-off Payments")], \
             "a different new name must still be proposed, not silently forced into an existing category"
 
@@ -643,7 +643,7 @@ class TestRegenerateCategoryProposals:
         insert_transaction(db, txn_id, amount=-3000.0, user_context="HMRC payment")
         options = old_options or [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
         old_id, _ = cp.register_group(options, [txn_id])
-        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [old_id])
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = %s", [old_id])
         return old_id
 
     def test_creates_a_fresh_proposal_and_relocks_the_transactions(self, db, monkeypatch):
@@ -659,8 +659,8 @@ class TestRegenerateCategoryProposals:
         assert count == 1
         new_id = db.execute("SELECT id FROM category_proposals WHERE status = 'pending'").fetchone()[0]
         assert new_id != old_id
-        assert json.loads(db.execute(
-            "SELECT options FROM category_proposals WHERE id = ?", [new_id]).fetchone()[0]) == new_options
+        assert db.execute(
+            "SELECT options FROM category_proposals WHERE id = %s", [new_id]).fetchone()[0] == new_options
         assert db.execute(
             "SELECT pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
         ).fetchone()[0] == new_id

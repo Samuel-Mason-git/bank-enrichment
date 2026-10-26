@@ -21,12 +21,12 @@ class TestRegisterGroup:
         proposal_id, is_new = cp.register_group(options, ["tx_1", "tx_2"])
         assert is_new is True
         row = db.execute(
-            "SELECT options, status FROM category_proposals WHERE id = ?", [proposal_id]
+            "SELECT options, status FROM category_proposals WHERE id = %s", [proposal_id]
         ).fetchone()
-        assert json.loads(row[0]) == options
+        assert row[0] == options
         assert row[1] == "pending"
         locked = {r[0] for r in db.execute(
-            "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
+            "SELECT id FROM transactions WHERE pending_category_proposal_id = %s", [proposal_id]
         ).fetchall()}
         assert locked == {"tx_1", "tx_2"}
 
@@ -42,7 +42,7 @@ class TestRegisterGroup:
         assert second_id == first_id
         assert is_new is False
         locked = {r[0] for r in db.execute(
-            "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [first_id]
+            "SELECT id FROM transactions WHERE pending_category_proposal_id = %s", [first_id]
         ).fetchall()}
         assert locked == {"tx_1", "tx_2"}
 
@@ -59,7 +59,7 @@ class TestRegisterGroup:
         _seed_pending_txns(db, ["tx_1", "tx_2"])
         options = [_option("Tax", "Self Assessment")]
         first_id, _ = cp.register_group(options, ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = ?", [first_id])
+        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = %s", [first_id])
         second_id, is_new = cp.register_group(options, ["tx_2"])
         assert second_id != first_id
         assert is_new is True
@@ -68,11 +68,11 @@ class TestRegisterGroup:
 class TestDeniedNames:
     def test_only_denied_rows_are_reported(self, db):
         db.execute(
-            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
             [json.dumps([_option("Tax", "Self Assessment")])],
         )
         db.execute(
-            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (2, ?, 'pending', NOW())",
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (2, %s, 'pending', NOW())",
             [json.dumps([_option("Gifts", "Wedding Gifts")])],
         )
         assert cp.denied_parent_names() == {"tax"}
@@ -82,7 +82,7 @@ class TestDeniedNames:
         """Denying the card rejects the whole set of offered ideas, not just
         whichever option happened to be listed first."""
         db.execute(
-            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
             [json.dumps([
                 _option("Tax", "Self Assessment"),
                 _option("Professional Services", "Tax Payments", is_new=False),
@@ -96,7 +96,7 @@ class TestDeniedNames:
         """parent_is_new=False means only the subcategory was novel -- the
         parent itself was never proposed, so it must not be blocklisted."""
         db.execute(
-            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+            "INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
             [json.dumps([_option("Bills & Utilities", "Council Tax", is_new=False)])],
         )
         assert cp.denied_parent_names() == set()
@@ -109,7 +109,7 @@ class TestDeniedNames:
         "None of these" should reach the permanent blocklist."""
         db.execute(
             """INSERT INTO category_proposals (id, options, status, regenerate_requested, proposed_at)
-               VALUES (1, ?, 'denied', TRUE, NOW())""",
+               VALUES (1, %s, 'denied', TRUE, NOW())""",
             [json.dumps([_option("Tax", "Self Assessment")])],
         )
         assert cp.denied_parent_names() == set()
@@ -212,7 +212,7 @@ class TestPendingRegenerations:
         options = [_option("Tax", "Self Assessment")]
         proposal_id, _ = cp.register_group(options, ["tx_1", "tx_2"])
         db.execute(
-            "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [proposal_id]
+            "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = %s", [proposal_id]
         )
 
         pending = cp.pending_regenerations()
@@ -229,7 +229,7 @@ class TestPendingRegenerations:
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
         cp.deny_all(proposal_id)
-        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = ?", [proposal_id])
+        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = %s", [proposal_id])
         assert cp.pending_regenerations() == []
 
     def test_a_still_pending_proposal_is_not_returned(self, db):
@@ -246,7 +246,7 @@ class TestPendingRegenerations:
 
 def _held(db, proposal_id):
     return {r[0] for r in db.execute(
-        "SELECT id FROM transactions WHERE pending_category_proposal_id = ?", [proposal_id]
+        "SELECT id FROM transactions WHERE pending_category_proposal_id = %s", [proposal_id]
     ).fetchall()}
 
 
@@ -256,11 +256,11 @@ class TestCollectDecisions:
     def test_a_selection_is_applied_and_recorded(self, db):
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option(), _option("Professional Services", "Tax Payments", is_new=False)], ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 1 WHERE id = ?", [proposal_id])
+        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 1 WHERE id = %s", [proposal_id])
 
         assert cp.collect_decisions() == 1
 
-        row = db.execute("SELECT status, selected_option FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
+        row = db.execute("SELECT status, selected_option FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()
         assert row == ("applied", 1)
         assert db.execute(
             "SELECT llm_category, llm_subcategory FROM transactions WHERE id = 'tx_1'"
@@ -273,7 +273,7 @@ class TestCollectDecisions:
         """Telegram cards stay tappable forever; once applied, a proposal is done."""
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 0 WHERE id = ?", [proposal_id])
+        db.execute("UPDATE category_proposals SET status = 'selected', selected_option = 0 WHERE id = %s", [proposal_id])
         cp.collect_decisions()
         assert cp.collect_decisions() == 0
         assert db.execute("SELECT COUNT(*) FROM label_events WHERE txn_id = 'tx_1'").fetchone()[0] == 1
@@ -281,11 +281,11 @@ class TestCollectDecisions:
     def test_none_of_these_releases_the_transactions(self, db):
         _seed_pending_txns(db, ["tx_1"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = ?", [proposal_id])
+        db.execute("UPDATE category_proposals SET status = 'denied' WHERE id = %s", [proposal_id])
 
         assert cp.collect_decisions() == 0
 
-        assert db.execute("SELECT status FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0] == "denied"
+        assert db.execute("SELECT status FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()[0] == "denied"
         assert db.execute(
             "SELECT llm_category, pending_category_proposal_id FROM transactions WHERE id = 'tx_1'"
         ).fetchone() == (None, None)
@@ -295,7 +295,7 @@ class TestCollectDecisions:
         waiting on fresh options, and what they were already shown."""
         _seed_pending_txns(db, ["tx_1", "tx_2"])
         proposal_id, _ = cp.register_group([_option()], ["tx_1", "tx_2"])
-        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?",
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = %s",
                    [proposal_id])
 
         assert cp.collect_decisions() == 0
@@ -313,7 +313,7 @@ class TestCardLines:
     """The card's lines are stored with the proposal, for the server to send."""
 
     def _examples(self, db, proposal_id):
-        return json.loads(db.execute("SELECT examples FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0])
+        return db.execute("SELECT examples FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()[0]
 
     def test_a_new_proposal_is_written_unsent_with_up_to_four_lines(self, db):
         for i in range(6):
@@ -321,7 +321,7 @@ class TestCardLines:
                                created_at=f"2026-08-0{i + 1} 10:00:00")
         proposal_id, _ = cp.register_group([_option()], [f"tx_{i}" for i in range(6)])
         assert len(self._examples(db, proposal_id)) == 4
-        assert db.execute("SELECT sent_at FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()[0] is None
+        assert db.execute("SELECT sent_at FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()[0] is None
 
     def test_each_line_says_which_transaction_it_is(self, db):
         """A card that only shows 'Cards' or a quick-tap label can't tell you which
@@ -343,7 +343,7 @@ class TestCardLines:
         """A transaction is only ever held by one proposal."""
         _seed_pending_txns(db, ["tx_1"])
         first, _ = cp.register_group([_option()], ["tx_1"])
-        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = ?", [first])
+        db.execute("UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE WHERE id = %s", [first])
         second, _ = cp.register_group([_option("Gifts", "Wedding Gifts")], ["tx_1"])
         assert _held(db, first) == set()
         assert _held(db, second) == {"tx_1"}

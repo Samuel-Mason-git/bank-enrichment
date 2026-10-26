@@ -25,7 +25,8 @@ import argparse
 import logging
 import sys
 
-import duckdb
+import psycopg
+
 
 import placement_judge
 from database_functions import _rows, backup_db, init_db
@@ -43,7 +44,7 @@ log = logging.getLogger(__name__)
 
 def candidates() -> list[dict]:
     """Classified transactions the judge hasn't looked at yet, newest first."""
-    placeholders = ", ".join("?" for _ in USER_DECISIONS)
+    placeholders = ", ".join("%s" for _ in USER_DECISIONS)
     return _rows(
         f"""SELECT * FROM transactions t
             WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
@@ -93,9 +94,8 @@ def main(argv=None) -> int:
 
     try:
         init_db(read_only=not args.yes)
-    except duckdb.IOException as e:
-        print(f"Can't open the database -- is the Streamlit dashboard (or process.py) running? Close it and retry.\n  {e}",
-              file=sys.stderr)
+    except psycopg.OperationalError as e:
+        print(f"Can't reach the database -- is the VPN up?\n  {e}", file=sys.stderr)
         return 1
 
     todo = candidates()

@@ -251,12 +251,12 @@ class PlacementReviewer:
 
     def _already_settled(self, txn: dict, category: str, subcategory: str) -> bool:
         con = get_con()
-        if con.execute("SELECT 1 FROM judge_reviews WHERE txn_id = ?", [txn["id"]]).fetchone():
+        if con.execute("SELECT 1 FROM judge_reviews WHERE txn_id = %s", [txn["id"]]).fetchone():
             return True
         key = merchant_key(txn)
         if key and con.execute(
             """SELECT 1 FROM judge_reviews
-               WHERE merchant_key = ? AND category = ? AND subcategory = ? AND outcome = 'kept'""",
+               WHERE merchant_key = %s AND category = %s AND subcategory = %s AND outcome = 'kept'""",
             [key, category, subcategory],
         ).fetchone():
             return True
@@ -264,8 +264,11 @@ class PlacementReviewer:
 
     def _record(self, txn: dict, category: str, subcategory: str, outcome: str) -> None:
         get_con().execute(
-            """INSERT OR REPLACE INTO judge_reviews (txn_id, merchant_key, category, subcategory, outcome, reviewed_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO judge_reviews (txn_id, merchant_key, category, subcategory, outcome, reviewed_at)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (txn_id) DO UPDATE SET merchant_key = EXCLUDED.merchant_key,
+                   category = EXCLUDED.category, subcategory = EXCLUDED.subcategory,
+                   outcome = EXCLUDED.outcome, reviewed_at = EXCLUDED.reviewed_at""",
             [txn["id"], merchant_key(txn), category, subcategory, outcome, time.strftime("%Y-%m-%d %H:%M:%S")],
         )
 
@@ -314,7 +317,7 @@ class PlacementReviewer:
 
         # The API calls are the slow part and touch no shared state, so they
         # run concurrently. Everything above and below stays on this thread,
-        # where the DuckDB connection lives.
+        # where the database connection is used.
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             verdicts = list(pool.map(self._call, prompts))
 

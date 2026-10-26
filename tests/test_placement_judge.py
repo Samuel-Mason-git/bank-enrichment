@@ -51,7 +51,7 @@ def add_txn(db, tid, amount=-10.0, description="x", context=None, merchant=None,
 
 
 def txn(db, tid):
-    return dbf._rows("SELECT * FROM transactions WHERE id = ?", [tid])[0]
+    return dbf._rows("SELECT * FROM transactions WHERE id = %s", [tid])[0]
 
 
 def seed_taxonomy(db):
@@ -67,7 +67,7 @@ def make_reviewer(client, gate=True):
 
 
 def outcome(db, tid):
-    row = db.execute("SELECT outcome FROM judge_reviews WHERE txn_id = ?", [tid]).fetchone()
+    row = db.execute("SELECT outcome FROM judge_reviews WHERE txn_id = %s", [tid]).fetchone()
     return row[0] if row else None
 
 
@@ -342,7 +342,7 @@ class TestHold:
 
         row = txn(db, "dep")
         assert row["llm_category"] is None and row["pending_category_proposal_id"] is not None
-        options = json.loads(db.execute("SELECT options FROM category_proposals").fetchone()[0])
+        options = db.execute("SELECT options FROM category_proposals").fetchone()[0]
         assert [(o["parent_name"], o["subcategory_name"]) for o in options] == [
             ("Bills & Utilities", "Rent Deposit"), ("Bills & Utilities", "Rent")]
         assert options[1]["is_original"] is True and all(o["judge"] for o in options)
@@ -398,7 +398,7 @@ class TestQuickTapReview:
         row = txn(db, "dentist")
         assert count == 0
         assert row["llm_category"] is None and row["pending_category_proposal_id"] is not None
-        options = json.loads(db.execute("SELECT options FROM category_proposals").fetchone()[0])
+        options = db.execute("SELECT options FROM category_proposals").fetchone()[0]
         assert options[1]["is_original"] and (options[1]["parent_name"], options[1]["subcategory_name"]) == ("Food & Drink", "Alcohol")
 
     def test_a_held_tap_is_not_matched_and_reviewed_again_on_the_next_run(self, db):
@@ -496,14 +496,14 @@ class TestDecisions:
         Feeding those into the declined-names list would tell every later
         classifier prompt never to use 'Groceries' again."""
         options = pj.hold_options("Food & Drink", "Groceries", reject("Food & Drink", "Takeaway"), {"food & drink"})
-        db.execute("INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+        db.execute("INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
                    [json.dumps(options)])
         assert cp.denied_sub_names() == set()
         assert cp.denied_parent_names() == set()
 
     def test_a_declined_ordinary_card_still_forbids_its_names(self, db):
         options = [{"parent_name": "Tax", "subcategory_name": "Self Assessment", "parent_is_new": True, "rationale": "x"}]
-        db.execute("INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, ?, 'denied', NOW())",
+        db.execute("INSERT INTO category_proposals (id, options, status, proposed_at) VALUES (1, %s, 'denied', NOW())",
                    [json.dumps(options)])
         assert cp.denied_sub_names() == {"self assessment"}
 
@@ -569,7 +569,7 @@ class TestRunUsesTheJudge:
             "still classified as the classifier's own first choice, not NULL, while the card waits"
         assert deposit["pending_category_proposal_id"] is not None
         assert synced == [deposit["pending_category_proposal_id"]]
-        options = json.loads(db.execute("SELECT options FROM category_proposals").fetchone()[0])
+        options = db.execute("SELECT options FROM category_proposals").fetchone()[0]
         assert options[0]["subcategory_name"] == "Rent Deposit" and options[1]["is_original"]
         assert db.execute("SELECT COUNT(*) FROM subcategories WHERE name = 'Rent Deposit'").fetchone()[0] == 0, \
             "the suggested subcategory must not exist until it is chosen"

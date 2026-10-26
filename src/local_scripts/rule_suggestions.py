@@ -66,7 +66,7 @@ def find_candidates() -> list[dict]:
           AND skipped = FALSE
           AND COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) IS NOT NULL
         GROUP BY 1, 2
-        HAVING COUNT(*) >= ? AND COUNT(DISTINCT llm_category || '||' || llm_subcategory) = 1
+        HAVING COUNT(*) >= %s AND COUNT(DISTINCT llm_category || '||' || llm_subcategory) = 1
     """, [MIN_OCCURRENCES]).fetchall()
 
     candidates = []
@@ -74,7 +74,7 @@ def find_candidates() -> list[dict]:
         contexts = [r[0] for r in con.execute(
             """SELECT user_context FROM transactions
                WHERE NULLIF(user_context, '') IS NOT NULL
-               AND (merchant_name = ? OR counterparty_name = ?)""",
+               AND (merchant_name = %s OR counterparty_name = %s)""",
             [match_value, match_value],
         ).fetchall()]
         candidates.append({
@@ -198,7 +198,7 @@ def sync_candidates() -> int:
             """INSERT INTO rule_suggestions
                (id, match_field, match_value, category, subcategory, txn_count, auto_context,
                 llm_reasoning, status, proposed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)""",
             [next_id, c["match_field"], c["match_value"], c["category"], c["subcategory"],
              c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), time.strftime("%Y-%m-%d %H:%M:%S")],
         )

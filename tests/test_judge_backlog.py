@@ -1,4 +1,3 @@
-import json
 
 import pytest
 
@@ -108,7 +107,7 @@ class TestRun:
         assert (row["llm_category"], row["llm_subcategory"]) == ("Bills & Utilities", "Rent")
         assert row["pending_category_proposal_id"] is not None and outcome(db, "dep") == "held"
         assert held["synced"] == [row["pending_category_proposal_id"]]
-        options = json.loads(db.execute("SELECT options FROM category_proposals").fetchone()[0])
+        options = db.execute("SELECT options FROM category_proposals").fetchone()[0]
         assert options[0]["subcategory_name"] == "Rent Deposit" and options[1]["is_original"] is True
 
     def test_a_backup_is_taken_before_anything_is_judged(self, run, db):

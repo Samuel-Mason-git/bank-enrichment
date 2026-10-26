@@ -55,6 +55,15 @@ _sent: set[str] = set()
 _lock = threading.Lock()
 
 
+def start_run() -> None:
+    """Each kind of alert is sent once per run. A run started by hand is its
+    own process, but the worker lives for weeks, so it starts every run
+    afresh -- otherwise running out of credit would be reported only once,
+    ever."""
+    with _lock:
+        _sent.clear()
+
+
 def classify_error(e: Exception) -> tuple[str, str, str]:
     """(kind, title, what to do) for an exception out of an Anthropic call."""
     if isinstance(e, anthropic.BadRequestError) and "credit balance" in str(e):

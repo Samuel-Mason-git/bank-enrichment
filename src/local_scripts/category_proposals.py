@@ -25,7 +25,9 @@ import json
 import logging
 import time
 
-from database_functions import get_con, release_holds, set_json, update_classification
+from psycopg.types.json import Jsonb
+
+from database_functions import get_con, release_holds, update_classification
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +51,7 @@ def _denied_options() -> list[dict]:
         "SELECT options FROM category_proposals WHERE status = 'denied' AND regenerate_requested IS NOT TRUE"
     ).fetchall()
     options = []
-    for (options_json,) in rows:
-        card_options = json.loads(options_json)
+    for (card_options,) in rows:
         # A placement-judge card (placement_judge.py) offers a suggestion next to
         # the EXISTING placement it questioned. Declining it says nothing about
         # those names -- and treating them as declined would forbid an existing
@@ -110,9 +111,9 @@ def _examples(con, txn_ids: list[str]) -> list[str]:
     """Up to four card lines for these transactions, oldest first."""
     if not txn_ids:
         return []
-    placeholders = ", ".join("?" for _ in txn_ids)
+    placeholders = ", ".join("%s" for _ in txn_ids)
     rows = con.execute(
-        f"""SELECT CAST(amount AS DOUBLE), currency, created_at, merchant_name, counterparty_name,
+        f"""SELECT amount::float8, currency, created_at, merchant_name, counterparty_name,
                    description, user_context
             FROM transactions WHERE id IN ({placeholders}) ORDER BY created_at""",
         txn_ids,
@@ -121,8 +122,8 @@ def _examples(con, txn_ids: list[str]) -> list[str]:
 
 
 def held_by(con, proposal_id: int) -> list[str]:
-    row = con.execute("SELECT txn_ids FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
-    return json.loads(row[0]) if row else []
+    row = con.execute("SELECT txn_ids FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()
+    return list(row[0]) if row else []
 
 
 def register_group(options: list[dict], txn_ids: list[str]) -> tuple[int, bool]:
@@ -139,19 +140,20 @@ def register_group(options: list[dict], txn_ids: list[str]) -> tuple[int, bool]:
     con = get_con()
     release_holds(txn_ids)
     key = _option_key(options)
-    for pid, options_json in con.execute(
+    for pid, pending_options in con.execute(
         "SELECT id, options FROM category_proposals WHERE status = 'pending'"
     ).fetchall():
-        if _option_key(json.loads(options_json)) == key:
+        if _option_key(pending_options) == key:
             held = held_by(con, pid)
             held += [t for t in txn_ids if t not in held]
-            set_json(con, "category_proposals", pid, txn_ids=held, examples=_examples(con, held))
+            con.execute("UPDATE category_proposals SET txn_ids = %s, examples = %s WHERE id = %s",
+                        [Jsonb(held), Jsonb(_examples(con, held)), pid])
             return pid, False
 
     proposal_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals").fetchone()[0]
     con.execute(
         """INSERT INTO category_proposals (id, options, txn_ids, examples, status, proposed_at)
-           VALUES (?, ?, ?, ?, 'pending', ?)""",
+           VALUES (%s, %s, %s, %s, 'pending', %s)""",
         [proposal_id, json.dumps(options), json.dumps(list(txn_ids)), json.dumps(_examples(con, txn_ids)), _now()],
     )
     return proposal_id, True
@@ -173,12 +175,11 @@ def pending_regenerations() -> list[dict]:
     {"old_id", "previous_options", "txn_ids", "examples"} per proposal still waiting."""
     con = get_con()
     result = []
-    for pid, options_json, txn_ids_json in con.execute(
+    for pid, previous_options, txn_ids in con.execute(
         """SELECT id, options, txn_ids FROM category_proposals
            WHERE status = 'denied' AND regenerate_requested AND txn_ids <> '[]'"""
     ).fetchall():
-        txn_ids = json.loads(txn_ids_json)
-        placeholders = ", ".join("?" for _ in txn_ids)
+        placeholders = ", ".join("%s" for _ in txn_ids)
         examples = []
         for user_context, merchant_name, counterparty_name in con.execute(
             f"SELECT user_context, merchant_name, counterparty_name FROM transactions WHERE id IN ({placeholders})",
@@ -189,7 +190,7 @@ def pending_regenerations() -> list[dict]:
                 examples.append(example)
         result.append({
             "old_id": pid,
-            "previous_options": json.loads(options_json),
+            "previous_options": previous_options,
             "txn_ids": txn_ids,
             "examples": examples,
         })
@@ -211,10 +212,10 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
     from database_functions import upsert_parent, upsert_subcategory
 
     con = get_con()
-    row = con.execute("SELECT options FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
+    row = con.execute("SELECT options FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()
     if not row:
         return 0
-    options = json.loads(row[0])
+    options = row[0]
     if option_index is None or not (0 <= option_index < len(options)):
         log.error(f"Category proposal {proposal_id}: option index {option_index} out of range for {len(options)} option(s)")
         return 0
@@ -224,7 +225,7 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
     held = held_by(con, proposal_id)
     if not held:
         return 0
-    placeholders = ", ".join("?" for _ in held)
+    placeholders = ", ".join("%s" for _ in held)
     pending_ids = [r[0] for r in con.execute(
         f"""SELECT id FROM transactions
             WHERE id IN ({placeholders})
@@ -242,9 +243,9 @@ def apply_selected(proposal_id: int, option_index: int) -> int:
     # Only rows the placement judge is still holding have anything to update.
     # 'kept' is the standing answer that stops the same merchant being
     # questioned about the same placement again.
-    placeholders = ", ".join("?" for _ in pending_ids)
+    placeholders = ", ".join("%s" for _ in pending_ids)
     con.execute(
-        f"""UPDATE judge_reviews SET outcome = ?, reviewed_at = ?
+        f"""UPDATE judge_reviews SET outcome = %s, reviewed_at = %s
             WHERE outcome = 'held' AND txn_id IN ({placeholders})""",
         ["kept" if chosen.get("is_original") else "changed", _now(), *pending_ids],
     )
@@ -278,7 +279,7 @@ def collect_decisions() -> int:
     ).fetchall():
         try:
             apply_selected(proposal_id, selected_option)
-            con.execute("UPDATE category_proposals SET status = 'applied', applied_at = ? WHERE id = ?",
+            con.execute("UPDATE category_proposals SET status = 'applied', applied_at = %s WHERE id = %s",
                         [_now(), proposal_id])
             applied += 1
         except Exception as e:

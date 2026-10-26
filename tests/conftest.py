@@ -72,14 +72,15 @@ def _reset_db():
 
 @pytest.fixture
 def db(pg):
-    """The pipeline's database, as it really connects: DuckDB with the
-    throwaway Postgres schema (the `pg` fixture) attached, set as the
-    connection database_functions hands out. Writes through it land in the
-    same tables `pg` sees."""
+    """The pipeline's database, as it really connects: a connection of its own
+    to the throwaway Postgres schema (the `pg` fixture), set as the connection
+    database_functions hands out. Writes through it land in the same tables
+    `pg` sees."""
+    import psycopg
     import database_functions
     schema = pg.execute("SELECT current_schema()").fetchone()[0]
-    con = duckdb.connect(":memory:")
-    database_functions.attach(con, os.environ["TEST_POSTGRES_URL"], schema=schema)
+    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True)
+    con.execute(f"SET search_path TO {schema}")
     database_functions._con = con
     yield con
     con.close()

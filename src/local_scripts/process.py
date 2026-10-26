@@ -1,4 +1,5 @@
-"""The pipeline's run (Task Scheduler runs it daily; safe to run by hand).
+"""The pipeline's daily run -- the worker on the server runs it every morning
+(worker.py), and it's safe to run by hand too.
 
 The server stores every transaction as it arrives and records your answers,
 so there's nothing to fetch: this works through what's waiting in the shared
@@ -9,7 +10,7 @@ import logging
 import time
 from logging.handlers import RotatingFileHandler
 
-from database_functions import init_db, apply_quick_tap_classifications, log_path
+from database_functions import init_db, get_con, apply_quick_tap_classifications, log_path
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
@@ -29,8 +30,23 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Only one run at a time, wherever it's started: two at once would classify
+# the same transactions twice and send duplicate cards. A Postgres advisory
+# lock, held by this run's connection and gone when it ends or drops.
+RUN_LOCK = "bank_enrichment.process"
 
-if __name__ == "__main__":
+
+def _take_run_lock() -> bool:
+    return get_con().execute("SELECT pg_try_advisory_lock(hashtext(%s))", [RUN_LOCK]).fetchone()[0]
+
+
+def _release_run_lock() -> None:
+    get_con().execute("SELECT pg_advisory_unlock(hashtext(%s))", [RUN_LOCK])
+
+
+def main() -> int:
+    """One run. 0 if it ran, 1 if it couldn't start (no database, or another
+    run already going). A step that fails is logged and the rest still run."""
     run_start = time.time()
     log.info("--- Process run started ---")
 
@@ -40,8 +56,20 @@ if __name__ == "__main__":
         log.info(f"Database ready ({time.time() - t0:.2f}s)")
     except Exception as e:
         log.error(f"Couldn't connect to the database (is the VPN up?): {e}", exc_info=True)
-        raise SystemExit(1)
+        return 1
 
+    if not _take_run_lock():
+        log.warning("Another run is already in progress -- not starting a second one")
+        return 1
+    try:
+        _steps()
+    finally:
+        _release_run_lock()
+    log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
+    return 0
+
+
+def _steps() -> None:
     try:
         t0 = time.time()
         # A tap is the user's own choice, but a mis-tap (a dentist filed under
@@ -114,4 +142,6 @@ if __name__ == "__main__":
     except Exception as e:
         log.error(f"Weekly summary run failed: {e}", exc_info=True)
 
-    log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
+
+if __name__ == "__main__":
+    raise SystemExit(main())
