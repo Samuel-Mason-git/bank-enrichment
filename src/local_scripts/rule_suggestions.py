@@ -110,18 +110,23 @@ def _worth_a_rule_prompt(candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> list[dict]:
+def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> tuple[list[dict], list[dict]]:
     """A merchant repeating the same category every time in YOUR history isn't
     the same as it being safe to assume for every future transaction: Lidl has
     been Groceries every time so far, but it's a general supermarket, so the
     next trip could just as easily be household goods. EE, by contrast, only
     ever sells you a phone/broadband bill. This asks Claude to tell the two
     apart using real-world knowledge the transaction history alone can't
-    supply. Fails closed -- an API error drops every candidate for this run
-    rather than risk suggesting an automation that turns out to be wrong;
-    they're reconsidered on the next run instead."""
+    supply.
+
+    Returns (worth a rule, declined), each with Claude's reasoning. Declined
+    means an explicit "not worth a rule" -- remembered, so the same pattern
+    isn't paid for again every run. Fails closed: an API error, or an answer
+    with no verdict for a candidate, puts it in neither list, so it's simply
+    reconsidered next run rather than suggested unchecked or dismissed for
+    good on a glitch."""
     if not candidates:
-        return []
+        return [], []
     prompt = _worth_a_rule_prompt(candidates)
     log.info(f"Checking whether {len(candidates)} rule candidate(s) are safe to automate")
     try:
@@ -133,15 +138,16 @@ def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> 
     except Exception as e:
         log.error(f"Rule-worthiness check failed, treating no candidates as safe this run: {e}")
         alerts.llm_failure("Rule suggestion worthiness check", e)
-        return []
+        return [], []
 
-    kept = []
+    kept, declined = [], []
     for v in verdicts:
         index = v.get("index")
-        if index is None or not (0 <= index < len(candidates)) or not v.get("worth_a_rule"):
+        if not isinstance(index, int) or not (0 <= index < len(candidates)) or "worth_a_rule" not in v:
             continue
-        kept.append({**candidates[index], "llm_reasoning": v.get("reasoning", "")})
-    return kept
+        judged = {**candidates[index], "llm_reasoning": v.get("reasoning", "")}
+        (kept if v["worth_a_rule"] is True else declined).append(judged)
+    return kept, declined
 
 
 def _text_matches(value: str, match_type: str, pattern: str) -> bool:
@@ -162,7 +168,8 @@ def _text_matches(value: str, match_type: str, pattern: str) -> bool:
 
 def _not_yet_asked(con, candidates: list[dict]) -> list[dict]:
     """Drop a candidate already suggested -- in any status, so a denied one
-    stays denied -- and one an existing enabled rule already catches on its own.
+    stays denied and one Claude declined isn't asked about again -- and one an
+    existing enabled rule already catches on its own.
     A rule with a second condition can't be judged without a whole transaction,
     so it doesn't count as covering one: better to still suggest than to
     silently miss a useful rule. Done before the worthiness check, so Claude is
@@ -180,10 +187,23 @@ def _not_yet_asked(con, candidates: list[dict]) -> list[dict]:
     ]
 
 
+def _store(con, c: dict, status: str) -> None:
+    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
+    con.execute(
+        """INSERT INTO rule_suggestions
+           (id, match_field, match_value, category, subcategory, txn_count, auto_context,
+            llm_reasoning, status, proposed_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        [next_id, c["match_field"], c["match_value"], c["category"], c["subcategory"],
+         c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), status, time.strftime("%Y-%m-%d %H:%M:%S")],
+    )
+
+
 def sync_candidates() -> int:
     """Suggest a rule for every new candidate Claude judges safe to automate:
-    a pending row in rule_suggestions, whose card the server then sends.
-    Returns how many were added."""
+    a pending row in rule_suggestions, whose card the server then sends. One
+    Claude declines is stored as 'declined' -- no card, and never asked about
+    again. Returns how many were suggested."""
     con = get_con()
     candidates = _not_yet_asked(con, find_candidates())
     if not candidates:
@@ -191,17 +211,13 @@ def sync_candidates() -> int:
     if not CLAUDE_SECRET:
         log.warning("CLAUDE_SECRET not set -- skipping rule suggestions until it is")
         return 0
-    candidates = filter_worth_a_rule(anthropic.Anthropic(api_key=CLAUDE_SECRET), candidates)
-    for c in candidates:
-        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
-        con.execute(
-            """INSERT INTO rule_suggestions
-               (id, match_field, match_value, category, subcategory, txn_count, auto_context,
-                llm_reasoning, status, proposed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)""",
-            [next_id, c["match_field"], c["match_value"], c["category"], c["subcategory"],
-             c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), time.strftime("%Y-%m-%d %H:%M:%S")],
-        )
-    if candidates:
-        log.info(f"Suggested {len(candidates)} rule(s); the server sends their cards")
-    return len(candidates)
+    worth, declined = filter_worth_a_rule(anthropic.Anthropic(api_key=CLAUDE_SECRET), candidates)
+    for c in worth:
+        _store(con, c, "pending")
+    for c in declined:
+        _store(con, c, "declined")
+    if worth:
+        log.info(f"Suggested {len(worth)} rule(s); the server sends their cards")
+    if declined:
+        log.info(f"{len(declined)} pattern(s) not worth a rule -- remembered, so not asked again")
+    return len(worth)

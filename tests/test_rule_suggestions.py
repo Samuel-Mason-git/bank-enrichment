@@ -90,7 +90,7 @@ class TestSyncCandidates:
 
     def _pass_through(self, monkeypatch):
         monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
-        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: candidates)
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: (candidates, []))
 
     def test_stores_a_pending_suggestion_for_the_server_to_send(self, db, monkeypatch):
         self._pass_through(monkeypatch)
@@ -149,12 +149,45 @@ class TestSyncCandidates:
         mock_filter.assert_not_called()
         assert _suggested(db) == []
 
-    def test_llm_rejecting_every_candidate_stores_nothing(self, db, monkeypatch):
+    def test_a_failed_check_stores_nothing_so_it_is_asked_again_next_run(self, db, monkeypatch):
         monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
-        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: [])
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: ([], []))
         _add(db, 5, merchant="Tesco")
         assert rule_suggestions.sync_candidates() == 0
         assert _suggested(db) == []
+
+    def test_a_declined_pattern_is_remembered_with_no_card(self, db, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: (
+            [], [{**c, "llm_reasoning": "A general supermarket."} for c in candidates]))
+        _add(db, 5, merchant="Tesco")
+        assert rule_suggestions.sync_candidates() == 0
+        assert db.execute("SELECT match_value, status, llm_reasoning FROM rule_suggestions").fetchall() == [
+            ("Tesco", "declined", "A general supermarket.")]
+
+    def test_a_declined_pattern_never_reaches_the_llm_again(self, db, monkeypatch):
+        """The reason for remembering: otherwise the same pattern is paid for
+        on every run."""
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: ([], candidates))
+        _add(db, 5, merchant="Tesco")
+        rule_suggestions.sync_candidates()
+        with patch("rule_suggestions.filter_worth_a_rule") as mock_filter:
+            rule_suggestions.sync_candidates()
+        mock_filter.assert_not_called()
+
+    def test_the_server_never_sends_a_card_for_a_declined_one(self, db, pg, monkeypatch):
+        from unittest.mock import MagicMock as Mock
+        import server_db
+        from follow_up_tg import run_new_cards
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
+        monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: ([], candidates))
+        _add(db, 5, merchant="Tesco")
+        rule_suggestions.sync_candidates()
+        monkeypatch.setattr(server_db, "_con", pg)
+        bot = Mock()
+        run_new_cards(bot)
+        bot.send_rule_suggestion.assert_not_called()
 
 
 class TestTextMatches:
@@ -188,18 +221,19 @@ class TestFilterWorthARule:
         client.messages.create.return_value.content = [MagicMock(
             text='[{"index": 0, "worth_a_rule": true, "reasoning": "Single-purpose telecom bill"}]'
         )]
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE", "Bills", "Phone")])
-        assert len(kept) == 1
+        kept, declined = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE", "Bills", "Phone")])
+        assert len(kept) == 1 and declined == []
         assert kept[0]["match_value"] == "EE"
         assert kept[0]["llm_reasoning"] == "Single-purpose telecom bill"
 
-    def test_drops_a_candidate_the_llm_marks_not_worth_a_rule(self):
+    def test_declines_a_candidate_the_llm_marks_not_worth_a_rule(self):
         client = MagicMock()
         client.messages.create.return_value.content = [MagicMock(
             text='[{"index": 0, "worth_a_rule": false, "reasoning": "General supermarket"}]'
         )]
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("Lidl")])
+        kept, declined = rule_suggestions.filter_worth_a_rule(client, [_candidate("Lidl")])
         assert kept == []
+        assert [(c["match_value"], c["llm_reasoning"]) for c in declined] == [("Lidl", "General supermarket")]
 
     def test_mixed_verdicts_keep_only_the_worthwhile_ones(self):
         client = MagicMock()
@@ -207,30 +241,34 @@ class TestFilterWorthARule:
             {"index": 0, "worth_a_rule": true, "reasoning": "Single-purpose"},
             {"index": 1, "worth_a_rule": false, "reasoning": "General retailer"}
         ]''')]
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")])
+        kept, declined = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")])
         assert [c["match_value"] for c in kept] == ["EE"]
+        assert [c["match_value"] for c in declined] == ["Lidl"]
 
     def test_empty_candidate_list_short_circuits_without_calling_the_llm(self):
         client = MagicMock()
-        assert rule_suggestions.filter_worth_a_rule(client, []) == []
+        assert rule_suggestions.filter_worth_a_rule(client, []) == ([], [])
         client.messages.create.assert_not_called()
 
-    def test_api_failure_fails_closed_dropping_everything(self):
+    def test_api_failure_fails_closed_deciding_nothing(self):
+        """Neither suggested nor declined: a glitch mustn't dismiss a pattern for good."""
         client = MagicMock()
         client.messages.create.side_effect = Exception("API error")
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")])
-        assert kept == []
+        assert rule_suggestions.filter_worth_a_rule(client, [_candidate("EE"), _candidate("Lidl")]) == ([], [])
 
     def test_malformed_json_fails_closed(self):
         client = MagicMock()
         client.messages.create.return_value.content = [MagicMock(text="not json")]
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")])
-        assert kept == []
+        assert rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")]) == ([], [])
+
+    def test_an_answer_with_no_verdict_decides_nothing(self):
+        client = MagicMock()
+        client.messages.create.return_value.content = [MagicMock(text='[{"index": 0, "reasoning": "hmm"}]')]
+        assert rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")]) == ([], [])
 
     def test_out_of_range_index_is_ignored_not_crashed_on(self):
         client = MagicMock()
         client.messages.create.return_value.content = [MagicMock(
             text='[{"index": 5, "worth_a_rule": true, "reasoning": "x"}]'
         )]
-        kept = rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")])
-        assert kept == []
+        assert rule_suggestions.filter_worth_a_rule(client, [_candidate("EE")]) == ([], [])

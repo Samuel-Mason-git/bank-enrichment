@@ -18,7 +18,7 @@ from tests.server_helpers import monzo_payload, replies, tap
 def _suggest(db, monkeypatch, merchant="Tesco", times=5):
     monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
     monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule",
-                        lambda client, candidates: [{**c, "llm_reasoning": "Always groceries."} for c in candidates])
+                        lambda client, candidates: ([{**c, "llm_reasoning": "Always groceries."} for c in candidates], []))
     for i in range(times):
         insert_transaction(db, f"tx{i}", merchant_name=merchant, user_context="Weekly shop",
                            llm_category="Food & Drink", llm_subcategory="Groceries")

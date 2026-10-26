@@ -96,6 +96,29 @@ def test_the_schema_can_be_applied_twice(pg):
     pg.execute(_PG_SCHEMA_PATH.read_text())
 
 
+def test_a_database_from_before_declined_gets_it_and_keeps_its_rows(pg):
+    """The live database was made with the narrower status check. Applying the
+    schema on the server's next start must widen it, keeping every row."""
+    from tests.conftest import _PG_SCHEMA_PATH
+    pg.execute("ALTER TABLE rule_suggestions DROP CONSTRAINT rule_suggestions_status_check")
+    pg.execute("ALTER TABLE rule_suggestions ADD CONSTRAINT rule_suggestions_status_check "
+               "CHECK (status IN ('pending', 'approved', 'denied'))")
+    pg.execute("""INSERT INTO rule_suggestions (id, match_field, match_value, category, subcategory, status, proposed_at)
+                  VALUES (1, 'merchant_name', 'EE', 'Bills', 'Phone', 'denied', NOW())""")
+    pg.execute(_PG_SCHEMA_PATH.read_text())
+    pg.execute("""INSERT INTO rule_suggestions (id, match_field, match_value, category, subcategory, status, proposed_at)
+                  VALUES (2, 'merchant_name', 'Lidl', 'Food', 'Groceries', 'declined', NOW())""")
+    assert pg.execute("SELECT id, status FROM rule_suggestions ORDER BY id").fetchall() == [(1, "denied"), (2, "declined")]
+    import psycopg
+    try:
+        pg.execute("""INSERT INTO rule_suggestions (id, match_field, match_value, category, subcategory, status, proposed_at)
+                      VALUES (3, 'merchant_name', 'X', 'A', 'B', 'nonsense', NOW())""")
+    except psycopg.errors.CheckViolation:
+        pass
+    else:
+        raise AssertionError("an unknown status must still be refused")
+
+
 def test_the_transactions_view_has_every_column_the_old_table_had(pg):
     columns = [r[0] for r in pg.execute(
         "SELECT column_name FROM information_schema.columns "
