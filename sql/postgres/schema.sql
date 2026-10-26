@@ -20,10 +20,10 @@
 CREATE TABLE IF NOT EXISTS parent_categories (
     id          INTEGER   PRIMARY KEY,
     name        VARCHAR   NOT NULL,
-    created_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
     -- A deleted category is archived rather than removed, so old labels still
     -- resolve to a name.
-    archived_at TIMESTAMP
+    archived_at TIMESTAMPTZ
 );
 -- Unique among live categories only, so an archived name can be used again.
 CREATE UNIQUE INDEX IF NOT EXISTS parent_categories_live_name
@@ -33,8 +33,8 @@ CREATE TABLE IF NOT EXISTS subcategories (
     id          INTEGER   PRIMARY KEY,
     name        VARCHAR   NOT NULL,
     parent_id   INTEGER   NOT NULL REFERENCES parent_categories(id),
-    created_at  TIMESTAMP NOT NULL,
-    archived_at TIMESTAMP
+    created_at  TIMESTAMPTZ NOT NULL,
+    archived_at TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX IF NOT EXISTS subcategories_live_name
     ON subcategories (parent_id, name) WHERE archived_at IS NULL;
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS category_roles (
 CREATE TABLE IF NOT EXISTS transactions_raw (
     id          VARCHAR   PRIMARY KEY,   -- Monzo's transaction id
     payload     JSONB     NOT NULL,      -- the webhook body, untouched
-    received_at TIMESTAMP NOT NULL
+    received_at TIMESTAMPTZ NOT NULL
 );
 
 -- Every time context is given, changed, skipped, timed out or asked for. Each
@@ -65,14 +65,14 @@ CREATE TABLE IF NOT EXISTS context_events (
     user_context        TEXT,
     skipped             BOOLEAN   NOT NULL DEFAULT FALSE,
     -- A date corrected in the dashboard; NULL = Monzo's own date.
-    created_at_override TIMESTAMP,
+    created_at_override TIMESTAMPTZ,
     --   telegram   a reply or a tap        rule      a rule's auto-context/skip
     --   dashboard  an edit in either one   timeout   no answer in time
     --   request    a card or nudge sent (no context: counts the follow-ups)
     --   migration  converted from the DuckDB setup
     source              VARCHAR   NOT NULL CHECK (source IN
         ('telegram', 'rule', 'dashboard', 'timeout', 'request', 'migration')),
-    set_at              TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
+    set_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS context_events_by_txn ON context_events (txn_id, event_id);
 
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS label_events (
         ('llm', 'rule', 'quick_tap', 'manual', 'judge', 'proposal', 'migration')),
     model          VARCHAR(255),
     confidence     DECIMAL(5,4),
-    set_at         TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
+    set_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (subcategory_id IS NULL OR parent_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS label_events_by_txn ON label_events (txn_id, event_id);
@@ -126,10 +126,10 @@ CREATE TABLE IF NOT EXISTS rule_suggestions (
     -- declined: Claude judged it not worth a rule. Never sent, never asked again.
     status       VARCHAR(20)  NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'approved', 'denied', 'declined')),
-    proposed_at  TIMESTAMP    NOT NULL,
+    proposed_at  TIMESTAMPTZ    NOT NULL,
     -- NULL until its Telegram card has gone out; the server sends any that haven't.
-    sent_at      TIMESTAMP,
-    decided_at   TIMESTAMP,
+    sent_at      TIMESTAMPTZ,
+    decided_at   TIMESTAMPTZ,
     UNIQUE (match_field, match_value)
 );
 
@@ -150,13 +150,13 @@ CREATE TABLE IF NOT EXISTS taxonomy_proposals (
     status          VARCHAR   NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'approved', 'denied', 'applied', 'expired')),
     run_key         VARCHAR   NOT NULL,              -- the month, e.g. '2026-08'
-    proposed_at     TIMESTAMP NOT NULL,
+    proposed_at     TIMESTAMPTZ NOT NULL,
     -- NULL until its Telegram card has gone out; the server sends any that haven't.
-    sent_at         TIMESTAMP,
-    decided_at      TIMESTAMP,
-    applied_at      TIMESTAMP,
+    sent_at         TIMESTAMPTZ,
+    decided_at      TIMESTAMPTZ,
+    applied_at      TIMESTAMPTZ,
     follow_up_count INTEGER   NOT NULL DEFAULT 0,
-    last_nudged_at  TIMESTAMP
+    last_nudged_at  TIMESTAMPTZ
 );
 
 -- The classifier's "new category?" cards. One copy, replacing both the local
@@ -176,11 +176,11 @@ CREATE TABLE IF NOT EXISTS category_proposals (
     -- "Try again" rather than "None of these": those options are avoided next
     -- time, but not blocked for good.
     regenerate_requested BOOLEAN   NOT NULL DEFAULT FALSE,
-    proposed_at          TIMESTAMP NOT NULL,
+    proposed_at          TIMESTAMPTZ NOT NULL,
     -- NULL until its Telegram card has gone out; the server sends any that haven't.
-    sent_at              TIMESTAMP,
-    decided_at           TIMESTAMP,
-    applied_at           TIMESTAMP
+    sent_at              TIMESTAMPTZ,
+    decided_at           TIMESTAMPTZ,
+    applied_at           TIMESTAMPTZ
 );
 
 -- What the placement judge made of each transaction, so it never asks twice.
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS judge_reviews (
     category     VARCHAR   NOT NULL,
     subcategory  VARCHAR   NOT NULL,
     outcome      VARCHAR   NOT NULL CHECK (outcome IN ('approved', 'held', 'kept', 'changed')),
-    reviewed_at  TIMESTAMP NOT NULL
+    reviewed_at  TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     amount        DECIMAL(19,4) NOT NULL,
     frequency     VARCHAR(20)   NOT NULL CHECK (frequency IN ('weekly', 'fortnightly', 'monthly', 'annual')),
     active        BOOLEAN       NOT NULL DEFAULT TRUE,
-    created_at    TIMESTAMP     NOT NULL
+    created_at    TIMESTAMPTZ     NOT NULL
 );
 
 -- ── Gold ─────────────────────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     net            DECIMAL(19,4) NOT NULL,
     total_invested DECIMAL(19,4),
     total_saved    DECIMAL(19,4),
-    sent_at        TIMESTAMP     NOT NULL,
+    sent_at        TIMESTAMPTZ     NOT NULL,
     PRIMARY KEY (period, period_key)
 );
 
@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 -- applies this file on every start, so a deploy brings the database up to date.
 
 ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS llm_reasoning TEXT NOT NULL DEFAULT '';
-ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP;
+ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
 ALTER TABLE taxonomy_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
 -- 'declined' added to rule_suggestions' statuses (a CHECK can't be widened in
 -- place, so it's made again -- every row already passes the wider one).
@@ -235,16 +235,106 @@ ALTER TABLE rule_suggestions ADD CONSTRAINT rule_suggestions_status_check
     CHECK (status IN ('pending', 'approved', 'denied', 'declined'));
 ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
 
+-- Every later version of a transaction: the other webhooks Monzo sends for it
+-- (settlement, a merchant filled in, a final amount, a note), and what Monzo's
+-- API said when the server looked it up. Only ever added to -- transactions_raw
+-- keeps the first version exactly as it arrived, and this keeps the rest.
+CREATE TABLE IF NOT EXISTS transaction_updates (
+    update_id   BIGINT    GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    txn_id      VARCHAR   NOT NULL REFERENCES transactions_raw(id),
+    payload     JSONB     NOT NULL,
+    --   webhook  another webhook for the same transaction
+    --   api      Monzo's API, asked for it (a missing merchant)
+    source      VARCHAR   NOT NULL CHECK (source IN ('webhook', 'api')),
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS transaction_updates_by_txn ON transaction_updates (txn_id, update_id);
+
 -- ── Views (silver: worked out on every read, nothing stored) ─────────────────
 
 -- Dropped and made again every time, since a view stores nothing and Postgres
 -- won't change the columns of one in place.
-DROP VIEW IF EXISTS quick_categories, needs_label, needs_context, transaction_roles, transactions;
+DROP VIEW IF EXISTS quick_categories, needs_label, needs_context, transaction_roles, transactions, transaction_current;
+
+-- Every time is stored zone-aware (UTC). A database from before that had them
+-- without a zone: they're converted here, once, read as UTC. (Times written
+-- before the move to Postgres mixed London summer time and UTC, so some of
+-- those old "set at" times are an hour out. Nothing is decided by them.)
+DO $$
+DECLARE col record;
+BEGIN
+    FOR col IN
+        SELECT c.table_name, c.column_name FROM information_schema.columns c
+        JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE'
+          AND c.data_type = 'timestamp without time zone'
+    LOOP
+        EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE TIMESTAMPTZ USING %I AT TIME ZONE ''UTC''',
+                       col.table_name, col.column_name, col.column_name);
+    END LOOP;
+END $$;
+ALTER TABLE context_events ALTER COLUMN set_at SET DEFAULT now();
+ALTER TABLE transaction_updates ALTER COLUMN received_at SET DEFAULT now();
+
+-- Each transaction as it stands now, from all its versions: the newest one,
+-- except that the merchant, the counterparty and the settled date come from the
+-- newest version that has them. Monzo's webhooks arrive in no set order, and a
+-- later one can carry merchant: null -- taking the newest naively would lose a
+-- merchant an earlier one had.
+CREATE OR REPLACE VIEW transaction_current AS
+SELECT
+    r.id,
+    -- With nothing better in any version, each field is the newest version's
+    -- own, so a transaction with one version reads exactly as it arrived.
+    jsonb_set(jsonb_set(jsonb_set(
+        newest.payload,
+        '{data,merchant}',     COALESCE(merchant.value, newest.payload->'data'->'merchant', 'null'::jsonb)),
+        '{data,counterparty}', COALESCE(counterparty.value, newest.payload->'data'->'counterparty', '{}'::jsonb)),
+        '{data,settled}',      COALESCE(settled.value, newest.payload->'data'->'settled', '""'::jsonb))   AS payload
+FROM transactions_raw r
+CROSS JOIN LATERAL (
+    SELECT v.payload FROM (
+        SELECT r.payload, 0::BIGINT AS version
+        UNION ALL
+        SELECT u.payload, u.update_id FROM transaction_updates u WHERE u.txn_id = r.id
+    ) v ORDER BY v.version DESC LIMIT 1
+) newest
+LEFT JOIN LATERAL (
+    SELECT v.p->'data'->'merchant' AS value FROM (
+        SELECT r.payload AS p, 0::BIGINT AS version
+        UNION ALL
+        SELECT u.payload, u.update_id FROM transaction_updates u WHERE u.txn_id = r.id
+    ) v WHERE jsonb_typeof(v.p->'data'->'merchant') = 'object'
+    ORDER BY v.version DESC LIMIT 1
+) merchant ON TRUE
+LEFT JOIN LATERAL (
+    SELECT v.p->'data'->'counterparty' AS value FROM (
+        SELECT r.payload AS p, 0::BIGINT AS version
+        UNION ALL
+        SELECT u.payload, u.update_id FROM transaction_updates u WHERE u.txn_id = r.id
+    ) v WHERE COALESCE(v.p->'data'->'counterparty'->>'name', '') <> ''
+    ORDER BY v.version DESC LIMIT 1
+) counterparty ON TRUE
+LEFT JOIN LATERAL (
+    SELECT v.p->'data'->'settled' AS value FROM (
+        SELECT r.payload AS p, 0::BIGINT AS version
+        UNION ALL
+        SELECT u.payload, u.update_id FROM transaction_updates u WHERE u.txn_id = r.id
+    ) v WHERE COALESCE(v.p->'data'->>'settled', '') <> ''
+    ORDER BY v.version DESC LIMIT 1
+) settled ON TRUE;
 
 -- One row per transaction, under the column names the old transactions table
 -- had, so the dashboards and summaries read it the same way. Monzo's fields
--- come out of the payload the way the old pipeline flattened them (amount from
--- pence; '' dates as NULL). parent_id/subcategory_id are extra, for joining by id.
+-- come out of the transaction as it stands now (transaction_current: its newest
+-- version, merchant and settlement filled in from any version that had them),
+-- the way the old pipeline flattened them (amount from pence; '' dates as NULL).
+-- raw_payload is that current version. parent_id/subcategory_id are extra, for
+-- joining by id.
+--
+-- Its times are London time, without a zone: what a dashboard shows and what a
+-- week or a month is counted by. (Stored, they're UTC; a payment at 00:30 BST
+-- belongs to that day, not the one before.)
 --
 -- A labelled transaction's parent is its subcategory's parent *now*, not the
 -- one recorded with the label, so moving a subcategory to another parent takes
@@ -261,25 +351,26 @@ SELECT
     d.data->'counterparty'->>'name'                                 AS counterparty_name,
     (d.data->>'is_load')::BOOLEAN                                   AS is_load,
     COALESCE(c.created_at_override,
-             NULLIF(d.data->>'created', '')::TIMESTAMPTZ AT TIME ZONE 'UTC') AS created_at,
-    NULLIF(d.data->>'settled', '')::TIMESTAMPTZ AT TIME ZONE 'UTC'  AS settled_at,
-    r.payload                                                       AS raw_payload,
+             NULLIF(d.data->>'created', '')::TIMESTAMPTZ) AT TIME ZONE 'Europe/London' AS created_at,
+    NULLIF(d.data->>'settled', '')::TIMESTAMPTZ AT TIME ZONE 'Europe/London' AS settled_at,
+    cur.payload                                                     AS raw_payload,
     c.user_context,
     COALESCE(c.skipped, FALSE)                                      AS skipped,
-    r.received_at,
-    c.set_at                                                        AS enriched_at,
+    r.received_at AT TIME ZONE 'Europe/London'                      AS received_at,
+    c.set_at AT TIME ZONE 'Europe/London'                           AS enriched_at,
     pc.name                                                         AS llm_category,
     sc.name                                                         AS llm_subcategory,
     l.confidence                                                    AS llm_confidence,
     l.model                                                         AS llm_model,
-    l.set_at                                                        AS classified_at,
+    l.set_at AT TIME ZONE 'Europe/London'                           AS classified_at,
     (SELECT p.id FROM category_proposals p
       WHERE p.txn_ids ? r.id
       ORDER BY p.id LIMIT 1)                                        AS pending_category_proposal_id,
     pc.id                                                           AS parent_id,
     l.subcategory_id
 FROM transactions_raw r
-CROSS JOIN LATERAL (SELECT r.payload->'data' AS data) d
+JOIN transaction_current cur ON cur.id = r.id
+CROSS JOIN LATERAL (SELECT cur.payload->'data' AS data) d
 LEFT JOIN LATERAL (
     SELECT * FROM context_events e
     WHERE e.txn_id = r.id AND e.source <> 'request'
@@ -319,7 +410,8 @@ LEFT JOIN category_roles parent_role
     ON parent_role.parent_id = t.parent_id AND parent_role.subcategory_id IS NULL;
 
 -- Transactions waiting for an answer: no context yet, not even a timeout. Drives
--- the Telegram card and its follow-ups.
+-- the Telegram card and its follow-ups, so its times stay exact (zone-aware):
+-- they're compared with "an hour ago", not shown.
 CREATE OR REPLACE VIEW needs_context AS
 SELECT
     r.id,

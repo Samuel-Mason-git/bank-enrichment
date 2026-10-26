@@ -17,8 +17,8 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # The daily run (src/pipeline/worker.py): the same image, every morning
-  # at 08:00 London time. Capped, so a run that ever spikes is what gets
+  # The pipeline's runs (src/pipeline/worker.py): the same image, every hour
+  # from 08:00 to 22:00 London time. Capped, so a run that ever spikes is what gets
   # stopped, not the webhooks next to it.
   worker:
     image: bank-enrichment
@@ -37,7 +37,9 @@ services:
     logging: *default-logging
 
   caddy:
-    image: caddy:latest
+    # A fixed version, not :latest, so a rebuild never picks up a change
+    # unannounced; Dependabot proposes updates.
+    image: caddy:2.11.3
     ports:
       - "80:80"
       - "443:443"

@@ -62,7 +62,7 @@ def _seed(db):
 
 def test_dashboard_loads_without_error(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     assert not at.exception
 
 
@@ -70,7 +70,7 @@ def test_search_with_regex_special_characters_does_not_crash(db):
     """Regression test for the ArrowInvalid crash: typing a search term with an
     unbalanced parenthesis used to bring down the whole dashboard."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     at.sidebar.text_input[0].set_value("Tesco (UK").run()
     assert not at.exception
 
@@ -81,7 +81,7 @@ def test_subscription_delete_requires_confirmation(db):
     _seed(db)
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     subs_tab = at.tabs[5]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
     delete_button = next(b for b in subs_tab.button if b.label == "✕")
     delete_button.click().run()
@@ -97,7 +97,7 @@ def test_savings_rate_shows_dash_when_no_income(db):
     (undefined) — inconsistent with how the rest of the app handles undefined
     ratios (e.g. Category Drill-Down's 'Avg Spend' already used '—')."""
     _seed(db)  # spend-only seed data, no income transaction
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     overview_tab = at.tabs[0]
     assert _has_card(overview_tab, "Savings Rate", "—")
 
@@ -109,7 +109,7 @@ def test_subscription_can_be_edited(db):
     _seed(db)
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     subs_tab = at.tabs[5]
     edit_button = next(b for b in subs_tab.button if b.label == "✏️")
     edit_button.click().run()
@@ -129,7 +129,7 @@ def test_subscription_can_be_edited(db):
 
 def test_settings_tab_shows_default_category_roles(db):
     _seed(db)  # seeds the full default taxonomy
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
 
     parents = {p["name"]: p for p in database_functions.get_parents()}
@@ -147,7 +147,7 @@ def test_settings_tab_role_edit_persists(db):
     DESC with no tiebreaker, so rows with equal counts (the common case)
     could return in an unstable order across reruns."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]
 
     parents_before = {p["name"]: p for p in database_functions.get_parents()}
@@ -163,7 +163,7 @@ def test_settings_tab_role_edit_persists(db):
 
 def test_settings_tab_subcategory_override_persists(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]
 
     subs_before = {s["name"]: s for s in database_functions.get_subcategories() if s["parent_name"] == "Income"}
@@ -187,7 +187,7 @@ def test_settings_rename_subcategory_to_existing_name_shows_error_not_crash(db):
     subs = {s["name"]: s for s in database_functions.get_subcategories() if s["parent_name"] == "Food & Drink"}
     groceries_id = subs["Groceries"]["id"]
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]
     edit_btn = next(b for b in settings_tab.button if b.key == f"es_{groceries_id}")
     edit_btn.click().run()
@@ -217,7 +217,7 @@ def test_settings_rename_parent_carries_over_custom_role(db):
     health_id = parents["Health"]["id"]
     database_functions.set_parent_role(health_id, "excluded")
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
@@ -243,7 +243,7 @@ def test_settings_rename_parent_to_existing_name_shows_error_not_silent_merge(db
     parents = {p["name"]: p for p in database_functions.get_parents()}
     health_id = parents["Health"]["id"]
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     settings_tab = at.tabs[6]
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
@@ -291,7 +291,7 @@ def test_overview_actual_income_excludes_refunds(db):
     update_classification("tx_refund", "Income", "Refunds", 1.0, "test")
     update_classification("tx_salary", "Income", "Salary", 1.0, "test")
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     overview_tab = at.tabs[0]  # "All time" is the default preset, covers both seeded dates
 
     assert _has_card(overview_tab, "Income", "£2005.00")
@@ -300,7 +300,7 @@ def test_overview_actual_income_excludes_refunds(db):
 
 def test_overview_chart_metric_selector_switches_without_crash(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     overview_tab = at.tabs[0]
     metric_select = next(sb for sb in overview_tab.selectbox if sb.key == "overview_outgoing_metric")
     metric_select.set_value("Invested").run()
@@ -326,7 +326,7 @@ def test_category_drilldown_shows_invested_not_spend_for_investments(db):
         "tx_isa", "Investments", "Stocks & Shares ISA Contributions", 1.0, "test"
     )
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     drill_tab = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
     cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
     cat_select.set_value("Investments").run()
@@ -356,7 +356,7 @@ def test_top_merchants_search_filters_results(db):
          "received_at": "2026-01-11T10:00:00", "enriched_at": "2026-01-11T10:00:01"},
     ])
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     merchants_tab = at.tabs[4]
     search_box = next(ti for ti in merchants_tab.text_input if ti.key == "merchant_search")
     search_box.set_value("Tesco").run()
@@ -391,7 +391,7 @@ def test_inbound_and_outbound_transfers_match_between_overview_and_drilldown(db)
     update_classification("tx_out", "Transfers", "Outbound Transfer", 1.0, "test")
     update_classification("tx_in", "Transfers", "Inbound Transfer", 1.0, "test")
 
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
 
     drill_tab = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
     cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
@@ -438,7 +438,7 @@ def test_exclude_merchant_offers_counterparty_only_payees(db):
     """The exclude multiselect must list payees that only ever populate
     counterparty_name (direct debits), not just card merchants."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     options = at.sidebar.multiselect(key="exclude_merchants").options
     assert "Tesco" in options
     assert "Landlord" in options
@@ -446,7 +446,7 @@ def test_exclude_merchant_offers_counterparty_only_payees(db):
 
 def test_exclude_merchant_removes_matching_transactions(db):
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     assert _txn_count(at) == "2 transactions"
 
     at.sidebar.multiselect(key="exclude_merchants").set_value(["Tesco"]).run()
@@ -458,7 +458,7 @@ def test_exclude_counterparty_only_payee_removes_its_transactions(db):
     """Regression guard for the merchant_name='' fallback: excluding a
     direct-debit payee must actually filter it out, not silently match nothing."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     at.sidebar.multiselect(key="exclude_merchants").set_value(["Landlord"]).run()
     assert not at.exception
     assert _txn_count(at) == "1 transactions"
@@ -470,7 +470,7 @@ def test_search_matches_counterparty_only_payees(db):
     debit's payee (a bill, rent, an HMRC-style payment) found nothing at all,
     even though the same term matches via database_functions.search()."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     assert _txn_count(at) == "2 transactions"
     at.sidebar.text_input[0].set_value("Landlord").run()
     assert not at.exception
@@ -486,7 +486,7 @@ def test_biggest_transaction_card_shows_counterparty_not_unknown(db):
     truthy in Python), the same trap that broke clearing a transaction's
     category in the Reclassify editor."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     txns_tab = at.tabs[2]
     assert not at.exception
     assert _has_card(txns_tab, "Biggest Transaction", "Landlord")
@@ -497,7 +497,7 @@ def test_exclude_by_id_accepts_newline_and_comma_separated_ids(db):
     """IDs get pasted in from a CSV or copied one-per-line off the table, so
     both separators (and stray whitespace) have to parse the same way."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
 
     at.sidebar.text_area(key="exclude_ids").set_value("tx_tesco").run()
     assert not at.exception
@@ -515,7 +515,7 @@ def test_exclude_by_id_accepts_newline_and_comma_separated_ids(db):
 def test_unknown_exclude_id_leaves_data_untouched(db):
     """A typo'd or stale ID should be a no-op, never an exception."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     at.sidebar.text_area(key="exclude_ids").set_value("tx_does_not_exist").run()
     assert not at.exception
     assert _txn_count(at) == "2 transactions"
@@ -525,7 +525,7 @@ def test_manual_backup_button_writes_a_backup(db):
     """End-to-end wiring check: the Settings tab's backup button must actually
     save a copy of every table."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     assert database_functions.list_backups() == []
 
     settings_tab = at.tabs[6]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
@@ -552,7 +552,7 @@ def test_backup_delete_requires_confirmation(db):
     """Deleting a backup throws away a safety net, so the first click must only
     ask -- matching how the rest of the app handles destructive actions."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     _settings_button(at, "Back up now").click().run()
     assert len(database_functions.list_backups()) == 1
 
@@ -565,7 +565,7 @@ def test_backup_delete_requires_confirmation(db):
 
 def test_backup_delete_confirmed_removes_it(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     _settings_button(at, "Back up now").click().run()
     _settings_button(at, "Delete backup").click().run()
     _settings_button(at, "Yes, delete it").click().run()
@@ -576,7 +576,7 @@ def test_backup_delete_confirmed_removes_it(db):
 
 def test_backup_delete_can_be_cancelled(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     _settings_button(at, "Back up now").click().run()
     before = database_functions.list_backups()
 
@@ -594,7 +594,7 @@ def test_backup_delete_can_be_cancelled(db):
 
 def test_backup_delete_warns_when_it_is_the_only_one(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH).run()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     _settings_button(at, "Back up now").click().run()
     _settings_button(at, "Delete backup").click().run()
 
@@ -629,7 +629,7 @@ class TestDateRangeFilter:
         Streamlit does after every widget interaction), then set the end box --
         never a single combined tuple."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         assert _txn_count(at) == "4 transactions"
 
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
@@ -643,7 +643,7 @@ class TestDateRangeFilter:
         independent boxes don't, so the app must sort them rather than let a
         reversed pick silently return nothing (or everything)."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
 
         at.sidebar.date_input(key="date_from").set_value(date(2026, 8, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 2, 1)).run()
@@ -661,7 +661,7 @@ class TestDateRangeFilter:
         actually on record -- i.e. the start of every month, until that
         month's first transaction lands)."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
         assert _txn_count(at) == "2 transactions"
@@ -676,7 +676,7 @@ class TestDateRangeFilter:
 
     def test_reset_button_reverts_manual_edits_to_the_current_preset(self, db):
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
         assert _txn_count(at) == "2 transactions"
@@ -725,7 +725,7 @@ class TestInvestedAndSavedStayNumericallySeparate:
 
     def test_overview_cards_show_each_figure_separately_not_summed(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         assert not at.exception
         overview = at.tabs[0]
         assert _has_card(overview, "Invested", "£250.00")
@@ -737,14 +737,14 @@ class TestInvestedAndSavedStayNumericallySeparate:
         """Both roles are excluded from Actual Spend/Income/Net entirely --
         neither a contribution nor a pot deposit is real spend."""
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         overview = at.tabs[0]
         assert _has_card(overview, "Spend", "£0.00")
         assert _has_card(overview, "Net", "£0.00")
 
     def test_category_drill_down_keeps_them_on_separate_cards(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         drill = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
         drill.selectbox(key="drill_selected_category").set_value("Investments").run()
         assert _has_card(at.tabs[3], "Invested", "£250.00")
@@ -758,13 +758,13 @@ class TestInvestedAndSavedStayNumericallySeparate:
 
     def test_the_outgoing_breakdown_dropdown_offers_saved_as_its_own_metric(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         options = at.tabs[0].selectbox(key="overview_outgoing_metric").options
         assert "Saved" in options and "Invested" in options
 
     def test_monthly_breakdown_table_has_both_as_separate_columns(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         df = at.tabs[0].dataframe[0].value
         assert "Invested (£)" in df.columns and "Saved (£)" in df.columns
         row = df.iloc[0]
@@ -776,7 +776,7 @@ class TestInvestedAndSavedStayNumericallySeparate:
         groupby, not the same masks) -- it must not silently disagree with
         the now-netted Saved card just above it on the same tab."""
         _seed_saving_deposit_and_withdrawal(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         df = at.tabs[0].dataframe[0].value
         row = df.iloc[0]
         assert row["Saved (£)"] == "£300.00"
@@ -787,7 +787,7 @@ class TestInvestedAndSavedStayNumericallySeparate:
         Standard row shows only Income/Spend/Net/Savings Rate -- it must not
         render a dead card stuck permanently on '—'."""
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         overview = at.tabs[0]
         assert not _has_card(overview, "Invested", "—")
         assert not _has_card(overview, "Saved", "—")
@@ -860,7 +860,7 @@ class TestOverviewNetsSavingAndInvestmentButNotTransfers:
 
     def test_saved_nets_deposit_and_withdrawal_into_one_card(self, db):
         _seed_saving_deposit_and_withdrawal(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         overview = at.tabs[0]
         assert _has_card(overview, "Saved", "£300.00")
         assert not _has_card(overview, "Saved (Outgoing)", "£500.00")
@@ -868,7 +868,7 @@ class TestOverviewNetsSavingAndInvestmentButNotTransfers:
 
     def test_transferred_excluded_still_splits_into_outgoing_and_incoming(self, db):
         _seed_transfer_in_and_out(db)
-        at = AppTest.from_file(_DASHBOARD_PATH).run()
+        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         overview = at.tabs[0]
         assert _has_card(overview, "Transferred / Excluded (Outgoing)", "£120.00")
         assert _has_card(overview, "Transferred / Excluded (Incoming)", "£300.00")

@@ -1,0 +1,30 @@
+# Weekly pull requests for updated dependencies. Nothing merges by itself:
+# each is an ordinary PR, tested by CI, merged (and so deployed) by hand.
+version: 2
+updates:
+  # Python packages (pyproject.toml / poetry.lock). Minor and patch updates
+  # come as one PR a week; a major version gets its own.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  # The actions CI uses.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+
+  # The server image's base (Dockerfile) and Caddy (docker-compose.yml).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: monthly

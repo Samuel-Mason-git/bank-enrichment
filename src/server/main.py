@@ -22,8 +22,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from server_db import (
-    init_db, get_con, get_quick_categories, now, payload, record_context, record_label, record_request,
-    subcategory, subcategory_id,
+    init_db, get_con, get_quick_categories, insert_with_next_id, now, payload, record_context, record_label,
+    record_request, record_update, subcategory, subcategory_id,
 )
 from telegram import TelegramBot
 from check_rules import check_rules, NO_MATCH
@@ -205,6 +205,18 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
+@app.get("/health")
+def health():
+    """For an uptime monitor: 200 while the server is up and can reach the
+    database, 503 when it can't. Says nothing else, so it needs no login."""
+    try:
+        get_con().execute("SELECT 1")
+    except Exception as e:
+        log.error(f"Health check: database unreachable: {e}")
+        raise HTTPException(status_code=503, detail="database unreachable")
+    return {"ok": True}
+
+
 @app.middleware("http")
 async def reject_cross_site_dashboard_posts(request: Request, call_next):
     if request.method == "POST" and request.url.path.startswith("/dashboard") and not _is_same_site(request):
@@ -351,15 +363,22 @@ async def recieve_monzo(request: Request):
     transaction_id = monzo_data.data.id
     con = get_con()
 
-    # Store it -- once. Monzo sends several webhooks per payment; the first to
-    # arrive is kept and the rest are duplicates.
+    # Store it. Monzo sends several webhooks per payment: the first is the
+    # transaction, and any later one that says something new (settled, a
+    # merchant filled in, a final amount) is kept as an update. Only the first
+    # asks for context.
     try:
         is_new = con.execute(
             """INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, %s)
                ON CONFLICT (id) DO NOTHING RETURNING id""",
             [transaction_id, body.decode(), now()],
         ).fetchone() is not None
-        log.info(f"Transaction stored: {transaction_id}" if is_new else f"Duplicate webhook ignored: {transaction_id}")
+        if is_new:
+            log.info(f"Transaction stored: {transaction_id}")
+        elif record_update(con, transaction_id, json.loads(body), "webhook"):
+            log.info(f"Update stored for {transaction_id} ({monzo_data.type})")
+        else:
+            log.info(f"Duplicate webhook ignored: {transaction_id}")
     except Exception as e:
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
@@ -401,23 +420,22 @@ async def recieve_monzo(request: Request):
         return {"status": "pending_hold"}
 
     # Monzo fires several webhooks per payment within half a second, in no set
-    # order, and only the first is kept. Since mid-October 2026 the first has
-    # usually been a transaction.updated carrying merchant: null, so the
-    # merchant was lost -- and with it merchant rules, the merchant's own
-    # quick-tap buttons, and what the classifier knows. So a card payment that
-    # arrives without one is looked up in Monzo's API, which has it, and stored
-    # in full -- the one time a stored payload is replaced, seconds after it
-    # arrived and before anything has read it. A transfer has no merchant to
-    # find (it has a counterparty), so it isn't looked up. If the API can't be
-    # reached, this one carries on as it arrived.
+    # order. Since mid-October 2026 the first has usually been a
+    # transaction.updated carrying merchant: null -- and the rules and the card
+    # are decided now, from this one, before the others arrive. So a card
+    # payment that arrives without a merchant is looked up in Monzo's API,
+    # which has it, and the answer kept as an update (the first version stays
+    # as it arrived). A transfer has no merchant to find (it has a
+    # counterparty), so it isn't looked up. If the API can't be reached, this
+    # carries on as it arrived, and the hourly repair tries again
+    # (follow_up_tg.run_merchant_repair).
     if not monzo_data.data.merchant and not (monzo_data.data.counterparty or {}).get("name"):
         fetched = await asyncio.to_thread(fetch_transaction, transaction_id)
         if fetched and isinstance(fetched.get("merchant"), dict):
             try:
                 full = {"type": monzo_data.type, "data": fetched}
                 monzo_data = MonzoOuter.model_validate(full)
-                con.execute("UPDATE transactions_raw SET payload = %s WHERE id = %s",
-                            [json.dumps(full), transaction_id])
+                record_update(con, transaction_id, full, "api")
                 body = json.dumps(full).encode()
                 log.info(f"Merchant filled in from Monzo's API for {transaction_id}: "
                          f"{fetched['merchant'].get('name')!r}")
@@ -462,8 +480,11 @@ async def recieve_monzo(request: Request):
             log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
             quick_categories = []
         log.info(f"Initial send for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
+        # In a thread, because a send that has to be retried waits. Recorded
+        # only once it has gone; if it hasn't, the follow-up loop sends it again
+        # (follow_up_tg.MISSED_CARD_AFTER).
         try:
-            bot.send_card(json.loads(body), quick_categories=quick_categories)
+            await asyncio.to_thread(bot.send_card, json.loads(body), quick_categories=quick_categories)
             record_request(con, transaction_id)
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)
@@ -570,7 +591,7 @@ async def recieve_telegram(request: Request):
                 bot.send_message(
                     chat_id,
                     f"✅ Approved <b>{proposed_sub}</b>.\n\n"
-                    "It'll be created and the listed transactions moved on the next daily run."
+                    "It'll be created and the listed transactions moved on the next run, within the hour."
                 )
             else:
                 bot.send_message(
@@ -673,11 +694,11 @@ async def recieve_telegram(request: Request):
                         )
                         con.execute("DELETE FROM rule_suggestions WHERE id = %s", [suggestion_id])
                         return {"ok": True}
-                    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
-                    con.execute(
+                    insert_with_next_id(
+                        con,
                         """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, subcategory_id)
-                           VALUES (%s, %s, %s, 'exact', %s, %s, %s)""",
-                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context, sub_id]
+                           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules), %s, %s, 'exact', %s, %s, %s) RETURNING id""",
+                        [f"Suggested: {match_value}", match_field, match_value, auto_context, sub_id], "rules",
                     )
                     con.execute(
                         "UPDATE rule_suggestions SET status = 'approved', decided_at = %s WHERE id = %s",
@@ -877,6 +898,7 @@ async def delete_transaction(transaction_id: str, request: Request, credentials:
         con.execute("DELETE FROM label_events WHERE txn_id = %s", [transaction_id])
         con.execute("DELETE FROM context_events WHERE txn_id = %s", [transaction_id])
         con.execute("DELETE FROM judge_reviews WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM transaction_updates WHERE txn_id = %s", [transaction_id])
         con.execute("DELETE FROM transactions_raw WHERE id = %s", [transaction_id])
     log.info(f"Transaction deleted from the dashboard: {transaction_id}")
     return RedirectResponse(url="/dashboard", status_code=303)
@@ -998,13 +1020,14 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
     con = get_con()
     rule = _rule_form(con, await request.form())
     if rule:
-        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
-        con.execute(
+        insert_with_next_id(
+            con,
             """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context,
                                   match_field_2, match_type_2, match_value_2, auto_skip, subcategory_id)
-               VALUES (%(id)s, %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
-                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)""",
-            {**rule, "id": next_id}
+               VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules), %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
+                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)
+               RETURNING id""",
+            rule, "rules",
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
@@ -1080,7 +1103,8 @@ def _get_test_transactions(con, limit: int | None = 100):
         rows = con.execute(sql + " ORDER BY t.received_at DESC LIMIT %s", [int(limit)]).fetchall()
     else:
         rows = con.execute(
-            sql + " WHERE t.received_at >= LOCALTIMESTAMP - INTERVAL '30 days' ORDER BY t.received_at DESC"
+            sql + " WHERE t.received_at >= (now() AT TIME ZONE 'Europe/London') - INTERVAL '30 days'"
+                  " ORDER BY t.received_at DESC"
         ).fetchall()
     txns = []
     for row in rows:

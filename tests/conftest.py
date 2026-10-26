@@ -40,7 +40,8 @@ def pg():
     import uuid
     import psycopg
     schema = f"test_{uuid.uuid4().hex[:12]}"
-    con = psycopg.connect(url, autocommit=True)
+    # UTC, as the app's own connections are -- whatever the test server's setting.
+    con = psycopg.connect(url, autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"CREATE SCHEMA {schema}")
     con.execute(f"SET search_path TO {schema}")
     con.execute(_PG_SCHEMA_PATH.read_text())
@@ -72,25 +73,12 @@ def db(pg):
     import psycopg
     import database_functions
     schema = pg.execute("SELECT current_schema()").fetchone()[0]
-    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True)
+    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"SET search_path TO {schema}")
     database_functions._con = con
     yield con
     con.close()
     database_functions._con = None
-
-
-@pytest.fixture
-def old_local_db():
-    """The PC's database as it was before the move: an in-memory DuckDB with
-    sql/tables.sql. Only the copy script, which reads that shape, needs it."""
-    con = duckdb.connect(":memory:")
-    for stmt in _SQL_PATH.read_text().split(";"):
-        s = stmt.strip()
-        if s:
-            con.execute(s)
-    yield con
-    con.close()
 
 
 @pytest.fixture(autouse=True)
@@ -106,6 +94,29 @@ def alert_post(monkeypatch):
     with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:
         yield post
     alerts._sent.clear()
+
+
+@pytest.fixture(autouse=True)
+def retry_waits(monkeypatch):
+    """Retries never really wait in a test. Yields the list of waits asked
+    for, so a test can check how long something would have waited."""
+    import monzo_oauth
+    import telegram
+    import worker
+    waits = []
+    for module in (telegram, monzo_oauth, worker):
+        monkeypatch.setattr(module, "_sleep", waits.append)
+    yield waits
+
+
+@pytest.fixture(autouse=True)
+def _fresh_worker(monkeypatch):
+    """Each test starts with a worker that has just started: no failing
+    streak, no alerts reset yet today, no check-in sent."""
+    import worker
+    monkeypatch.setattr(worker, "_failing_since", None)
+    monkeypatch.setattr(worker, "_alerts_day", None)
+    monkeypatch.setattr(worker, "_checked_in", None)
 
 
 @pytest.fixture(autouse=True)

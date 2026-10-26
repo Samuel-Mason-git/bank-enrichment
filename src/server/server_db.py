@@ -7,9 +7,9 @@ context_events, label_events), and the `transactions` view shows the latest of
 each. The helpers here are the one place those rows are written from, so every
 route records them the same way."""
 import json
+from datetime import datetime, timezone
 import logging
 import os
-import time
 
 import psycopg
 
@@ -25,6 +25,8 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Times are read and written in UTC whatever the server's own setting.
+        options="-c TimeZone=UTC",
     )
 
 
@@ -50,8 +52,23 @@ def init_db() -> None:
         _con.execute(f.read())
 
 
-def now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def insert_with_next_id(con, sql: str, params, table: str, attempts: int = 3) -> int:
+    """Run an INSERT whose id is (SELECT COALESCE(MAX(id), 0) + 1 FROM table),
+    ending RETURNING id, and return that id. Two writers at once (the worker,
+    a dashboard edit, the server) can pick the same one; the second then tries
+    again. Only a clash on the id itself is retried -- any other unique rule
+    broken (a name already taken) raises as it always has."""
+    for attempt in range(attempts):
+        try:
+            return con.execute(sql, params).fetchone()[0]
+        except psycopg.errors.UniqueViolation as e:
+            if e.diag.constraint_name != f"{table}_pkey" or attempt == attempts - 1:
+                raise
+
+
+def now() -> datetime:
+    """The time now, in UTC -- every time is stored zone-aware."""
+    return datetime.now(timezone.utc)
 
 
 # ── Recording what happened ──────────────────────────────────────────────────
@@ -122,8 +139,27 @@ def subcategory_id(con, category: str, subcategory_name: str) -> int | None:
 
 
 def payload(con, txn_id: str) -> dict | None:
-    row = con.execute("SELECT payload FROM transactions_raw WHERE id = %s", [txn_id]).fetchone()
+    """The transaction as it stands now (transaction_current)."""
+    row = con.execute("SELECT payload FROM transaction_current WHERE id = %s", [txn_id]).fetchone()
     return row[0] if row else None
+
+
+def record_update(con, txn_id: str, payload: dict, source: str) -> bool:
+    """Keep a later version of a transaction, unless it says nothing new: the
+    same as a version already stored (Monzo sends near-identical webhooks in a
+    burst). True if it was kept."""
+    seen = con.execute(
+        """SELECT EXISTS (SELECT 1 FROM transactions_raw WHERE id = %s AND payload = %s::jsonb)
+               OR EXISTS (SELECT 1 FROM transaction_updates WHERE txn_id = %s AND payload = %s::jsonb)""",
+        [txn_id, json.dumps(payload), txn_id, json.dumps(payload)],
+    ).fetchone()[0]
+    if seen:
+        return False
+    con.execute(
+        "INSERT INTO transaction_updates (txn_id, payload, source, received_at) VALUES (%s, %s, %s, %s)",
+        [txn_id, json.dumps(payload), source, now()],
+    )
+    return True
 
 
 def get_quick_categories(merchant_name: str | None) -> list[dict]:

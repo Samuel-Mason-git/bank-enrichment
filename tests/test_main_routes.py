@@ -280,11 +280,12 @@ class TestSkipUnskipDelete:
     def test_delete_removes_it_and_its_history(self, server_con):
         _insert_txn(server_con, "tx1", status="classified")
         _insert_txn(server_con, "tx2", status="pending")
+        server_con.execute("INSERT INTO transaction_updates (txn_id, payload, source) VALUES ('tx1', '{}', 'webhook')")
         with patch("main.get_con", return_value=server_con):
             resp = asyncio.run(main.delete_transaction("tx1", _req("POST"), _CREDS))
         assert resp.headers["location"] == "/dashboard"
         assert [r[0] for r in server_con.execute("SELECT id FROM transactions").fetchall()] == ["tx2"]
-        for table in ("context_events", "label_events"):
+        for table in ("context_events", "label_events", "transaction_updates"):
             assert server_con.execute(f"SELECT COUNT(*) FROM {table} WHERE txn_id = 'tx1'").fetchone()[0] == 0
 
 

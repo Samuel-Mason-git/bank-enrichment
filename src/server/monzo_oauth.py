@@ -16,6 +16,9 @@ import requests
 
 log = logging.getLogger(__name__)
 
+# Waits between retries -- a name of its own, so tests can skip them.
+_sleep = time.sleep
+
 BASE_DIR = os.path.dirname(__file__)
 TOKENS_PATH = os.path.join(BASE_DIR, "..", "..", "data", "monzo_oauth.json")
 AUTH_URL = "https://auth.monzo.com/"
@@ -149,28 +152,34 @@ def ping() -> bool:
     return response.status_code == 200
 
 
-def fetch_transaction(transaction_id: str) -> dict | None:
+def fetch_transaction(transaction_id: str, attempts: int = 2) -> dict | None:
     """One transaction as Monzo's API has it, with its merchant expanded -- or
     None if it can't be had (not authorized yet, an expired token, Monzo
     down). Never raises: a webhook mustn't fail over something it can do
-    without."""
-    try:
-        tokens = _load_tokens()
-        if not tokens:
-            return None
-        response = requests.get(
-            f"https://api.monzo.com/transactions/{transaction_id}",
-            params={"expand[]": "merchant"},
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
-            timeout=5,
-        )
-    except Exception as e:
-        log.warning(f"Couldn't fetch {transaction_id} from Monzo's API: {e}")
+    without. A failure that might pass (no connection, Monzo's 5xx) is tried
+    once more after a second; kept short, because a webhook is waiting."""
+    tokens = _load_tokens()
+    if not tokens:
         return None
-    if response.status_code != 200:
-        log.warning(f"Monzo's API answered {response.status_code} for {transaction_id}")
-        return None
-    return response.json().get("transaction")
+    for attempt in range(attempts):
+        try:
+            response = requests.get(
+                f"https://api.monzo.com/transactions/{transaction_id}",
+                params={"expand[]": "merchant"},
+                headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                timeout=5,
+            )
+        except Exception as e:
+            log.warning(f"Couldn't fetch {transaction_id} from Monzo's API (attempt {attempt + 1}/{attempts}): {e}")
+        else:
+            if response.status_code == 200:
+                return response.json().get("transaction")
+            log.warning(f"Monzo's API answered {response.status_code} for {transaction_id}")
+            if response.status_code < 500:
+                return None
+        if attempt < attempts - 1:
+            _sleep(1)
+    return None
 
 
 def run_monzo_refresh(bot) -> None:

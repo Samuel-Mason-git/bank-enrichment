@@ -10,7 +10,7 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 import html
 
 from alerts import send_telegram
-from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path, now
 
 LOG_PATH = log_path("monthly_summary.log")
 
@@ -117,7 +117,7 @@ def send_monthly_report(month_str: str, message: str) -> None:
         """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
            VALUES ('month', %s, %s, %s, %s, %s, %s, %s)""",
         [month_str, stats["total_spend"], stats["total_income"], stats["net"],
-         stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
+         stats["total_invested"], stats["total_saved"], now()]
     )
     log.info(f"Monthly report sent and recorded for {month_str}")
 

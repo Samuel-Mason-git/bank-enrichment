@@ -222,14 +222,16 @@ Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the 
 - **Current Queue** — paginated list of transactions with where each is up to, and inline controls to enrich, skip, unskip or delete. Each row links to a detail page with the full payload and all actions.
 - **Database view** at `/dashboard/db` — the latest raw transactions and context/label events
 
-A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
+A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped. A card that couldn't be sent (Telegram down, say) is sent again 10 minutes later; every send to Telegram is itself tried up to three times first.
+
+**Optional — an uptime monitor.** `https://your-name.duckdns.org/health` answers `{"ok": true}` while the server is up and can reach the database, and 503 when it can't. It needs no login and shows nothing else, so a free monitor (UptimeRobot, Better Stack and the like) can check it every few minutes and email you if the server goes down.
 
 ---
 
 ## Part 2 — Local Setup (the dashboard)
 
-The daily run happens on the server: Docker Compose starts a `worker` container next to the server, which
-runs the pipeline every morning at 08:00 London time (see step 5). Your own machine is for the dashboard, and
+The pipeline runs on the server: Docker Compose starts a `worker` container next to the server, which
+runs it every hour from 08:00 to 22:00 London time (see step 5). Your own machine is for the dashboard, and
 for running the pipeline by hand when you want to. Both reach the same database over the data box's
 WireGuard VPN. Import the config data-vault's
 `wg_add_device.sh` made for this machine into the WireGuard app and switch it on; it only routes
@@ -282,7 +284,7 @@ Then fill in at minimum the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` an
 
 ### 4. Run the Pipeline by Hand (optional)
 
-The worker runs it every morning (step 5); this is for when you don't want to wait:
+The worker runs it every hour through the day (step 5); this is for when you don't want to wait:
 ```bash
 poetry run python src/pipeline/process.py
 ```
@@ -309,16 +311,22 @@ Log files are written to `logs/` in the repo (or `LOG_DIR`; on the server, `data
 
 `llm_labelling.py` can also be run standalone at any time if you only want to classify.
 
-### 5. The Daily Run on the Server
+### 5. The Runs on the Server
 
 Nothing to set up: `docker compose up -d` (and every deploy) starts the `worker` container alongside the
-server. It runs the pipeline at **08:00 London time** every day, with the same `config/.env` as the server
+server. It runs the pipeline **every hour on the hour from 08:00 to 22:00 London time**, and not overnight,
+so no card arrives at 3am. A run with nothing new to do makes no Claude calls, so the extra runs cost
+nothing. The weekly and monthly summaries go out in the morning's first run. It uses the same `config/.env` as the server
 (it needs `CLAUDE_SECRET` there too), and is capped at 350 MB of memory so a run can never starve the
 webhooks.
 
 - **See what it did:** `data/logs/bank_enrichment.log` on the server, or `docker compose logs worker`.
 - **Run it now** instead of waiting: `docker compose exec worker python src/pipeline/worker.py --now`.
-- **If a run can't start or crashes**, you get a Telegram alert, and it tries again the next morning.
+- **If a run can't reach the database or crashes**, you get one Telegram alert, and it tries again the next
+  hour. It doesn't repeat the alert every hour; it tells you once runs work again.
+- **The same kind of alert** (out of Claude credit, say) is sent at most once a day.
+- **On Sundays** it sends a short "all fine", with what's waiting on you. No Sunday message means
+  something's wrong.
 
 ### 6. View the Dashboard
 

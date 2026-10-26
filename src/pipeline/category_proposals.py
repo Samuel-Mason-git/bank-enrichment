@@ -23,17 +23,16 @@ there is no minimum size -- one transaction is reason enough to ask.
 """
 import json
 import logging
-import time
 
 from psycopg.types.json import Jsonb
 
-from database_functions import get_con, release_holds, update_classification
+from database_functions import get_con, insert_with_next_id, now, release_holds, update_classification
 
 log = logging.getLogger(__name__)
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def _now():
+    return now()
 
 
 # ── Denial memory (threaded into the classifier prompts) ───────────────────────
@@ -150,11 +149,12 @@ def register_group(options: list[dict], txn_ids: list[str]) -> tuple[int, bool]:
                         [Jsonb(held), Jsonb(_examples(con, held)), pid])
             return pid, False
 
-    proposal_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals").fetchone()[0]
-    con.execute(
+    proposal_id = insert_with_next_id(
+        con,
         """INSERT INTO category_proposals (id, options, txn_ids, examples, status, proposed_at)
-           VALUES (%s, %s, %s, %s, 'pending', %s)""",
-        [proposal_id, json.dumps(options), json.dumps(list(txn_ids)), json.dumps(_examples(con, txn_ids)), _now()],
+           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM category_proposals), %s, %s, %s, 'pending', %s) RETURNING id""",
+        [json.dumps(options), json.dumps(list(txn_ids)), json.dumps(_examples(con, txn_ids)), _now()],
+        "category_proposals",
     )
     return proposal_id, True
 

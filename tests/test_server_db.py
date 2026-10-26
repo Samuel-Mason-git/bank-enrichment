@@ -72,7 +72,7 @@ class TestRecordingHistory:
         server_con.execute("INSERT INTO context_events (txn_id, user_context, created_at_override, source) "
                            "VALUES ('tx_1', 'x', '2026-09-30 09:00', 'dashboard')")
         record_context(server_con, "tx_1", "y", source="telegram")
-        assert str(transaction(server_con)["created_at"]) == "2026-09-30 09:00:00"
+        assert str(transaction(server_con)["created_at"]) == "2026-09-30 10:00:00"  # 09:00 UTC, in London (BST)
 
     def test_your_context_clears_a_rules_label(self, server_con):
         seed_taxonomy(server_con)

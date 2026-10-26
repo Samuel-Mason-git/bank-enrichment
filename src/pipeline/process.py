@@ -1,5 +1,5 @@
-"""The pipeline's daily run -- the worker on the server runs it every morning
-(worker.py), and it's safe to run by hand too.
+"""One run of the pipeline -- the worker on the server runs it every hour
+through the day (worker.py), and it's safe to run by hand too.
 
 The server stores every transaction as it arrives and records your answers,
 so there's nothing to fetch: this works through what's waiting in the shared
@@ -35,6 +35,9 @@ log = logging.getLogger(__name__)
 # lock, held by this run's connection and gone when it ends or drops.
 RUN_LOCK = "bank_enrichment.process"
 
+# What main() returns.
+RAN, NO_DATABASE, ALREADY_RUNNING = 0, 1, 2
+
 
 def _take_run_lock() -> bool:
     return get_con().execute("SELECT pg_try_advisory_lock(hashtext(%s))", [RUN_LOCK]).fetchone()[0]
@@ -45,8 +48,8 @@ def _release_run_lock() -> None:
 
 
 def main() -> int:
-    """One run. 0 if it ran, 1 if it couldn't start (no database, or another
-    run already going). A step that fails is logged and the rest still run."""
+    """One run: RAN, or NO_DATABASE / ALREADY_RUNNING if it couldn't start. A
+    step that fails is logged and the rest still run."""
     run_start = time.time()
     log.info("--- Process run started ---")
 
@@ -56,17 +59,17 @@ def main() -> int:
         log.info(f"Database ready ({time.time() - t0:.2f}s)")
     except Exception as e:
         log.error(f"Couldn't connect to the database (is the VPN up?): {e}", exc_info=True)
-        return 1
+        return NO_DATABASE
 
     if not _take_run_lock():
         log.warning("Another run is already in progress -- not starting a second one")
-        return 1
+        return ALREADY_RUNNING
     try:
         _steps()
     finally:
         _release_run_lock()
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
-    return 0
+    return RAN
 
 
 def _steps() -> None:

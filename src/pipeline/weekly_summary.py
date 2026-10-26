@@ -10,7 +10,7 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 import html
 
 from alerts import send_telegram
-from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path, now
 
 LOG_PATH = log_path("weekly_summary.log")
 
@@ -44,12 +44,6 @@ def _week_bounds(week_key: str) -> tuple[date, date]:
     monday = date.fromisocalendar(year, week, 1)
     sunday = date.fromisocalendar(year, week, 7)
     return monday, sunday
-
-
-def _prev_week(week_key: str) -> str:
-    monday, _ = _week_bounds(week_key)
-    prev_monday = monday - timedelta(days=7)
-    return _week_key(prev_monday)
 
 
 def get_missing_weeks() -> list[str]:
@@ -154,7 +148,7 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
         """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
            VALUES ('week', %s, %s, %s, %s, %s, %s, %s)""",
         [week_key, stats["total_spend"], stats["total_income"], stats["net"],
-         stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
+         stats["total_invested"], stats["total_saved"], now()]
     )
     log.info(f"Weekly report sent and recorded for {week_key}")
 

@@ -10,7 +10,9 @@ import os
 import shutil
 import statistics
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import psycopg
 from dotenv import load_dotenv
@@ -22,6 +24,9 @@ log = logging.getLogger(__name__)
 
 _con: psycopg.Connection | None = None
 _read_only = False
+
+# What "a day" means to the dashboards and summaries (the views show London time).
+LONDON = ZoneInfo("Europe/London")
 
 # What a parent category counts as when no role has been set for it -- the same
 # defaults the transaction_roles view uses (sql/postgres/schema.sql).
@@ -47,6 +52,8 @@ def _connect(read_only: bool = False) -> psycopg.Connection:
     con = psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Times are read and written in UTC whatever the server's own setting.
+        options="-c TimeZone=UTC",
     )
     if read_only:
         con.execute("SET default_transaction_read_only = on")
@@ -180,25 +187,6 @@ def get_unclassified() -> list[dict]:
     return _rows("SELECT * FROM needs_label ORDER BY created_at DESC")
 
 
-def get_by_category(category: str) -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions WHERE llm_category = %s ORDER BY created_at DESC",
-        [category]
-    )
-
-
-def get_skipped() -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions WHERE skipped = TRUE ORDER BY created_at DESC"
-    )
-
-
-def get_recent(n: int = 10) -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions ORDER BY created_at DESC LIMIT %s", [n]
-    )
-
-
 def get_parents() -> list[dict]:
     """Live parent categories, with how many transactions each holds."""
     return _rows(
@@ -284,8 +272,12 @@ def get_stats() -> dict:
 
 # ── Writing history ───────────────────────────────────────────────────────────
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def now() -> datetime:
+    """The time now, in UTC -- every time is stored zone-aware."""
+    return datetime.now(timezone.utc)
+
+
+_now = now
 
 
 # What each kind of classification is recorded as. Anything else came from the
@@ -294,6 +286,20 @@ _SOURCE_BY_MODEL = {
     "quick-tap": "quick_tap", "rule": "rule", "category-proposal": "proposal",
     "taxonomy-proposal": "proposal", "manual": "manual", "judge": "judge",
 }
+
+
+def insert_with_next_id(con, sql: str, params, table: str, attempts: int = 3) -> int:
+    """Run an INSERT whose id is (SELECT COALESCE(MAX(id), 0) + 1 FROM table),
+    ending RETURNING id, and return that id. Two writers at once (the worker,
+    a dashboard edit, the server) can pick the same one; the second then tries
+    again. Only a clash on the id itself is retried -- any other unique rule
+    broken (a name already taken) raises as it always has."""
+    for attempt in range(attempts):
+        try:
+            return con.execute(sql, params).fetchone()[0]
+        except psycopg.errors.UniqueViolation as e:
+            if e.diag.constraint_name != f"{table}_pkey" or attempt == attempts - 1:
+                raise
 
 
 def label_ids(category: str | None, subcategory: str | None) -> tuple[int | None, int | None]:
@@ -382,12 +388,13 @@ def update_transaction_details(transaction_id: str, created_at, user_context: st
     skipped, monzo_created = current
     override = None
     if created_at:
-        from datetime import datetime, timezone
+        # A date typed in the dashboard is London time, as the dashboard shows it.
         wanted = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
-        monzo = (datetime.fromisoformat(monzo_created).astimezone(timezone.utc).replace(tzinfo=None)
-                 if monzo_created else None)
-        if wanted.replace(tzinfo=None) != monzo:
-            override = wanted.replace(tzinfo=None)
+        if wanted.tzinfo is None:
+            wanted = wanted.replace(tzinfo=LONDON)
+        monzo = datetime.fromisoformat(monzo_created.replace("Z", "+00:00")) if monzo_created else None
+        if monzo is None or wanted != monzo:
+            override = wanted
     con.execute(
         """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
            VALUES (%s, %s, %s, %s, 'dashboard', %s)""",
@@ -505,14 +512,11 @@ def upsert_parent(name: str) -> int:
     ).fetchone()
     if row:
         return row[0]
-    next_id = con.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories"
-    ).fetchone()[0]
-    con.execute(
-        "INSERT INTO parent_categories (id, name, created_at) VALUES (%s, %s, %s)",
-        [next_id, name, _now()]
+    return insert_with_next_id(
+        con,
+        "INSERT INTO parent_categories (id, name, created_at) VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories), %s, %s) RETURNING id",
+        [name, _now()], "parent_categories",
     )
-    return next_id
 
 
 def upsert_subcategory(name: str, parent_id: int) -> int:
@@ -524,14 +528,11 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     ).fetchone()
     if row:
         return row[0]
-    next_id = con.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories"
-    ).fetchone()[0]
-    con.execute(
-        "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (%s, %s, %s, %s)",
-        [next_id, name, parent_id, _now()]
+    return insert_with_next_id(
+        con,
+        "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories), %s, %s, %s) RETURNING id",
+        [name, parent_id, _now()], "subcategories",
     )
-    return next_id
 
 
 # ── Editing the taxonomy (the dashboard's Settings tab) ───────────────────────
@@ -549,7 +550,7 @@ def _clear_labels_where(condition: str, params: list, keep_parent: bool = False)
     con.execute(
         f"""INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, set_at)
             SELECT id, {'parent_id' if keep_parent else 'NULL'}, NULL, 'manual', %s
-            FROM transactions WHERE {condition}""",
+            FROM transactions WHERE {condition} ORDER BY id""",
         [_now(), *params],
     )
     return count
@@ -608,7 +609,7 @@ def move_all_transactions(from_subcategory_id: int, to_subcategory_id: int) -> i
                         [from_subcategory_id]).fetchone()[0]
     con.execute(
         """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, set_at)
-           SELECT id, %s, %s, 'manual', 'manual', %s FROM transactions WHERE subcategory_id = %s""",
+           SELECT id, %s, %s, 'manual', 'manual', %s FROM transactions WHERE subcategory_id = %s ORDER BY id""",
         [parent_id, to_subcategory_id, _now(), from_subcategory_id],
     )
     return count
@@ -714,12 +715,12 @@ def get_subscriptions() -> list[dict]:
 
 def upsert_subscription(name: str, amount: float, frequency: str, merchant_name: str | None = None) -> int:
     con = get_con()
-    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions").fetchone()[0]
-    con.execute(
-        "INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at) VALUES (%s, %s, %s, %s, %s, TRUE, %s)",
-        [next_id, name, merchant_name, amount, frequency, _now()]
+    return insert_with_next_id(
+        con,
+        """INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at)
+           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions), %s, %s, %s, %s, TRUE, %s) RETURNING id""",
+        [name, merchant_name, amount, frequency, _now()], "subscriptions",
     )
-    return next_id
 
 
 def update_subscription(sub_id: int, name: str, amount: float, frequency: str, merchant_name: str | None = None) -> None:
@@ -750,7 +751,7 @@ MANIFEST_NAME = "manifest.json"
 # Every table there is, so a backup is the whole of it. The views are left out:
 # they store nothing, and come back with sql/postgres/schema.sql.
 BACKUP_TABLES = [
-    "transactions_raw", "context_events", "label_events",
+    "transactions_raw", "transaction_updates", "context_events", "label_events",
     "parent_categories", "subcategories", "category_roles",
     "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
     "judge_reviews", "subscriptions", "summaries",

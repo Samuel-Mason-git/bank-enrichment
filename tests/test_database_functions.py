@@ -3,7 +3,7 @@ import pytest
 import database_functions
 from database_functions import (
     get_con, get_transaction, get_all_transactions,
-    get_unclassified, get_recent, get_stats,
+    get_unclassified, get_stats,
     upsert_parent, upsert_subcategory, get_parents, get_subcategories,
     get_subscriptions, upsert_subscription, toggle_subscription,
     delete_subscription, search, _rows,
@@ -86,14 +86,6 @@ class TestWriteAndRead:
     def test_get_all_transactions_returns_all(self, db):
         write_to_db([_txn("tx_001"), _txn("tx_002")])
         assert len(get_all_transactions()) == 2
-
-    def test_get_recent_limits_results(self, db):
-        write_to_db([_txn(f"tx_{i:03d}") for i in range(5)])
-        assert len(get_recent(3)) == 3
-
-    def test_get_recent_default_is_ten(self, db):
-        write_to_db([_txn(f"tx_{i:03d}") for i in range(15)])
-        assert len(get_recent()) == 10
 
     def test_skipped_flag_stored(self, db):
         write_to_db([_txn(skipped=True)])

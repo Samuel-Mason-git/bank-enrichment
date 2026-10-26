@@ -21,7 +21,7 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-from database_functions import get_con, init_db
+from database_functions import get_con, init_db, insert_with_next_id, now
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -258,13 +258,6 @@ def full_taxonomy() -> dict[str, list[str]]:
     return taxonomy
 
 
-def taken_category_names() -> set[str]:
-    con = get_con()
-    names = {r[0] for r in con.execute("SELECT name FROM parent_categories WHERE archived_at IS NULL").fetchall()}
-    names |= {r[0] for r in con.execute("SELECT name FROM subcategories WHERE archived_at IS NULL").fetchall()}
-    return {n.lower() for n in names}
-
-
 def already_reviewed(key: str) -> bool:
     return get_con().execute(
         "SELECT COUNT(*) FROM taxonomy_proposals WHERE run_key = %s", [key]
@@ -331,18 +324,19 @@ def store_proposals(proposals: list[dict], key: str) -> list[dict]:
     con.execute("UPDATE taxonomy_proposals SET status = 'expired' WHERE status = 'pending'")
     stored = []
     for p in proposals:
-        next_id = con.execute(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM taxonomy_proposals").fetchone()[0]
-        con.execute(
+        proposal_id = insert_with_next_id(
+            con,
             """INSERT INTO taxonomy_proposals
                (id, parent_name, source_sub, action, target_parent, proposed_sub,
                 rationale, evidence_ids, examples, status, proposed_at, run_key)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)""",
-            [next_id, p["parent_name"], p["source_sub"], p["action"], p["target_parent"],
+               VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM taxonomy_proposals), %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+               RETURNING id""",
+            [p["parent_name"], p["source_sub"], p["action"], p["target_parent"],
              p["target_sub"], p["rationale"], json.dumps(p["evidence_ids"]),
-             json.dumps(p.get("examples", [])), time.strftime("%Y-%m-%d %H:%M:%S"), key],
+             json.dumps(p.get("examples", [])), now(), key],
+            "taxonomy_proposals",
         )
-        stored.append({**p, "id": next_id})
+        stored.append({**p, "id": proposal_id})
     return stored
 
 
@@ -351,15 +345,14 @@ def _record_empty_run(key: str) -> None:
     re-runs on every pipeline pass for the rest of the month. Stored as an
     already-expired sentinel row so it never reaches Telegram."""
     con = get_con()
-    next_id = con.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM taxonomy_proposals").fetchone()[0]
-    con.execute(
+    insert_with_next_id(
+        con,
         """INSERT INTO taxonomy_proposals
            (id, parent_name, source_sub, action, target_parent, proposed_sub,
             rationale, evidence_ids, status, proposed_at, run_key)
-           VALUES (%s, '—', '—', 'create', '—', %s,
-                   'No clusters met the guardrails.', '[]', 'expired', %s, %s)""",
-        [next_id, f"(no proposals {key})", time.strftime("%Y-%m-%d %H:%M:%S"), key],
+           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM taxonomy_proposals), '—', '—', 'create', '—', %s,
+                   'No clusters met the guardrails.', '[]', 'expired', %s, %s) RETURNING id""",
+        [f"(no proposals {key})", now(), key], "taxonomy_proposals",
     )
 
 
@@ -417,7 +410,7 @@ def collect_decisions() -> int:
         try:
             apply_approved(proposal)
             con.execute("UPDATE taxonomy_proposals SET status = 'applied', applied_at = %s WHERE id = %s",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), proposal["id"]])
+                        [now(), proposal["id"]])
             applied += 1
         except Exception as e:
             log.error(f"Failed to apply taxonomy decision {proposal['id']}: {e}", exc_info=True)

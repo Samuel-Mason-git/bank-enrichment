@@ -1,7 +1,8 @@
 """Monzo fires several webhooks per payment within half a second, in no set
-order, and only the first is kept. Since mid-October 2026 the first has usually
-been a transaction.updated with merchant: null -- so a card payment arriving
-without a merchant is looked up in Monzo's API, which has it.
+order, and the rules and the card are decided from the first. Since mid-October
+2026 the first has usually been a transaction.updated with merchant: null -- so
+a card payment arriving without a merchant is looked up in Monzo's API, which
+has it, and the answer kept as an update (the first version stays as it was).
 
 Real case: Sainsbury's on 25 Oct, five webhooks in 0.33s; the stored one said
 merchant: null, the API said 'Sainsbury S Milton Key'."""
@@ -48,8 +49,9 @@ def _post(server_con, req, fetched=None, bot=None):
 
 
 def _stored_merchant(server_con, txn_id="tx_1"):
+    """The merchant as the transaction stands now."""
     payload = server_con.execute(
-        "SELECT payload FROM transactions_raw WHERE id = %s", [txn_id]).fetchone()[0]
+        "SELECT payload FROM transaction_current WHERE id = %s", [txn_id]).fetchone()[0]
     return payload["data"]["merchant"]
 
 
@@ -59,9 +61,16 @@ class TestACardPaymentWithoutAMerchant:
         fetch.assert_called_once_with("tx_1")
         assert _stored_merchant(server_con)["name"] == "Sainsbury S Milton Key"
 
-    def test_the_payload_keeps_monzos_own_shape(self, server_con):
+    def test_the_first_version_stays_exactly_as_it_arrived(self, server_con):
         _post(server_con, _webhook(), fetched=API_TRANSACTION)
-        payload = server_con.execute("SELECT payload FROM transactions_raw").fetchone()[0]
+        first = server_con.execute("SELECT payload FROM transactions_raw").fetchone()[0]
+        assert first["data"]["merchant"] is None
+        source, update = server_con.execute("SELECT source, payload FROM transaction_updates").fetchone()
+        assert source == "api" and update["data"]["merchant"]["name"] == "Sainsbury S Milton Key"
+
+    def test_the_update_keeps_monzos_own_shape(self, server_con):
+        _post(server_con, _webhook(), fetched=API_TRANSACTION)
+        payload = server_con.execute("SELECT payload FROM transaction_updates").fetchone()[0]
         assert payload["type"] == "transaction.updated"
         assert payload["data"]["id"] == "tx_1"
 
@@ -80,6 +89,7 @@ class TestACardPaymentWithoutAMerchant:
     def test_an_api_answer_with_no_merchant_either_changes_nothing(self, server_con):
         _post(server_con, _webhook(), fetched=dict(API_TRANSACTION, merchant=None))
         assert _stored_merchant(server_con) is None
+        assert server_con.execute("SELECT COUNT(*) FROM transaction_updates").fetchone()[0] == 0
 
     def test_an_unusable_api_answer_keeps_the_webhooks_copy(self, server_con):
         broken = {"merchant": {"name": "X"}}  # missing every required field
@@ -102,6 +112,8 @@ class TestNoLookupWhenThereIsNothingToFind:
         _post(server_con, _webhook(), fetched=API_TRANSACTION)
         fetch, _, _ = _post(server_con, _webhook(), fetched=API_TRANSACTION)
         fetch.assert_not_called()
+        assert server_con.execute("SELECT COUNT(*) FROM transaction_updates").fetchone()[0] == 1, \
+            "a repeat of the first webhook says nothing new"
 
 
 class TestFetchTransaction:
