@@ -9,14 +9,17 @@ log = logging.getLogger(__name__)
 class RuleMatch(NamedTuple):
     context: str | None
     skip: bool
-    # Both set only when the rule fixes a placement -- the local pipeline then
-    # files the transaction there instead of classifying it.
+    # Set only when the rule fixes a placement: the transaction is filed there
+    # instead of being classified. The names are for messages and the context
+    # line; the id is what's recorded.
     category: str | None = None
     subcategory: str | None = None
+    subcategory_id: int | None = None
+    parent_id: int | None = None
 
     @property
     def matched(self) -> bool:
-        return bool(self.context or self.skip or self.category)
+        return bool(self.context or self.skip or self.subcategory_id)
 
 
 NO_MATCH = RuleMatch(None, False)
@@ -65,14 +68,27 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
         return int(field_value) > 0
     return False
 
+
 def check_rules(data) -> RuleMatch:
+    """The first enabled rule (lowest id) that matches. A fixed placement whose
+    category has since been archived is ignored, leaving the transaction for the
+    classifier rather than filing it somewhere that no longer exists."""
     con = get_con()
     rules = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory FROM rules WHERE enabled = TRUE"
+        """SELECT r.id, r.name, r.match_field, r.match_type, r.match_value, r.auto_context,
+                  r.match_field_2, r.match_type_2, r.match_value_2, r.auto_skip,
+                  p.name, s.name, s.id, p.id
+           FROM rules r
+           LEFT JOIN subcategories s ON s.id = r.subcategory_id AND s.archived_at IS NULL
+           LEFT JOIN parent_categories p ON p.id = s.parent_id AND p.archived_at IS NULL
+           WHERE r.enabled
+           ORDER BY r.id"""
     ).fetchall()
 
     for rule in rules:
-        rule_id, name, match_field, match_type, match_value, auto_context, _, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory = rule
+        (rule_id, name, match_field, match_type, match_value, auto_context,
+         match_field_2, match_type_2, match_value_2, auto_skip,
+         category, subcategory, subcategory_id, parent_id) = rule
 
         try:
             field_value = _extract_field(data, match_field)
@@ -87,11 +103,8 @@ def check_rules(data) -> RuleMatch:
             log.warning(f"Rule {rule_id} ('{name}') failed to evaluate and was skipped: {e}")
             continue
 
-        # Only a complete pair is a placement -- a category on its own would
-        # file the transaction under a parent with no subcategory.
-        if category and subcategory:
-            return RuleMatch(auto_context or None, bool(auto_skip), category, subcategory)
+        if subcategory_id and parent_id:
+            return RuleMatch(auto_context or None, bool(auto_skip), category, subcategory, subcategory_id, parent_id)
         return RuleMatch(auto_context or None, bool(auto_skip))
 
     return NO_MATCH
-

@@ -24,7 +24,7 @@
         </div>
         <div class="stat-card processed">
             <div class="value">{{ total_processed }}</div>
-            <div class="label">Processed</div>
+            <div class="label">Classified</div>
         </div>
     </div>
 
@@ -44,9 +44,10 @@
         <form method="get" action="/dashboard" class="queue-filter-form" id="filter-form">
             <input type="text" name="search" value="{{ search }}" placeholder="Search ID, merchant, description…" class="queue-search-input">
             <select name="status" class="queue-filter-select" onchange="document.getElementById('filter-form').submit()">
-                <option value="" {% if not status_filter %}selected{% endif %}>All statuses</option>
+                <option value="" {% if not status_filter %}selected{% endif %}>Needs something</option>
                 <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>Pending</option>
                 <option value="enriched" {% if status_filter == 'enriched' %}selected{% endif %}>Enriched</option>
+                <option value="classified" {% if status_filter == 'classified' %}selected{% endif %}>Classified</option>
                 <option value="skipped" {% if status_filter == 'skipped' %}selected{% endif %}>Skipped</option>
             </select>
             <button type="submit" class="btn-row-enrich">Filter</button>
@@ -58,12 +59,6 @@
             <label class="auto-refresh-label">
                 <input type="checkbox" id="auto-refresh-toggle"> Auto-refresh
             </label>
-            <form method="post" action="/dashboard/bulk/requeue-pending" onsubmit="return confirm('Reset all pending transactions?')">
-                <button type="submit" class="btn-row-enrich">↩ Re-queue pending</button>
-            </form>
-            <form method="post" action="/dashboard/bulk/delete-skipped" onsubmit="return confirm('Delete ALL skipped transactions? This cannot be undone.')">
-                <button type="submit" class="btn-row-delete">✕ Delete skipped</button>
-            </form>
         </div>
     </div>
 

@@ -1,38 +1,22 @@
 """Tests for the recurring-pattern rule suggester (local side)."""
 from unittest.mock import MagicMock, patch
 
-from database_functions import write_to_db
 import rule_suggestions
+from tests.local_helpers import insert_transaction
 
 
-def _txn(id, merchant=None, counterparty=None, category=None, subcategory=None,
-         user_context=None, skipped=False):
-    return {
-        "id": id,
-        "payload": {"data": {
-            "amount": -1000, "currency": "GBP", "description": "desc",
-            "merchant": {"name": merchant} if merchant else None,
-            "counterparty": {"name": counterparty} if counterparty else {},
-            "is_load": False,
-            "created": "2026-01-01T10:00:00", "settled": "2026-01-01T10:00:00",
-        }},
-        "user_context": user_context, "skipped": skipped,
-        "received_at": "2026-01-01T10:00:01", "enriched_at": "2026-01-01T10:00:02",
-    }
-
-
-def _classify(con, txn_id, category, subcategory):
-    con.execute(
-        "UPDATE transactions SET llm_category = ?, llm_subcategory = ?, classified_at = NOW() WHERE id = ?",
-        [category, subcategory, txn_id],
-    )
+def _add(con, n, merchant=None, counterparty=None, category="Food & Drink", subcategory="Groceries",
+         user_context=None, skipped=False, start=0):
+    """n transactions with the same merchant/counterparty, all filed the same way."""
+    for i in range(start, start + n):
+        insert_transaction(con, f"tx{i}", merchant_name=merchant, counterparty_name=counterparty,
+                           user_context=user_context, skipped=skipped,
+                           llm_category=category, llm_subcategory=subcategory)
 
 
 class TestFindCandidates:
     def test_five_consistent_occurrences_qualify(self, db):
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        _add(db, 5, merchant="Tesco")
         candidates = rule_suggestions.find_candidates()
         assert len(candidates) == 1
         c = candidates[0]
@@ -43,54 +27,40 @@ class TestFindCandidates:
         assert c["txn_count"] == 5
 
     def test_four_occurrences_do_not_qualify(self, db):
-        for i in range(4):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        _add(db, 4, merchant="Tesco")
         assert rule_suggestions.find_candidates() == []
 
     def test_inconsistent_category_does_not_qualify(self, db):
         """Four as Groceries, one as Household -- not a reliable pattern,
         even though the merchant repeats 5 times."""
-        for i in range(4):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
-        write_to_db([_txn("tx4", merchant="Tesco")])
-        _classify(db, "tx4", "Household", "Supplies")
+        _add(db, 4, merchant="Tesco")
+        _add(db, 1, merchant="Tesco", category="Household", subcategory="Supplies", start=4)
         assert rule_suggestions.find_candidates() == []
 
     def test_falls_back_to_counterparty_name_when_no_merchant(self, db):
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", counterparty="A Friend")])
-            _classify(db, f"tx{i}", "Transfers", "Inbound Transfer")
+        _add(db, 5, counterparty="A Friend", category="Transfers", subcategory="Inbound Transfer")
         candidates = rule_suggestions.find_candidates()
         assert len(candidates) == 1
         assert candidates[0]["match_field"] == "counterparty_name"
         assert candidates[0]["match_value"] == "A Friend"
 
     def test_skipped_transactions_are_excluded(self, db):
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco", skipped=True)])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        _add(db, 5, merchant="Tesco", skipped=True)
         assert rule_suggestions.find_candidates() == []
 
     def test_no_merchant_or_counterparty_is_excluded(self, db):
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        _add(db, 5)
         assert rule_suggestions.find_candidates() == []
 
     def test_dominant_context_is_reused(self, db):
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco", user_context="Weekly shop")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+        _add(db, 5, merchant="Tesco", user_context="Weekly shop")
         candidates = rule_suggestions.find_candidates()
         assert candidates[0]["auto_context"] == "Weekly shop"
 
     def test_no_dominant_context_falls_back_to_a_generic_one(self, db):
         contexts = ["Shop A", "Shop B", "Shop C", "Shop D", "Shop E"]
         for i, ctx in enumerate(contexts):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco", user_context=ctx)])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
+            _add(db, 1, merchant="Tesco", user_context=ctx, start=i)
         candidates = rule_suggestions.find_candidates()
         assert candidates[0]["auto_context"] == "Tesco purchase"
 
@@ -109,64 +79,99 @@ class TestDominantContext:
         assert rule_suggestions._dominant_context([]) is None
 
 
+def _suggested(con):
+    return [r[0] for r in con.execute("SELECT match_value FROM rule_suggestions ORDER BY id").fetchall()]
+
+
 class TestSyncCandidates:
-    """filter_worth_a_rule is patched to a pass-through in every test here --
-    it's an LLM call, covered on its own merits by TestFilterWorthARule, and
-    these tests are only about what sync_candidates does with what comes
-    back from it."""
+    """filter_worth_a_rule is patched in every test here -- it's an LLM call,
+    covered on its own by TestFilterWorthARule; these are about what
+    sync_candidates does with what comes back."""
 
     def _pass_through(self, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
         monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: candidates)
 
-    def test_posts_every_candidate_and_returns_the_count(self, db, monkeypatch):
+    def test_stores_a_pending_suggestion_for_the_server_to_send(self, db, monkeypatch):
         self._pass_through(monkeypatch)
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
-        mock_resp = MagicMock(status_code=200)
-        with patch("rule_suggestions.requests.post", return_value=mock_resp) as mock_post:
-            result = rule_suggestions.sync_candidates()
-        assert result == 1
-        assert mock_post.call_args.kwargs["json"]["candidates"][0]["match_value"] == "Tesco"
+        _add(db, 5, merchant="Tesco")
+        assert rule_suggestions.sync_candidates() == 1
+        row = db.execute(
+            "SELECT match_field, category, subcategory, txn_count, status, sent_at FROM rule_suggestions"
+        ).fetchone()
+        assert row == ("merchant_name", "Food & Drink", "Groceries", 5, "pending", None)
 
-    def test_no_candidates_means_no_request(self, db, monkeypatch):
+    def test_no_candidates_means_nothing_stored(self, db, monkeypatch):
         self._pass_through(monkeypatch)
-        with patch("rule_suggestions.requests.post") as mock_post:
-            result = rule_suggestions.sync_candidates()
-        assert result == 0
-        mock_post.assert_not_called()
+        assert rule_suggestions.sync_candidates() == 0
+        assert _suggested(db) == []
 
-    def test_404_is_treated_as_not_yet_deployed(self, db, monkeypatch):
+    def test_a_pattern_is_only_ever_suggested_once(self, db, monkeypatch):
         self._pass_through(monkeypatch)
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
-        mock_resp = MagicMock(status_code=404)
-        with patch("rule_suggestions.requests.post", return_value=mock_resp):
-            result = rule_suggestions.sync_candidates()
-        assert result == 0
+        _add(db, 5, merchant="Tesco")
+        rule_suggestions.sync_candidates()
+        db.execute("UPDATE rule_suggestions SET status = 'denied'")
+        assert rule_suggestions.sync_candidates() == 0
+        assert _suggested(db) == ["Tesco"]
 
-    def test_missing_claude_secret_skips_without_calling_the_llm_or_posting(self, db, monkeypatch):
-        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", None)
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
-        with patch("rule_suggestions.filter_worth_a_rule") as mock_filter, \
-             patch("rule_suggestions.requests.post") as mock_post:
-            result = rule_suggestions.sync_candidates()
-        assert result == 0
+    def test_already_asked_patterns_never_reach_the_llm(self, db, monkeypatch):
+        """The dedupe runs before the worthiness check, so Claude isn't paid
+        to judge the same pattern twice."""
+        self._pass_through(monkeypatch)
+        _add(db, 5, merchant="Tesco")
+        rule_suggestions.sync_candidates()
+        with patch("rule_suggestions.filter_worth_a_rule") as mock_filter:
+            rule_suggestions.sync_candidates()
         mock_filter.assert_not_called()
-        mock_post.assert_not_called()
 
-    def test_llm_rejecting_every_candidate_means_no_request(self, db, monkeypatch):
+    def test_a_pattern_an_enabled_rule_already_catches_is_dropped(self, db, monkeypatch):
+        self._pass_through(monkeypatch)
+        _add(db, 5, merchant="Tesco Express")
+        db.execute("INSERT INTO rules (id, name, match_field, match_type, match_value) "
+                   "VALUES (1, 'Tesco', 'merchant_name', 'contains', 'tesco')")
+        assert rule_suggestions.sync_candidates() == 0
+
+    def test_a_disabled_or_two_condition_rule_doesnt_count(self, db, monkeypatch):
+        self._pass_through(monkeypatch)
+        _add(db, 5, merchant="Tesco")
+        db.execute("INSERT INTO rules (id, name, match_field, match_type, match_value, enabled) "
+                   "VALUES (1, 'Off', 'merchant_name', 'exact', 'Tesco', FALSE)")
+        db.execute("INSERT INTO rules (id, name, match_field, match_type, match_value, "
+                   "match_field_2, match_type_2, match_value_2) "
+                   "VALUES (2, 'Two', 'merchant_name', 'exact', 'Tesco', 'amount', 'gt', '5')")
+        assert rule_suggestions.sync_candidates() == 1
+
+    def test_missing_claude_secret_skips_without_calling_the_llm(self, db, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", None)
+        _add(db, 5, merchant="Tesco")
+        with patch("rule_suggestions.filter_worth_a_rule") as mock_filter:
+            assert rule_suggestions.sync_candidates() == 0
+        mock_filter.assert_not_called()
+        assert _suggested(db) == []
+
+    def test_llm_rejecting_every_candidate_stores_nothing(self, db, monkeypatch):
+        monkeypatch.setattr(rule_suggestions, "CLAUDE_SECRET", "test-key")
         monkeypatch.setattr(rule_suggestions, "filter_worth_a_rule", lambda client, candidates: [])
-        for i in range(5):
-            write_to_db([_txn(f"tx{i}", merchant="Tesco")])
-            _classify(db, f"tx{i}", "Food & Drink", "Groceries")
-        with patch("rule_suggestions.requests.post") as mock_post:
-            result = rule_suggestions.sync_candidates()
-        assert result == 0
-        mock_post.assert_not_called()
+        _add(db, 5, merchant="Tesco")
+        assert rule_suggestions.sync_candidates() == 0
+        assert _suggested(db) == []
+
+
+class TestTextMatches:
+    def test_exact_ignores_case(self):
+        assert rule_suggestions._text_matches("TESCO", "exact", "tesco")
+
+    def test_contains(self):
+        assert rule_suggestions._text_matches("Tesco Express", "contains", "express")
+
+    def test_regex(self):
+        assert rule_suggestions._text_matches("Tesco 123", "regex", r"tesco \d+")
+
+    def test_a_broken_regex_is_no_match(self):
+        assert not rule_suggestions._text_matches("Tesco", "regex", "(")
+
+    def test_an_amount_condition_never_matches_a_name(self):
+        assert not rule_suggestions._text_matches("10", "gt", "5")
 
 
 def _candidate(match_value="Tesco", category="Food & Drink", subcategory="Groceries", txn_count=5):

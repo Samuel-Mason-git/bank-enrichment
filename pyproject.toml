@@ -15,16 +15,17 @@ dependencies = [
     "uvicorn (>=0.46.0,<0.47.0)",
     "pydantic (>=2.13.4,<3.0.0)",
     "requests (>=2.33.1,<3.0.0)",
-    "duckdb (>=1.5.2,<2.0.0)",
     "jinja2 (>=3.1.0,<4.0.0)",
     "aiofiles (>=24.0.0,<25.0.0)",
-    "python-multipart (>=0.0.9)"
+    "python-multipart (>=0.0.9)",
+    "psycopg[binary] (>=3.2,<4.0)"
 ]
 
 
 # The local pipeline and Streamlit dashboard (src/local_scripts). Installed by a plain
 # `poetry install` like any other group, so local setup and CI are unchanged.
 [tool.poetry.group.local.dependencies]
+duckdb = ">=1.5.2,<2.0.0"
 python-dotenv = ">=1.2.2,<2.0.0"
 anthropic = ">=0.104.1,<0.105.0"
 streamlit = ">=1.57.0,<2.0.0"
@@ -33,7 +34,6 @@ pandas = ">=3.0.3,<4.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"
-psycopg = {version = "^3.2", extras = ["binary"]}
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

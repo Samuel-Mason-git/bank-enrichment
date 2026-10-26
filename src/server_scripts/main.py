@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Depends, Request, status, Query, Security
+from fastapi import FastAPI, HTTPException, Depends, Request, status, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,7 +21,10 @@ import os
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from server_db import init_db, get_con, get_quick_categories
+from server_db import (
+    init_db, get_con, get_quick_categories, now, payload, record_context, record_label, record_request,
+    subcategory, subcategory_id,
+)
 from telegram import TelegramBot
 from check_rules import check_rules, NO_MATCH
 from follow_up_tg import requester_loop
@@ -137,16 +140,6 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
-
-LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY")
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-async def verify_api_key(api_key: str = Security(API_KEY_HEADER)):
-    if not LOCAL_API_KEY or api_key != LOCAL_API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid or missing API key"
-        )
-    return api_key
 
 bot: TelegramBot | None = None
 
@@ -340,82 +333,6 @@ class TelegramUpdate(BaseModel):
     edited_message: Optional[TelegramMessage] = None
     callback_query: Optional[TelegramCallbackQuery] = None
 
-class MarkProcessedRequest(BaseModel):
-    ids: list[str]
-
-class MonthlyReportRequest(BaseModel):
-    message: str
-
-class QuickCategoryEntry(BaseModel):
-    category: str
-    subcategory: str
-    merchant_name: Optional[str] = None
-    rank: int = 0
-
-class SyncQuickCategoriesRequest(BaseModel):
-    entries: list[QuickCategoryEntry]
-
-class TaxonomyEntry(BaseModel):
-    category: str
-    subcategory: str
-
-class SyncTaxonomyRequest(BaseModel):
-    entries: list[TaxonomyEntry]
-
-class TaxonomyProposalEntry(BaseModel):
-    id: int                      # the id in the LOCAL database
-    parent_name: str
-    source_sub: str
-    action: str = "create"       # 'create' a new subcategory, or 'move' into one
-    target_parent: str = ""
-    proposed_sub: str
-    rationale: str
-    evidence_count: int = 0
-    examples: list[str] = []
-
-class SyncTaxonomyProposalsRequest(BaseModel):
-    proposals: list[TaxonomyProposalEntry]
-
-class CategoryOption(BaseModel):
-    parent_name: str
-    subcategory_name: str
-    parent_is_new: bool
-    rationale: str
-    # Set by the local placement judge. 'judge' marks a second-look card (a
-    # placement being questioned, not a new category being asked for) and
-    # 'is_original' the option that means "leave it where it was". Both default
-    # off so an older local side, which sends neither, is unaffected.
-    judge: bool = False
-    is_original: bool = False
-
-class AlertRequest(BaseModel):
-    title: str = Field(max_length=120)
-    message: str = Field(max_length=1000)
-
-class CategoryProposalEntry(BaseModel):
-    id: int                      # the id in the LOCAL database
-    options: list[CategoryOption]
-    txn_count: int = 0
-    examples: list[str] = []
-
-class SyncCategoryProposalsRequest(BaseModel):
-    proposals: list[CategoryProposalEntry]
-
-
-class RuleSuggestionCandidate(BaseModel):
-    match_field: str
-    match_value: str
-    category: str
-    subcategory: str
-    txn_count: int = 0
-    auto_context: str = ""
-    # Not persisted -- only ever shown on the initial card, not needed again
-    # once a decision is made.
-    llm_reasoning: str = ""
-
-class SyncRuleSuggestionsRequest(BaseModel):
-    candidates: list[RuleSuggestionCandidate]
-
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     # Monzo doesn't sign webhooks, so the only proof one came from Monzo is the
@@ -431,48 +348,36 @@ async def recieve_monzo(request: Request):
         log.error(f"Validation error: {e}. Body: {body.decode()}")
         raise HTTPException(status_code=422, detail="Invalid payload")
 
-    received_at = time.strftime("%Y-%m-%d %H:%M:%S")
     transaction_id = monzo_data.data.id
+    con = get_con()
 
-    # Upload to Queue
+    # Store it -- once. Monzo sends several webhooks per payment; the first to
+    # arrive is kept and the rest are duplicates.
     try:
-        con = get_con()
-        result = con.execute(
-            "INSERT INTO webhook_queue (id, payload, received_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
-            [transaction_id, body.decode(), received_at]
-        ).fetchone()
-        is_new = result is not None
-
-        if is_new:
-            con.execute(
-                "UPDATE stats SET total_received = total_received + 1, total_amount_pence = total_amount_pence + ?, requests_sent = requests_sent + 1 WHERE id = 1",
-                [abs(monzo_data.data.amount)]
-            )
-            log.info(f"Transaction stored: {transaction_id}")
-        else:
-            log.info(f"Duplicate webhook ignored: {transaction_id}")
+        is_new = con.execute(
+            """INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, %s)
+               ON CONFLICT (id) DO NOTHING RETURNING id""",
+            [transaction_id, body.decode(), now()],
+        ).fetchone() is not None
+        log.info(f"Transaction stored: {transaction_id}" if is_new else f"Duplicate webhook ignored: {transaction_id}")
     except Exception as e:
         log.error(f"Failed to store transaction {transaction_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store transaction")
+    if not is_new:
+        return {"status": "ok"}
 
     # A declined payment moved no money, but Monzo fires a webhook for it just
     # like a real one -- and the retry that succeeds arrives seconds later as a
-    # separate transaction. Left alone it asks for context, gets pulled into the
-    # local database, and counts as spend that never happened, sitting next to a
-    # duplicate of the payment that did.
+    # separate transaction. Left alone it asks for context and counts as spend
+    # that never happened, sitting next to a duplicate of the payment that did.
     #
     # It is auto-skipped rather than dropped: the row is a true record of an
-    # attempt, it keeps the id in the dedup buffer, and skipped transactions are
-    # already excluded from every total and from classification.
-    if is_new and monzo_data.data.decline_reason:
+    # attempt, and skipped transactions are excluded from every total and from
+    # classification.
+    if monzo_data.data.decline_reason:
         try:
-            con.execute(
-                """UPDATE webhook_queue
-                   SET status = 'enriched', skipped = TRUE, user_context = ?, enriched_at = ?
-                   WHERE id = ?""",
-                [f"Declined ({monzo_data.data.decline_reason})",
-                 time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-            )
+            record_context(con, transaction_id, f"Declined ({monzo_data.data.decline_reason})",
+                           skipped=True, source="rule")
             log.info(
                 f"Declined transaction auto-skipped: {transaction_id} "
                 f"({monzo_data.data.decline_reason}) — no notification sent"
@@ -485,17 +390,11 @@ async def recieve_monzo(request: Request):
     # a real charge would be a false alarm -- a UK fuel pre-auth often sits at
     # ~£99/£100 regardless of how much fuel is actually taken. The real, final
     # amount is on its way as a separate transaction with its own id, so this
-    # one is auto-skipped the same way a decline is: recorded (keeps its id in
-    # the dedup buffer) but never surfaced.
-    if is_new and monzo_data.data.amount_is_pending:
+    # one is auto-skipped the same way a decline is: recorded but never surfaced.
+    if monzo_data.data.amount_is_pending:
         try:
-            con.execute(
-                """UPDATE webhook_queue
-                   SET status = 'enriched', skipped = TRUE, user_context = ?, enriched_at = ?
-                   WHERE id = ?""",
-                ["Pending authorisation hold (amount not final)",
-                 time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-            )
+            record_context(con, transaction_id, "Pending authorisation hold (amount not final)",
+                           skipped=True, source="rule")
             log.info(f"Pending-amount transaction auto-skipped: {transaction_id} — no notification sent")
         except Exception as e:
             log.error(f"Failed to auto-skip pending-amount {transaction_id}: {e}", exc_info=True)
@@ -507,54 +406,51 @@ async def recieve_monzo(request: Request):
     # merchant was lost -- and with it merchant rules, the merchant's own
     # quick-tap buttons, and what the classifier knows. So a card payment that
     # arrives without one is looked up in Monzo's API, which has it, and stored
-    # in full. A transfer has no merchant to find (it has a counterparty), so
-    # it isn't looked up. If the API can't be reached, this one carries on as
-    # it arrived.
-    if is_new and not monzo_data.data.merchant and not (monzo_data.data.counterparty or {}).get("name"):
+    # in full -- the one time a stored payload is replaced, seconds after it
+    # arrived and before anything has read it. A transfer has no merchant to
+    # find (it has a counterparty), so it isn't looked up. If the API can't be
+    # reached, this one carries on as it arrived.
+    if not monzo_data.data.merchant and not (monzo_data.data.counterparty or {}).get("name"):
         fetched = await asyncio.to_thread(fetch_transaction, transaction_id)
         if fetched and isinstance(fetched.get("merchant"), dict):
             try:
                 full = {"type": monzo_data.type, "data": fetched}
                 monzo_data = MonzoOuter.model_validate(full)
-                con.execute(
-                    "UPDATE webhook_queue SET payload = ? WHERE id = ?", [json.dumps(full), transaction_id]
-                )
+                con.execute("UPDATE transactions_raw SET payload = %s WHERE id = %s",
+                            [json.dumps(full), transaction_id])
+                body = json.dumps(full).encode()
                 log.info(f"Merchant filled in from Monzo's API for {transaction_id}: "
                          f"{fetched['merchant'].get('name')!r}")
             except Exception as e:
                 log.warning(f"Couldn't use Monzo's API copy of {transaction_id}, keeping the webhook's: {e}")
 
-    # Check rules for auto-enrichment / auto-skip / a fixed placement
+    # Rules: an auto-context, an auto-skip, a fixed placement, or any of those.
     match = NO_MATCH
-    if is_new:
-        try:
-            match = check_rules(monzo_data.data)
-        except Exception as e:
-            log.error(f"Rule check failed for {transaction_id}, falling back to no match: {e}", exc_info=True)
+    try:
+        match = check_rules(monzo_data.data)
+    except Exception as e:
+        log.error(f"Rule check failed for {transaction_id}, falling back to no match: {e}", exc_info=True)
     if match.matched:
         # A fixed-placement rule with no context of its own still leaves a
         # readable one -- the same "Category - Subcategory" label a quick-tap
         # writes, so the dashboards and exports show something meaningful.
         context = match.context or (f"{match.category} - {match.subcategory}" if match.category else None)
         try:
-            con.execute(
-                """UPDATE webhook_queue
-                   SET user_context = ?, status = 'enriched', enriched_at = ?, skipped = ?,
-                       rule_category = ?, rule_subcategory = ?
-                   WHERE id = ?""",
-                [context, time.strftime("%Y-%m-%d %H:%M:%S"), match.skip,
-                 match.category, match.subcategory, transaction_id]
-            )
-            con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+            record_context(con, transaction_id, context, skipped=match.skip, source="rule",
+                           clear_rule_label=False)
+            if match.subcategory_id:
+                record_label(con, transaction_id, match.parent_id, match.subcategory_id,
+                             source="rule", model="rule")
             log.info(
                 f"Transaction auto-enriched by rule: {transaction_id} → context='{context}' skip={match.skip}"
                 + (f" placement='{match.category} / {match.subcategory}'" if match.category else "")
             )
         except Exception as e:
             log.error(f"Failed to auto-enrich transaction {transaction_id}: {e}", exc_info=True)
+        return {"status": "ok"}
 
-    # Send Telegram Message
-    if is_new and not match.matched and bot:
+    # Ask what it was.
+    if bot:
         # Direct debits and bank transfers rarely populate merchant, only
         # counterparty -- without this fallback, quick-tap suggestions for a
         # recurring bill (rent, HMRC, utilities) never surface, and every one
@@ -568,15 +464,11 @@ async def recieve_monzo(request: Request):
         log.info(f"Initial send for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
         try:
             bot.send_card(json.loads(body), quick_categories=quick_categories)
-            con.execute(
-                "UPDATE webhook_queue SET request_count = request_count + 1, last_requested_at = ? WHERE id = ?",
-                [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-            )
+            record_request(con, transaction_id)
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)
 
     return {"status": "ok"}
-
 
 
 def _from_owner(update: "TelegramUpdate") -> bool:
@@ -642,11 +534,7 @@ async def recieve_telegram(request: Request):
                 _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
                 del _pending_skips[chat_id]
             try:
-                con = get_con()
-                con.execute(
-                    "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-                    [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-                )
+                record_context(get_con(), transaction_id, "Skipped", skipped=True, source="telegram")
                 log.info(f"Transaction skipped via Telegram: {transaction_id}")
             except Exception as e:
                 log.error(f"Failed to skip transaction {transaction_id}: {e}", exc_info=True)
@@ -655,15 +543,13 @@ async def recieve_telegram(request: Request):
             bot.send_message(chat_id, "⏭ Skipped.")
 
         elif cq.data and cq.data.startswith("taxprop:"):
-            # The server only records the decision. Creating the category and
-            # moving transactions happens locally, on the next pipeline run,
-            # because the taxonomy and the transactions live in the local DB.
-            _, decision, local_id = cq.data.split(":", 2)
+            # Only the decision is recorded here. Creating the category and
+            # moving the transactions happens on the next pipeline run.
+            _, decision, proposal_id = cq.data.split(":", 2)
             try:
                 con = get_con()
                 row = con.execute(
-                    "SELECT proposed_sub, status FROM taxonomy_proposals WHERE local_id = ?",
-                    [int(local_id)]
+                    "SELECT proposed_sub, status FROM taxonomy_proposals WHERE id = %s", [int(proposal_id)]
                 ).fetchone()
                 if not row:
                     bot.send_message(chat_id, "That suggestion has expired.")
@@ -673,12 +559,11 @@ async def recieve_telegram(request: Request):
                     bot.send_message(chat_id, f"Already {current}: <b>{proposed_sub}</b>")
                     return {"ok": True}
                 con.execute(
-                    "UPDATE taxonomy_proposals SET status = ?, decided_at = ? WHERE local_id = ?",
-                    ["approved" if decision == "approve" else "denied",
-                     time.strftime("%Y-%m-%d %H:%M:%S"), int(local_id)]
+                    "UPDATE taxonomy_proposals SET status = %s, decided_at = %s WHERE id = %s",
+                    ["approved" if decision == "approve" else "denied", now(), int(proposal_id)]
                 )
             except Exception as e:
-                log.error(f"Failed to record taxonomy decision {local_id}: {e}", exc_info=True)
+                log.error(f"Failed to record taxonomy decision {proposal_id}: {e}", exc_info=True)
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
             if decision == "approve":
@@ -692,51 +577,51 @@ async def recieve_telegram(request: Request):
                     chat_id,
                     f"❌ Denied <b>{proposed_sub}</b>. Nothing changed, and it won't be suggested again."
                 )
-            log.info(f"Taxonomy proposal {local_id} ({proposed_sub}) {decision}d via Telegram")
+            log.info(f"Taxonomy proposal {proposal_id} ({proposed_sub}) {decision}d via Telegram")
 
         elif cq.data and cq.data.startswith("catprop:"):
-            # catprop:select:<local_id>:<option_index>, catprop:regenerate:<local_id>,
-            # or catprop:denyall:<local_id>. The server only records the decision --
-            # everything else (creating a category, asking Claude for fresh options)
-            # happens locally on the next run.
+            # catprop:select:<id>:<option_index>, catprop:regenerate:<id>, or
+            # catprop:denyall:<id>. Only the decision is recorded here --
+            # creating a category or asking Claude for fresh options happens on
+            # the next pipeline run.
             parts = cq.data.split(":")
             action = parts[1]
-            local_id = int(parts[2])
+            proposal_id = int(parts[2])
             option_index = int(parts[3]) if action == "select" else None
             try:
                 con = get_con()
                 row = con.execute(
-                    "SELECT options, status FROM category_proposals WHERE local_id = ?",
-                    [local_id]
+                    "SELECT options, status FROM category_proposals WHERE id = %s", [proposal_id]
                 ).fetchone()
                 if not row:
                     bot.send_message(chat_id, "That suggestion has expired.")
                     return {"ok": True}
-                options, current = json.loads(row[0]), row[1]
+                options, current = row
                 if current != "pending":
                     bot.send_message(chat_id, f"Already {current}.")
                     return {"ok": True}
                 if action == "select":
                     con.execute(
-                        "UPDATE category_proposals SET status = 'selected', selected_option = ?, decided_at = ? WHERE local_id = ?",
-                        [option_index, time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                        "UPDATE category_proposals SET status = 'selected', selected_option = %s, decided_at = %s WHERE id = %s",
+                        [option_index, now(), proposal_id]
                     )
                 elif action == "regenerate":
-                    # Recorded as "denied" under the hood -- see collect_decisions()
-                    # locally -- but regenerate_requested keeps these options off
-                    # the permanent denied-name blocklist, since asking for
-                    # something different isn't a verdict that these were wrong.
+                    # Recorded as "denied", but regenerate_requested keeps these
+                    # options off the permanent denied-name blocklist, since
+                    # asking for something different isn't a verdict that these
+                    # were wrong -- and it keeps the hold on the transactions
+                    # until the fresh proposal takes them over.
                     con.execute(
-                        "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE, decided_at = ? WHERE local_id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                        "UPDATE category_proposals SET status = 'denied', regenerate_requested = TRUE, decided_at = %s WHERE id = %s",
+                        [now(), proposal_id]
                     )
                 else:
                     con.execute(
-                        "UPDATE category_proposals SET status = 'denied', decided_at = ? WHERE local_id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), local_id]
+                        "UPDATE category_proposals SET status = 'denied', decided_at = %s WHERE id = %s",
+                        [now(), proposal_id]
                     )
             except Exception as e:
-                log.error(f"Failed to record category decision {local_id}: {e}", exc_info=True)
+                log.error(f"Failed to record category decision {proposal_id}: {e}", exc_info=True)
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
             if action == "select":
@@ -747,10 +632,7 @@ async def recieve_telegram(request: Request):
                     "It'll be created and the waiting transaction(s) classified on the next run."
                 )
             elif action == "regenerate":
-                bot.send_message(
-                    chat_id,
-                    "🔄 Got it — you'll get a fresh set of options on the next run."
-                )
+                bot.send_message(chat_id, "🔄 Got it — you'll get a fresh set of options on the next run.")
             else:
                 bot.send_message(
                     chat_id,
@@ -758,7 +640,7 @@ async def recieve_telegram(request: Request):
                     "these ideas ruled out."
                 )
             log.info(
-                f"Category proposal {local_id} {action}"
+                f"Category proposal {proposal_id} {action}"
                 + (f" (option {option_index})" if action == "select" else "") + " via Telegram"
             )
 
@@ -768,13 +650,13 @@ async def recieve_telegram(request: Request):
             try:
                 con = get_con()
                 row = con.execute(
-                    "SELECT match_field, match_value, auto_context, status, category, subcategory FROM rule_suggestions WHERE id = ?",
+                    "SELECT match_field, match_value, auto_context, status, category, subcategory FROM rule_suggestions WHERE id = %s",
                     [suggestion_id]
                 ).fetchone()
                 if not row:
                     bot.send_message(chat_id, "That suggestion no longer exists.")
                     return {"ok": True}
-                match_field, match_value, auto_context, current, category, subcategory = row
+                match_field, match_value, auto_context, current, category, subcategory_name = row
                 if current != "pending":
                     bot.send_message(chat_id, f"Already {current}.")
                     return {"ok": True}
@@ -782,20 +664,29 @@ async def recieve_telegram(request: Request):
                     # The placement is fixed, not left to the classifier: the
                     # pattern was never once categorized differently, and was
                     # judged single-purpose before being suggested at all.
+                    sub_id = subcategory_id(con, category, subcategory_name)
+                    if sub_id is None:
+                        bot.send_message(
+                            chat_id,
+                            f"<b>{html.escape(category)} › {html.escape(subcategory_name)}</b> doesn't exist any "
+                            "more, so no rule was made. It'll be suggested again if it still fits."
+                        )
+                        con.execute("DELETE FROM rule_suggestions WHERE id = %s", [suggestion_id])
+                        return {"ok": True}
                     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
                     con.execute(
-                        "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, category, subcategory) "
-                        "VALUES (?, ?, ?, 'exact', ?, ?, ?, ?)",
-                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context, category, subcategory]
+                        """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, subcategory_id)
+                           VALUES (%s, %s, %s, 'exact', %s, %s, %s)""",
+                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context, sub_id]
                     )
                     con.execute(
-                        "UPDATE rule_suggestions SET status = 'approved', decided_at = ? WHERE id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                        "UPDATE rule_suggestions SET status = 'approved', decided_at = %s WHERE id = %s",
+                        [now(), suggestion_id]
                     )
                 else:
                     con.execute(
-                        "UPDATE rule_suggestions SET status = 'denied', decided_at = ? WHERE id = ?",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), suggestion_id]
+                        "UPDATE rule_suggestions SET status = 'denied', decided_at = %s WHERE id = %s",
+                        [now(), suggestion_id]
                     )
             except Exception as e:
                 log.error(f"Failed to record rule suggestion decision {suggestion_id}: {e}", exc_info=True)
@@ -805,41 +696,44 @@ async def recieve_telegram(request: Request):
                 bot.send_message(
                     chat_id,
                     f"✅ Rule created — <b>{html.escape(match_value)}</b> will go straight to "
-                    f"<b>{html.escape(category)} › {html.escape(subcategory)}</b> from now on."
+                    f"<b>{html.escape(category)} › {html.escape(subcategory_name)}</b> from now on."
                 )
             else:
                 bot.send_message(chat_id, "👍 Won't suggest that one again.")
             log.info(f"Rule suggestion {suggestion_id} {action}d via Telegram")
 
-        elif cq.data and cq.data.startswith("quickcat:"):
-            _, transaction_id, quick_id = cq.data.split(":", 2)
+        elif cq.data and cq.data.startswith("qcat:"):
+            # qcat:<transaction>:<subcategory id>. The id rather than a position
+            # in a list, so a tap files exactly what the button said even if the
+            # quick categories have changed since the card was sent.
+            _, transaction_id, sub = cq.data.split(":", 2)
             if chat_id in _sessions:
                 _sessions[chat_id].get("timeout_task") and _sessions[chat_id]["timeout_task"].cancel()
                 del _sessions[chat_id]
             try:
                 con = get_con()
-                row = con.execute(
-                    "SELECT category, subcategory FROM quick_categories WHERE id = ?", [int(quick_id)]
-                ).fetchone()
-                if not row:
-                    bot.send_message(chat_id, "That quick category has expired. Tap ✏️ Enrich instead.")
+                found = subcategory(con, int(sub))
+                if not found:
+                    bot.send_message(chat_id, "That category doesn't exist any more. Tap ✏️ Enrich instead.")
                     return {"ok": True}
-                category, subcategory = row
-                context = f"{category} - {subcategory}"
-                status_row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
-                was_pending = bool(status_row) and status_row[0] == "pending"
-                con.execute(
-                    "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-                    [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-                )
-                if was_pending:
-                    con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+                _, category, subcategory_name = found
+                # The same "Category - Subcategory" a quick-tap has always
+                # written; the pipeline files it from that, after the placement
+                # judge has had its look.
+                context = f"{category} - {subcategory_name}"
+                record_context(con, transaction_id, context, source="telegram")
                 log.info(f"Transaction quick-categorized via Telegram: {transaction_id} -> {context}")
             except Exception as e:
                 log.error(f"Failed to quick-categorize transaction {transaction_id}: {e}", exc_info=True)
                 bot.send_message(chat_id, "Something went wrong. Try again.")
                 return {"ok": True}
-            bot.send_message(chat_id, f"✅ Saved as {category} → {subcategory}")
+            bot.send_message(chat_id, f"✅ Saved as {category} → {subcategory_name}")
+
+        elif cq.data and cq.data.startswith("quickcat:"):
+            # A button from a card sent before the move. Its number pointed at a
+            # row of a table that no longer exists, so it can't be trusted to
+            # mean the category it showed.
+            bot.send_message(chat_id, "That button is from before an update. Tap ✏️ Enrich instead.")
 
         elif cq.data == "skip_cancel":
             if chat_id in _pending_skips:
@@ -860,15 +754,7 @@ async def recieve_telegram(request: Request):
         transaction_id = session["transaction_id"]
 
         try:
-            con = get_con()
-            row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
-            was_pending = bool(row) and row[0] == "pending"
-            con.execute(
-                "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-                [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-            )
-            if was_pending:
-                con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
+            record_context(get_con(), transaction_id, context, source="telegram")
             log.info(f"Transaction enriched: {transaction_id}")
         except Exception as e:
             log.error(f"Failed to enrich transaction {transaction_id}: {e}", exc_info=True)
@@ -885,24 +771,31 @@ async def recieve_telegram(request: Request):
     return {"ok": True}
 
 
+# Where a transaction is up to, worked out from its events: no answer yet,
+# answered but not yet classified, classified, or skipped.
+STATUS_SQL = """CASE WHEN t.skipped THEN 'skipped'
+                     WHEN t.enriched_at IS NULL THEN 'pending'
+                     WHEN t.llm_subcategory IS NULL THEN 'enriched'
+                     ELSE 'classified' END"""
+
+
+def _amount_str(amount_pence: int) -> str:
+    return f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}"
 
 
 @app.get("/dashboard/transaction/{transaction_id}", response_class=HTMLResponse)
 async def transaction_detail(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    row = con.execute(
-        "SELECT id, payload, received_at, status, user_context, enriched_at, skipped FROM webhook_queue WHERE id = ?",
+    row = get_con().execute(
+        f"""SELECT t.id, t.raw_payload, t.received_at, {STATUS_SQL}, t.user_context, t.enriched_at, t.skipped
+            FROM transactions t WHERE t.id = %s""",
         [transaction_id]
     ).fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    payload = json.loads(row[1])
+    payload = row[1]
     data = payload.get("data", {})
     amount_pence = data.get("amount", 0)
-    amount_str = f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}"
-
     return templates.TemplateResponse(
         request=request,
         name="transaction.html",
@@ -913,7 +806,7 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
             "user_context": row[4],
             "enriched_at": row[5],
             "skipped": row[6],
-            "amount": amount_str,
+            "amount": _amount_str(amount_pence),
             "is_debit": amount_pence < 0,
             "description": data.get("description", ""),
             "category": data.get("category", ""),
@@ -928,13 +821,27 @@ async def transaction_detail(transaction_id: str, request: Request, credentials:
     )
 
 
+def _exists(con, transaction_id: str) -> bool:
+    return con.execute("SELECT 1 FROM transactions_raw WHERE id = %s", [transaction_id]).fetchone() is not None
+
+
 @app.post("/dashboard/transaction/{transaction_id}/skip", response_class=HTMLResponse)
 async def skip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
-    con.execute(
-        "UPDATE webhook_queue SET skipped = TRUE, status = 'enriched', user_context = 'Skipped', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-        [time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-    )
+    if not _exists(con, transaction_id):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    record_context(con, transaction_id, "Skipped", skipped=True, source="dashboard")
+    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
+
+
+@app.post("/dashboard/transaction/{transaction_id}/unskip", response_class=HTMLResponse)
+async def unskip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    """Count it again, with no context: the classifier picks it up on the next
+    run. Add context first (or after) if it needs explaining."""
+    con = get_con()
+    if not _exists(con, transaction_id):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    record_context(con, transaction_id, None, skipped=False, source="dashboard")
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
 
 
@@ -945,23 +852,9 @@ async def enrich_transaction_dashboard(transaction_id: str, request: Request, cr
     if not context:
         return RedirectResponse(url="/dashboard", status_code=303)
     con = get_con()
-    row = con.execute("SELECT status FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
-    if not row:
+    if not _exists(con, transaction_id):
         raise HTTPException(status_code=404, detail="Transaction not found")
-    was_pending = row[0] == "pending"
-    con.execute(
-        "UPDATE webhook_queue SET user_context = ?, status = 'enriched', rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-        [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-    )
-    if was_pending:
-        con.execute("UPDATE stats SET total_enriched = total_enriched + 1 WHERE id = 1")
-    return RedirectResponse(url="/dashboard", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/delete", response_class=HTMLResponse)
-async def delete_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    con.execute("DELETE FROM webhook_queue WHERE id = ?", [transaction_id])
+    record_context(con, transaction_id, context, source="dashboard")
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
@@ -969,22 +862,25 @@ async def delete_transaction(transaction_id: str, request: Request, credentials:
 async def edit_transaction_context(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     form = await request.form()
     context = (form.get("context") or "").strip()
-    if context:
-        get_con().execute(
-            "UPDATE webhook_queue SET user_context = ?, rule_category = NULL, rule_subcategory = NULL, enriched_at = ? WHERE id = ?",
-            [context, time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-        )
-    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/reset", response_class=HTMLResponse)
-async def reset_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     con = get_con()
-    con.execute(
-        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, rule_category = NULL, rule_subcategory = NULL, enriched_at = NULL, skipped = FALSE WHERE id = ?",
-        [transaction_id]
-    )
+    if context and _exists(con, transaction_id):
+        record_context(con, transaction_id, context, source="dashboard")
     return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
+
+
+@app.post("/dashboard/transaction/{transaction_id}/delete", response_class=HTMLResponse)
+async def delete_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
+    """Gone for good, with its history -- for a test payment or a mistake,
+    not for something you'd rather not see (skip that instead)."""
+    con = get_con()
+    with con.transaction():
+        con.execute("DELETE FROM label_events WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM context_events WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM judge_reviews WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM transactions_raw WHERE id = %s", [transaction_id])
+    log.info(f"Transaction deleted from the dashboard: {transaction_id}")
+    return RedirectResponse(url="/dashboard", status_code=303)
+
 
 @app.post("/dashboard/rules/test", response_class=HTMLResponse)
 async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
@@ -993,10 +889,9 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
     context = {"rules": _get_rules(con), "transactions": _get_test_transactions(con),
                "taxonomy": _get_taxonomy(con), "active_nav": "rules"}
 
-    # "Test this rule" on the Add Rule form: run the not-yet-saved rule
-    # against everything sitting in the queue (up to ~7 days of history
-    # before cleanup), so you see which real transactions it would catch --
-    # not whether it matches a single transaction you already picked it from.
+    # "Test this rule" on the Add Rule form: run the not-yet-saved rule against
+    # recent transactions, so you see which real ones it would catch -- not
+    # whether it matches a single transaction you already picked it from.
     candidate_field = (form.get("candidate_match_field") or "").strip()
     if candidate_field:
         candidate = {
@@ -1007,8 +902,8 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
             "match_type_2": (form.get("candidate_match_type_2") or "").strip() or None,
             "match_value_2": (form.get("candidate_match_value_2") or "").strip() or None,
         }
-        queue = _get_test_transactions(con, limit=None)
-        matches = [t for t in queue if _evaluate_rule(t, **candidate)]
+        recent = _get_test_transactions(con, limit=None)
+        matches = [t for t in recent if _evaluate_rule(t, **candidate)]
         context["candidate_results"] = {
             "rule": {**candidate,
                      "name": (form.get("candidate_name") or "").strip(),
@@ -1016,7 +911,7 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
                      "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
                      "category": (form.get("candidate_category") or "").strip(),
                      "subcategory": (form.get("candidate_subcategory") or "").strip()},
-            "queue_size": len(queue),
+            "queue_size": len(recent),
             "matches": matches,
         }
         return templates.TemplateResponse(request=request, name="rules.html", context=context)
@@ -1052,84 +947,100 @@ async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depen
     return templates.TemplateResponse(request=request, name="rules.html", context=context)
 
 
+def _rule_form(con, form) -> dict | None:
+    """The rule a form describes, or None if it isn't a usable one: it needs a
+    name and a first condition, and has to do something -- give context, skip,
+    or file into a category."""
+    rule = {
+        "name": (form.get("name") or "").strip(),
+        "match_field": (form.get("match_field") or "").strip(),
+        "match_type": (form.get("match_type") or "").strip(),
+        "match_value": (form.get("match_value") or "").strip(),
+        "auto_context": (form.get("auto_context") or "").strip(),
+        "match_field_2": (form.get("match_field_2") or "").strip() or None,
+        "match_type_2": (form.get("match_type_2") or "").strip() or None,
+        "match_value_2": (form.get("match_value_2") or "").strip() or None,
+        "auto_skip": form.get("auto_skip") == "on",
+        "subcategory_id": _rule_placement(con, form),
+    }
+    if not (rule["name"] and rule["match_field"] and rule["match_type"] and rule["match_value"]):
+        return None
+    if not (rule["auto_context"] or rule["auto_skip"] or rule["subcategory_id"]):
+        return None
+    return rule
+
+
 @app.post("/dashboard/rules/{rule_id}/edit", response_class=HTMLResponse)
 async def edit_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    form = await request.form()
-    name = (form.get("name") or "").strip()
-    match_field = (form.get("match_field") or "").strip()
-    match_type = (form.get("match_type") or "").strip()
-    match_value = (form.get("match_value") or "").strip()
-    auto_context = (form.get("auto_context") or "").strip()
-    match_field_2 = (form.get("match_field_2") or "").strip() or None
-    match_type_2 = (form.get("match_type_2") or "").strip() or None
-    match_value_2 = (form.get("match_value_2") or "").strip() or None
-    auto_skip = form.get("auto_skip") == "on"
-    category, subcategory = _rule_placement(form)
-    if name and match_field and match_type and match_value and (auto_context or auto_skip or category):
-        con = get_con()
+    con = get_con()
+    rule = _rule_form(con, await request.form())
+    if rule:
         con.execute(
-            "UPDATE rules SET name=?, match_field=?, match_type=?, match_value=?, auto_context=?, match_field_2=?, match_type_2=?, match_value_2=?, auto_skip=?, category=?, subcategory=? WHERE id=?",
-            [name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory, rule_id]
+            """UPDATE rules SET name = %(name)s, match_field = %(match_field)s, match_type = %(match_type)s,
+                   match_value = %(match_value)s, auto_context = %(auto_context)s,
+                   match_field_2 = %(match_field_2)s, match_type_2 = %(match_type_2)s,
+                   match_value_2 = %(match_value_2)s, auto_skip = %(auto_skip)s,
+                   subcategory_id = %(subcategory_id)s
+               WHERE id = %(id)s""",
+            {**rule, "id": rule_id}
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
 @app.post("/dashboard/rules/{rule_id}/delete", response_class=HTMLResponse)
 async def delete_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    con.execute("DELETE FROM rules WHERE id = ?", [rule_id])
+    get_con().execute("DELETE FROM rules WHERE id = %s", [rule_id])
     return RedirectResponse(url="/dashboard/rules", status_code=303)
+
 
 @app.post("/dashboard/rules/add", response_class=HTMLResponse)
 async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    form = await request.form()
-    name = (form.get("name") or "").strip()
-    match_field = (form.get("match_field") or "").strip()
-    match_type = (form.get("match_type") or "").strip()
-    match_value = (form.get("match_value") or "").strip()
-    auto_context = (form.get("auto_context") or "").strip()
-    match_field_2 = (form.get("match_field_2") or "").strip() or None
-    match_type_2 = (form.get("match_type_2") or "").strip() or None
-    match_value_2 = (form.get("match_value_2") or "").strip() or None
-    auto_skip = form.get("auto_skip") == "on"
-    category, subcategory = _rule_placement(form)
-    if name and match_field and match_type and match_value and (auto_context or auto_skip or category):
-        con = get_con()
+    con = get_con()
+    rule = _rule_form(con, await request.form())
+    if rule:
         next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
         con.execute(
-            "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [next_id, name, match_field, match_type, match_value, auto_context or "", match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory]
+            """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context,
+                                  match_field_2, match_type_2, match_value_2, auto_skip, subcategory_id)
+               VALUES (%(id)s, %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
+                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)""",
+            {**rule, "id": next_id}
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
-def _rule_placement(form) -> tuple[str | None, str | None]:
-    """A fixed (category, subcategory) from the rule form, or (None, None).
-    Only a complete pair counts -- a category picked without a subcategory
-    would file transactions under a parent with nothing beneath it, so a
-    half-filled pair is treated as no placement at all."""
+def _rule_placement(con, form) -> int | None:
+    """The fixed placement a rule form picked, as a subcategory id, or None.
+    Only a complete pair of a live category counts -- a category picked
+    without a subcategory would file transactions under a parent with nothing
+    beneath it, so a half-filled pair is treated as no placement at all."""
     category = (form.get("category") or "").strip()
-    subcategory = (form.get("subcategory") or "").strip()
-    if category and subcategory:
-        return category, subcategory
-    return None, None
+    subcategory_name = (form.get("subcategory") or "").strip()
+    if category and subcategory_name:
+        return subcategory_id(con, category, subcategory_name)
+    return None
 
 
 def _get_taxonomy(con) -> dict[str, list[str]]:
-    """{category: [subcategory, ...]} from the last pipeline sync, for the
-    Rules page's placement dropdowns."""
+    """{category: [subcategory, ...]} of live categories, for the Rules page's
+    placement dropdowns."""
     taxonomy: dict[str, list[str]] = {}
-    for category, subcategory in con.execute(
-        "SELECT category, subcategory FROM taxonomy ORDER BY category, subcategory"
+    for category, subcategory_name in con.execute(
+        """SELECT p.name, s.name FROM subcategories s JOIN parent_categories p ON p.id = s.parent_id
+           WHERE s.archived_at IS NULL AND p.archived_at IS NULL ORDER BY p.name, s.name"""
     ).fetchall():
-        taxonomy.setdefault(category, []).append(subcategory)
+        taxonomy.setdefault(category, []).append(subcategory_name)
     return taxonomy
 
 
 def _get_rules(con):
     rows = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, "
-        "match_field_2, match_type_2, match_value_2, auto_skip, category, subcategory FROM rules ORDER BY id"
+        """SELECT r.id, r.name, r.match_field, r.match_type, r.match_value, r.auto_context, r.enabled,
+                  r.match_field_2, r.match_type_2, r.match_value_2, r.auto_skip, p.name, s.name
+           FROM rules r
+           LEFT JOIN subcategories s ON s.id = r.subcategory_id
+           LEFT JOIN parent_categories p ON p.id = s.parent_id
+           ORDER BY r.id"""
     ).fetchall()
     return [
         {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3],
@@ -1140,44 +1051,48 @@ def _get_rules(con):
     ]
 
 
+def _display(data: dict, fallback: str) -> str:
+    merchant = (data.get("merchant") or {}).get("name") or ""
+    counterparty = (data.get("counterparty") or {}).get("name") or ""
+    return merchant or counterparty or data.get("description") or fallback
+
+
 def _txn_short_label(con, transaction_id: str) -> str:
     """One line identifying a transaction in a chat message -- merchant (or
     counterparty, or description, whichever is actually populated) plus the
     signed amount, so "Enriching tx_0000..." doesn't leave the user guessing
     which of several pending transactions they just tapped."""
-    row = con.execute("SELECT payload FROM webhook_queue WHERE id = ?", [transaction_id]).fetchone()
-    if not row:
+    stored = payload(con, transaction_id)
+    if not stored:
         return transaction_id
-    data = json.loads(row[0]).get("data", {})
+    data = stored.get("data", {})
     amount_pence = data.get("amount", 0)
-    merchant = (data.get("merchant") or {}).get("name") or ""
-    counterparty = (data.get("counterparty") or {}).get("name") or ""
-    description = data.get("description") or ""
-    display = merchant or counterparty or description or transaction_id
     sign = "-" if amount_pence < 0 else "+"
-    return f"{display} · {sign}£{abs(amount_pence) / 100:.2f}"
+    return f"{_display(data, transaction_id)} · {sign}£{abs(amount_pence) / 100:.2f}"
 
 
 def _get_test_transactions(con, limit: int | None = 100):
-    sql = "SELECT id, payload, received_at, user_context, status FROM webhook_queue ORDER BY received_at DESC"
-    rows = con.execute(sql + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
+    """Recent transactions as the rule tester sees them: the newest `limit`, or
+    the last 30 days for testing a rule that hasn't been saved yet."""
+    sql = f"""SELECT t.id, t.raw_payload, t.received_at, t.user_context, {STATUS_SQL}
+              FROM transactions t"""
+    if limit:
+        rows = con.execute(sql + " ORDER BY t.received_at DESC LIMIT %s", [int(limit)]).fetchall()
+    else:
+        rows = con.execute(
+            sql + " WHERE t.received_at >= LOCALTIMESTAMP - INTERVAL '30 days' ORDER BY t.received_at DESC"
+        ).fetchall()
     txns = []
     for row in rows:
-        data = json.loads(row[1]).get("data", {})
+        data = row[1].get("data", {})
         amount_pence = data.get("amount", 0)
-        merchant = (data.get("merchant") or {}).get("name") or ""
-        counterparty = (data.get("counterparty") or {}).get("name") or ""
-        description = data.get("description") or ""
-        display = merchant or counterparty or description or row[0]
         sign = "-" if amount_pence < 0 else "+"
-        amount_str = f"{sign}£{abs(amount_pence) / 100:.2f}"
-        date_str = str(row[2])[:10]
         txns.append({
             "id": row[0],
-            "label": f"{display} · {amount_str} · {date_str}",
-            "merchant_name": merchant,
-            "description": description,
-            "counterparty_name": counterparty,
+            "label": f"{_display(data, row[0])} · {sign}£{abs(amount_pence) / 100:.2f} · {str(row[2])[:10]}",
+            "merchant_name": (data.get("merchant") or {}).get("name") or "",
+            "description": data.get("description") or "",
+            "counterparty_name": (data.get("counterparty") or {}).get("name") or "",
             "category": data.get("category") or "",
             "scheme": data.get("scheme") or "",
             # Signed, not abs() -- a candidate amount_negative/amount_positive
@@ -1195,8 +1110,8 @@ def _evaluate_rule(fields: dict, match_field, match_type, match_value,
                    match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
     """Whether a rule's condition(s) match one transaction's fields -- the
     same keys _get_test_transactions produces, with amount in signed pence.
-    Shared by the saved-rule tester and the queue preview for a new rule, so
-    both judge a match exactly the same way."""
+    Shared by the saved-rule tester and the preview for a new rule, so both
+    judge a match exactly the same way."""
     from check_rules import _matches
 
     def get_field(field):
@@ -1232,8 +1147,7 @@ async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depen
 
 @app.post("/dashboard/rules/{rule_id}/toggle", response_class=HTMLResponse)
 async def toggle_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    con.execute("UPDATE rules SET enabled = NOT enabled WHERE id = ?", [rule_id])
+    get_con().execute("UPDATE rules SET enabled = NOT enabled WHERE id = %s", [rule_id])
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 
 
@@ -1241,42 +1155,43 @@ DB_PAGE_SIZE = 50
 
 @app.get("/dashboard/db", response_class=HTMLResponse)
 async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials),
-                  queue_page: int = Query(1, ge=1)):
+                  raw_page: int = Query(1, ge=1)):
     con = get_con()
-    stats_rows = con.execute("SELECT * FROM stats").fetchall()
-    stats_cols = ["id", "total_received", "total_amount_pence", "requests_sent", "total_enriched", "total_processed"]
 
-    queue_total = con.execute("SELECT COUNT(*) FROM webhook_queue").fetchone()[0]
-    queue_rows = con.execute(
-        "SELECT id, payload, received_at, status, user_context, enriched_at, request_count FROM webhook_queue ORDER BY received_at DESC LIMIT ? OFFSET ?",
-        [DB_PAGE_SIZE, (queue_page - 1) * DB_PAGE_SIZE]
-    ).fetchall()
-    queue_cols = ["id", "payload", "received_at", "status", "user_context", "enriched_at", "request_count"]
-    queue_total_pages = max(1, -(-queue_total // DB_PAGE_SIZE))
+    def table(name, sql, columns, params=(), total=None, page=1, page_param=None):
+        rows = con.execute(sql, params).fetchall()
+        total = len(rows) if total is None else total
+        return {"name": name, "columns": columns, "rows": rows, "total": total, "page": page,
+                "total_pages": max(1, -(-total // DB_PAGE_SIZE)) if page_param else 1, "page_param": page_param}
 
-    rules_rows = con.execute(
-        "SELECT id, name, match_field, match_type, match_value, auto_context, enabled, match_field_2, match_type_2, match_value_2, auto_skip FROM rules ORDER BY id"
-    ).fetchall()
-    rules_cols = ["id", "name", "match_field", "match_type", "match_value", "auto_context", "enabled", "match_field_2", "match_type_2", "match_value_2", "auto_skip"]
-
-    quick_categories_rows = con.execute(
-        "SELECT id, category, subcategory, merchant_name, rank FROM quick_categories ORDER BY merchant_name, rank"
-    ).fetchall()
-    quick_categories_cols = ["id", "category", "subcategory", "merchant_name", "rank"]
-
-    return templates.TemplateResponse(
-        request=request,
-        name="db.html",
-        context={
-            "tables": [
-                {"name": "stats", "columns": stats_cols, "rows": stats_rows, "total": len(stats_rows), "page": 1, "total_pages": 1, "page_param": None},
-                {"name": "webhook_queue", "columns": queue_cols, "rows": queue_rows, "total": queue_total, "page": queue_page, "total_pages": queue_total_pages, "page_param": "queue_page"},
-                {"name": "rules", "columns": rules_cols, "rows": rules_rows, "total": len(rules_rows), "page": 1, "total_pages": 1, "page_param": None},
-                {"name": "quick_categories", "columns": quick_categories_cols, "rows": quick_categories_rows, "total": len(quick_categories_rows), "page": 1, "total_pages": 1, "page_param": None},
-            ],
-            "active_nav": "db",
-        }
-    )
+    raw_total = con.execute("SELECT COUNT(*) FROM transactions_raw").fetchone()[0]
+    tables = [
+        table("transactions_raw", "SELECT id, received_at, payload FROM transactions_raw "
+              "ORDER BY received_at DESC LIMIT %s OFFSET %s", ["id", "received_at", "payload"],
+              [DB_PAGE_SIZE, (raw_page - 1) * DB_PAGE_SIZE], total=raw_total, page=raw_page, page_param="raw_page"),
+        table("context_events (latest 50)",
+              "SELECT event_id, txn_id, user_context, skipped, created_at_override, source, set_at "
+              "FROM context_events ORDER BY event_id DESC LIMIT 50",
+              ["event_id", "txn_id", "user_context", "skipped", "created_at_override", "source", "set_at"]),
+        table("label_events (latest 50)",
+              "SELECT e.event_id, e.txn_id, p.name, s.name, e.source, e.model, e.confidence, e.set_at "
+              "FROM label_events e LEFT JOIN parent_categories p ON p.id = e.parent_id "
+              "LEFT JOIN subcategories s ON s.id = e.subcategory_id ORDER BY e.event_id DESC LIMIT 50",
+              ["event_id", "txn_id", "category", "subcategory", "source", "model", "confidence", "set_at"]),
+        table("rules",
+              "SELECT r.id, r.name, r.match_field, r.match_type, r.match_value, r.auto_context, r.enabled, "
+              "r.match_field_2, r.match_type_2, r.match_value_2, r.auto_skip, p.name, s.name FROM rules r "
+              "LEFT JOIN subcategories s ON s.id = r.subcategory_id "
+              "LEFT JOIN parent_categories p ON p.id = s.parent_id ORDER BY r.id",
+              ["id", "name", "match_field", "match_type", "match_value", "auto_context", "enabled",
+               "match_field_2", "match_type_2", "match_value_2", "auto_skip", "category", "subcategory"]),
+        table("quick_categories",
+              "SELECT merchant_name, subcategory_id, category, subcategory, rank FROM quick_categories "
+              "ORDER BY merchant_name NULLS FIRST, rank",
+              ["merchant_name", "subcategory_id", "category", "subcategory", "rank"]),
+    ]
+    return templates.TemplateResponse(request=request, name="db.html",
+                                      context={"tables": tables, "active_nav": "db"})
 
 
 PAGE_SIZE = 20
@@ -1290,50 +1205,54 @@ async def dashboard(
     search: str = Query(""),
 ):
     con = get_con()
-    lifetime = con.execute(
-        "SELECT total_received, total_amount_pence, requests_sent, total_enriched, total_processed FROM stats WHERE id = 1"
+    totals = con.execute(
+        """SELECT (SELECT COUNT(*) FROM transactions_raw),
+                  (SELECT COALESCE(SUM(ABS((payload->'data'->>'amount')::BIGINT)), 0) FROM transactions_raw),
+                  (SELECT COUNT(*) FROM context_events WHERE source = 'request'),
+                  (SELECT COUNT(*) FROM transactions WHERE enriched_at IS NOT NULL),
+                  (SELECT COUNT(*) FROM transactions WHERE llm_subcategory IS NOT NULL)"""
     ).fetchone()
+    # "The queue" is what still needs something: an answer, or a category.
     queue_stats = con.execute(
-        "SELECT status, COUNT(*) FROM webhook_queue WHERE status != 'processed' GROUP BY status"
+        f"""SELECT status, COUNT(*) FROM (SELECT {STATUS_SQL} AS status FROM transactions t) s
+            WHERE status IN ('pending', 'enriched') GROUP BY status ORDER BY status"""
     ).fetchall()
 
-    where_clauses = ["status != 'processed'"]
-    params: list = []
-    if status_filter == "skipped":
-        where_clauses.append("skipped = TRUE")
-    elif status_filter in ("pending", "enriched"):
-        where_clauses.append("status = ?")
-        params.append(status_filter)
+    if status_filter in ("pending", "enriched", "skipped", "classified"):
+        where_clauses, params = ["status = %s"], [status_filter]
+    else:
+        where_clauses, params = ["status IN ('pending', 'enriched')"], []
     if search:
-        where_clauses.append("(id LIKE ? OR payload LIKE ?)")
+        where_clauses.append("(id ILIKE %s OR raw_payload::TEXT ILIKE %s)")
         params.extend([f"%{search}%", f"%{search}%"])
-
-    where_sql = " AND ".join(where_clauses)
-    total_queue = con.execute(f"SELECT COUNT(*) FROM webhook_queue WHERE {where_sql}", params).fetchone()[0]
+    listing = f"""SELECT * FROM (
+                      SELECT t.id, t.received_at, {STATUS_SQL} AS status, t.raw_payload, t.skipped,
+                             (SELECT COUNT(*) FROM context_events e
+                              WHERE e.txn_id = t.id AND e.source = 'request') AS request_count
+                      FROM transactions t) s
+                  WHERE {" AND ".join(where_clauses)}"""
+    total_queue = con.execute(f"SELECT COUNT(*) FROM ({listing}) q", params).fetchone()[0]
     rows = con.execute(
-        f"SELECT id, received_at, status, request_count, payload, skipped FROM webhook_queue WHERE {where_sql} ORDER BY received_at DESC LIMIT ? OFFSET ?",
-        params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]
+        listing + " ORDER BY received_at DESC LIMIT %s OFFSET %s", params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]
     ).fetchall()
 
     queue = []
-    for row in rows:
-        amount_pence = json.loads(row[4]).get("data", {}).get("amount", 0)
-        data = json.loads(row[4]).get("data", {})
+    for txn_id, received_at, status_value, raw, skipped, request_count in rows:
+        data = raw.get("data", {})
+        amount_pence = data.get("amount", 0)
         queue.append({
-            "id": row[0],
-            "received_at": row[1],
-            "status": row[2],
-            "request_count": row[3] or 0,
-            "amount": f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}",
+            "id": txn_id,
+            "received_at": received_at,
+            "status": status_value,
+            "request_count": request_count or 0,
+            "amount": _amount_str(amount_pence),
             "is_debit": amount_pence < 0,
-            "skipped": bool(row[5]),
+            "skipped": bool(skipped),
             "description": data.get("description", ""),
-            "merchant": (data.get("merchant") or {}).get("name", "") or data.get("counterparty", {}).get("name", ""),
+            "merchant": (data.get("merchant") or {}).get("name", "") or (data.get("counterparty") or {}).get("name", ""),
         })
 
-    total_received, total_amount_pence, requests_sent, total_enriched, total_processed = lifetime or (0, 0, 0, 0, 0)
-    total_pages = max(1, -(-total_queue // PAGE_SIZE))
-
+    total_received, total_amount_pence, requests_sent, total_enriched, total_classified = totals
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -1342,31 +1261,17 @@ async def dashboard(
             "total_amount": f"£{abs(total_amount_pence) / 100:,.2f}",
             "requests_sent": requests_sent,
             "total_enriched": total_enriched,
-            "total_processed": total_processed,
+            "total_processed": total_classified,
             "queue_stats": queue_stats,
             "queue": queue,
             "page": page,
-            "total_pages": total_pages,
+            "total_pages": max(1, -(-total_queue // PAGE_SIZE)),
             "total_queue": total_queue,
             "status_filter": status_filter,
             "search": search,
             "active_nav": "dashboard",
         }
     )
-
-
-@app.post("/dashboard/bulk/delete-skipped", response_class=HTMLResponse)
-async def bulk_delete_skipped(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    get_con().execute("DELETE FROM webhook_queue WHERE skipped = TRUE")
-    return RedirectResponse(url="/dashboard", status_code=303)
-
-
-@app.post("/dashboard/bulk/requeue-pending", response_class=HTMLResponse)
-async def bulk_requeue_pending(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    get_con().execute(
-        "UPDATE webhook_queue SET status = 'pending', user_context = NULL, rule_category = NULL, rule_subcategory = NULL, enriched_at = NULL, skipped = FALSE WHERE status = 'pending'"
-    )
-    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.get("/dashboard/logs", response_class=HTMLResponse)
@@ -1383,284 +1288,6 @@ async def logs_view(request: Request, credentials: HTTPBasicCredentials = Depend
         context={"log_lines": log_lines, "lines": lines, "active_nav": "logs"}
     )
 
-
-@app.get('/export')
-async def export(api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    con = get_con()
-    rows = con.execute(
-        """SELECT id, payload, received_at, user_context, enriched_at, skipped, rule_category, rule_subcategory
-           FROM webhook_queue
-           WHERE status = 'enriched'
-           ORDER BY enriched_at ASC"""
-    ).fetchall()
-    return [
-        {
-            "id": row[0],
-            "payload": json.loads(row[1]),
-            "received_at": str(row[2]),
-            "user_context": row[3],
-            "enriched_at": str(row[4]),
-            "skipped": row[5],
-            "rule_category": row[6],
-            "rule_subcategory": row[7],
-        }
-        for row in rows
-    ]
-
-@app.post('/mark-processed')
-async def mark_processed(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    con = get_con()
-    placeholders = ", ".join("?" * len(body.ids))
-    con.execute(
-        f"UPDATE webhook_queue SET status = 'processed' WHERE id IN ({placeholders})",
-        body.ids
-    )
-    con.execute(
-        "UPDATE stats SET total_processed = total_processed + ? WHERE id = 1",
-        [len(body.ids)]
-    )
-    log.info(f"Marked {len(body.ids)} transactions as processed")
-    return {"marked": len(body.ids)}
-
-
-@app.post('/sync-quick-categories')
-async def sync_quick_categories(body: SyncQuickCategoriesRequest, api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    con = get_con()
-    con.execute("DELETE FROM quick_categories")
-    for i, entry in enumerate(body.entries):
-        con.execute(
-            "INSERT INTO quick_categories (id, category, subcategory, merchant_name, rank) VALUES (?, ?, ?, ?, ?)",
-            [i, entry.category, entry.subcategory, entry.merchant_name, entry.rank]
-        )
-    log.info(f"Synced {len(body.entries)} quick categories")
-    return {"synced": len(body.entries)}
-
-
-@app.post('/sync-taxonomy')
-async def sync_taxonomy(body: SyncTaxonomyRequest, api_key: str = Security(API_KEY_HEADER)):
-    """Replace the server's copy of the local taxonomy -- names only, for the
-    Rules page's placement dropdowns. Replaced wholesale each run, so a
-    renamed or deleted category stops being offered on the next sync."""
-    await verify_api_key(api_key)
-    con = get_con()
-    con.execute("DELETE FROM taxonomy")
-    pairs = {(e.category, e.subcategory) for e in body.entries}
-    for category, subcategory in pairs:
-        con.execute("INSERT INTO taxonomy (category, subcategory) VALUES (?, ?)", [category, subcategory])
-    log.info(f"Synced {len(pairs)} taxonomy entries")
-    return {"synced": len(pairs)}
-
-
-@app.post('/sync-taxonomy-proposals')
-async def sync_taxonomy_proposals(body: SyncTaxonomyProposalsRequest, api_key: str = Security(API_KEY_HEADER)):
-    """Store the month's proposals and send the cards. Existing undecided
-    proposals are cleared first: the local side only sends a batch once per
-    month, so anything still pending has been superseded by this run."""
-    await verify_api_key(api_key)
-    con = get_con()
-    con.execute("DELETE FROM taxonomy_proposals WHERE status = 'pending'")
-    stored = []
-    for p in body.proposals:
-        con.execute(
-            """INSERT INTO taxonomy_proposals
-               (local_id, parent_name, source_sub, action, target_parent,
-                proposed_sub, rationale, evidence_count, examples, status, sent_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-               ON CONFLICT (local_id) DO NOTHING""",
-            [p.id, p.parent_name, p.source_sub, p.action, p.target_parent,
-             p.proposed_sub, p.rationale, p.evidence_count,
-             json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
-        )
-        stored.append(p)
-
-    if stored:
-        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
-        bot.send_taxonomy_intro(chat_id, len(stored))
-        for p in stored:
-            bot.send_taxonomy_proposal(chat_id, {
-                "local_id": p.id, "parent_name": p.parent_name,
-                "source_sub": p.source_sub, "action": p.action,
-                "target_parent": p.target_parent, "proposed_sub": p.proposed_sub,
-                "rationale": p.rationale, "evidence_count": p.evidence_count,
-                "examples": p.examples,
-            })
-    log.info(f"Received {len(stored)} taxonomy proposal(s) and sent cards")
-    return {"received": len(stored)}
-
-
-@app.get('/taxonomy-decisions')
-async def taxonomy_decisions(api_key: str = Security(API_KEY_HEADER)):
-    """Decisions the local pipeline hasn't collected yet. Marked 'collected'
-    only once the local side confirms via /taxonomy-decisions/collected, so a
-    failed local run doesn't lose an approval."""
-    await verify_api_key(api_key)
-    rows = get_con().execute(
-        """SELECT local_id, proposed_sub, status FROM taxonomy_proposals
-           WHERE status IN ('approved', 'denied') ORDER BY local_id"""
-    ).fetchall()
-    return {"decisions": [{"id": r[0], "proposed_sub": r[1], "status": r[2]} for r in rows]}
-
-
-@app.post('/taxonomy-decisions/collected')
-async def taxonomy_decisions_collected(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    con = get_con()
-    for local_id in body.ids:
-        con.execute(
-            "UPDATE taxonomy_proposals SET status = 'collected' WHERE local_id = ?",
-            [int(local_id)]
-        )
-    return {"collected": len(body.ids)}
-
-
-@app.post('/send-alert')
-async def send_alert(body: AlertRequest, api_key: str = Security(API_KEY_HEADER)):
-    """Let the local pipeline reach Telegram, which only the server can. Used
-    for "I can't do my job" notices -- out of Anthropic credit, a rejected key --
-    that would otherwise sit unseen in a log file on the local machine. Text
-    only; the local side never sends transaction data through this."""
-    await verify_api_key(api_key)
-    bot.send_alert(int(os.getenv("TELEGRAM_CHAT_ID")), body.title, body.message)
-    log.info(f"Sent alert to Telegram: {body.title}")
-    return {"sent": True}
-
-
-@app.post('/sync-category-proposals')
-async def sync_category_proposals(body: SyncCategoryProposalsRequest, api_key: str = Security(API_KEY_HEADER)):
-    """Store newly created real-time category proposals and send their cards.
-    Unlike /sync-taxonomy-proposals, nothing pending is cleared first -- these
-    arrive continuously (several pipeline runs a day), not one batch a month.
-
-    Checks for a pre-existing row before inserting, rather than INSERT ...
-    ON CONFLICT DO NOTHING: that let a local_id collision (any row already on
-    the server for that id, in any status) silently no-op the insert while
-    still sending a card built from the NEW proposal's content -- a card that
-    then didn't match what was actually stored, so tapping it just replied
-    "Already <old status>." A collision is unlikely in normal operation (ids
-    only ever increase), but can happen if a local database is restored from
-    a backup older than the server's own state, so it's worth guarding against
-    outright rather than trusting it can't occur."""
-    await verify_api_key(api_key)
-    con = get_con()
-    stored = []
-    for p in body.proposals:
-        if con.execute("SELECT 1 FROM category_proposals WHERE local_id = ?", [p.id]).fetchone():
-            log.warning(f"Category proposal local_id={p.id} already exists on the server -- skipping, not sending a card for it")
-            continue
-        con.execute(
-            """INSERT INTO category_proposals
-               (local_id, options, txn_count, examples, status, sent_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
-            [p.id, json.dumps([o.model_dump() for o in p.options]), p.txn_count,
-             json.dumps(p.examples), time.strftime("%Y-%m-%d %H:%M:%S")]
-        )
-        stored.append(p)
-
-    if stored:
-        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
-        for p in stored:
-            bot.send_category_proposal(chat_id, {
-                "local_id": p.id, "options": [o.model_dump() for o in p.options],
-                "txn_count": p.txn_count, "examples": p.examples,
-            })
-    log.info(f"Received {len(stored)} category proposal(s) and sent cards")
-    return {"received": len(stored)}
-
-
-def _rule_suggestion_already_covered(con, match_field: str, match_value: str) -> bool:
-    """Whether an existing ENABLED rule already catches this pattern's
-    identifying value on its own. A rule with a second condition can't be
-    verified without a full transaction to test it against, so it's treated
-    as not covering this -- erring toward still suggesting rather than
-    silently missing a genuinely useful one."""
-    from check_rules import _matches
-    rows = con.execute(
-        """SELECT match_type, match_value FROM rules
-           WHERE enabled = TRUE AND match_field = ?
-           AND (match_field_2 IS NULL OR match_field_2 = '')""",
-        [match_field]
-    ).fetchall()
-    for match_type, existing_value in rows:
-        try:
-            if _matches(match_value, match_type, existing_value):
-                return True
-        except Exception:
-            continue
-    return False
-
-
-@app.post('/sync-rule-suggestions')
-async def sync_rule_suggestions(body: SyncRuleSuggestionsRequest, api_key: str = Security(API_KEY_HEADER)):
-    """Store genuinely new rule suggestions and send their cards. Skips a
-    candidate already asked about -- in any status, so a denied one stays
-    denied -- and one an existing enabled rule already covers, since neither
-    needs asking about again."""
-    await verify_api_key(api_key)
-    con = get_con()
-    stored = []
-    for c in body.candidates:
-        if con.execute(
-            "SELECT 1 FROM rule_suggestions WHERE match_field = ? AND match_value = ?",
-            [c.match_field, c.match_value]
-        ).fetchone():
-            continue
-        if _rule_suggestion_already_covered(con, c.match_field, c.match_value):
-            continue
-        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
-        con.execute(
-            """INSERT INTO rule_suggestions
-               (id, match_field, match_value, category, subcategory, txn_count, auto_context, status, proposed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
-            [next_id, c.match_field, c.match_value, c.category, c.subcategory, c.txn_count, c.auto_context,
-             time.strftime("%Y-%m-%d %H:%M:%S")]
-        )
-        stored.append({"id": next_id, **c.model_dump()})
-
-    if stored:
-        chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
-        for s in stored:
-            bot.send_rule_suggestion(chat_id, s)
-    log.info(f"Received {len(stored)} rule suggestion(s) and sent cards")
-    return {"received": len(stored)}
-
-
-@app.get('/category-decisions')
-async def category_decisions(api_key: str = Security(API_KEY_HEADER)):
-    """Decisions the local pipeline hasn't collected yet. Marked 'collected'
-    only once the local side confirms via /category-decisions/collected, so a
-    failed local run doesn't lose an approval."""
-    await verify_api_key(api_key)
-    rows = get_con().execute(
-        """SELECT local_id, status, selected_option, regenerate_requested FROM category_proposals
-           WHERE status IN ('selected', 'denied') ORDER BY local_id"""
-    ).fetchall()
-    return {"decisions": [
-        {"id": r[0], "status": r[1], "selected_option": r[2], "regenerate_requested": bool(r[3])}
-        for r in rows
-    ]}
-
-
-@app.post('/category-decisions/collected')
-async def category_decisions_collected(body: MarkProcessedRequest, api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    con = get_con()
-    for local_id in body.ids:
-        con.execute(
-            "UPDATE category_proposals SET status = 'collected' WHERE local_id = ?",
-            [int(local_id)]
-        )
-    return {"collected": len(body.ids)}
-
-
-@app.post('/monthly-report')
-async def monthly_report(body: MonthlyReportRequest, api_key: str = Security(API_KEY_HEADER)):
-    await verify_api_key(api_key)
-    bot = TelegramBot()
-    bot.send_message(int(os.getenv("TELEGRAM_CHAT_ID")), body.message)
-    return {"ok": True}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

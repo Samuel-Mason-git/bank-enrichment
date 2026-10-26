@@ -8,6 +8,7 @@ from weekly_summary import (
     format_weekly_message, get_missing_weeks, get_week_stats,
 )
 from monthly_summary import format_monthly_message, get_missing_months
+from tests.local_helpers import insert_transaction
 
 
 # ── Week key helpers ───────────────────────────────────────────────────────────
@@ -205,11 +206,7 @@ class TestGetMissingWeeks:
 
     def test_returns_missing_completed_weeks(self, db):
         # Insert a transaction far in the past so at least one week is "completed"
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_old', -10.0, 'GBP', '2024-01-08 00:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_old", amount=-10.0, created_at="2024-01-08 00:00:00")
         missing = get_missing_weeks()
         assert len(missing) > 0
         # All returned keys should match the week format
@@ -217,17 +214,13 @@ class TestGetMissingWeeks:
             assert re.match(r"^\d{4}-W\d{2}$", key)
 
     def test_already_sent_week_excluded(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_old', -10.0, 'GBP', '2024-01-08 00:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_old", amount=-10.0, created_at="2024-01-08 00:00:00")
         missing_before = get_missing_weeks()
         assert missing_before
         # Mark the first missing week as sent
         first = missing_before[0]
         db.execute(
-            "INSERT INTO weekly_summaries (id, send_date, total_spend, total_income, net, sent_at) VALUES (1, ?, 0, 0, 0, NOW())",
+            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('week', ?, 0, 0, 0, NOW())",
             [first]
         )
         missing_after = get_missing_weeks()
@@ -239,27 +232,19 @@ class TestGetMissingMonths:
         assert get_missing_months() == []
 
     def test_returns_missing_completed_months(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_old', -10.0, 'GBP', '2024-01-15 00:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_old", amount=-10.0, created_at="2024-01-15 00:00:00")
         missing = get_missing_months()
         assert len(missing) > 0
         for m in missing:
             assert re.match(r"^\d{4}-\d{2}$", m)
 
     def test_already_sent_month_excluded(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_old', -10.0, 'GBP', '2024-01-15 00:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_old", amount=-10.0, created_at="2024-01-15 00:00:00")
         missing_before = get_missing_months()
         assert missing_before
         first = missing_before[0]
         db.execute(
-            "INSERT INTO monthly_summaries (id, send_date, total_spend, total_income, net, sent_at) VALUES (1, ?, 0, 0, 0, NOW())",
+            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('month', ?, 0, 0, 0, NOW())",
             [first]
         )
         assert first not in get_missing_months()
@@ -276,49 +261,29 @@ class TestGetWeekStats:
 
     def test_spend_counted_correctly(self, db):
         # Monday of W27 2026 is 2026-06-29
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_spend', -20.0, 'GBP', '2026-06-30 12:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_spend", amount=-20.0, created_at="2026-06-30 12:00:00")
         stats = get_week_stats("2026-W27")
         assert stats["total_spend"] == pytest.approx(20.0)
         assert stats["total_income"] == pytest.approx(0.0)
 
     def test_income_counted_correctly(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_inc', 1000.0, 'GBP', '2026-06-30 12:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_inc", amount=1000.0, created_at="2026-06-30 12:00:00")
         stats = get_week_stats("2026-W27")
         assert stats["total_income"] == pytest.approx(1000.0)
 
     def test_net_is_income_minus_spend(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_s', -30.0, 'GBP', '2026-06-30 12:00:00', FALSE, NOW()),
-                      ('tx_i', 100.0, 'GBP', '2026-06-30 12:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_s", amount=-30.0, created_at="2026-06-30 12:00:00")
+        insert_transaction(db, "tx_i", amount=100.0, created_at="2026-06-30 12:00:00")
         stats = get_week_stats("2026-W27")
         assert stats["net"] == pytest.approx(70.0)
 
     def test_transactions_outside_week_excluded(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, processed_at)
-               VALUES ('tx_outside', -50.0, 'GBP', '2026-07-06 12:00:00', FALSE, NOW())"""
-        )
+        insert_transaction(db, "tx_outside", amount=-50.0, created_at="2026-07-06 12:00:00")
         stats = get_week_stats("2026-W27")
         assert stats["total_spend"] == 0.0
 
     def test_classified_spend_grouped_by_category(self, db):
-        db.execute(
-            """INSERT INTO transactions
-               (id, amount, currency, created_at, skipped, llm_category, processed_at)
-               VALUES ('tx_cat', -25.0, 'GBP', '2026-06-30 12:00:00', FALSE, 'Food & Drink', NOW())"""
-        )
+        insert_transaction(db, "tx_cat", amount=-25.0, created_at="2026-06-30 12:00:00", llm_category="Food & Drink")
         stats = get_week_stats("2026-W27")
         cats = [c["category"] for c in stats["spend_by_category"]]
         assert "Food & Drink" in cats

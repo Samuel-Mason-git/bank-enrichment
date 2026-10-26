@@ -35,7 +35,7 @@ def _insert_txn(con, id="tx1", merchant="Tesco", amount_pence=-1234, description
         "merchant": {"name": merchant} if merchant else None, "counterparty": {},
     }})
     con.execute(
-        "INSERT INTO webhook_queue (id, payload, received_at, status) VALUES (?, ?, NOW(), 'pending')",
+        "INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, NOW())",
         [id, payload],
     )
 

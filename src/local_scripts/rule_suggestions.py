@@ -1,8 +1,7 @@
 """Spots recurring (merchant/counterparty, category, subcategory) patterns in
 already-classified transactions that have never once varied, and proposes a
-Rule for them. Entirely server-side to approve -- unlike a taxonomy/category
-proposal, a Rule needs no local taxonomy to create, since Rules already live
-in the server's own database.
+Rule for them: a row in rule_suggestions, whose Telegram card the server
+sends. Approving it there creates the rule.
 
 Deliberately conservative: a pattern only qualifies at MIN_OCCURRENCES+
 occurrences with the category/subcategory 100% consistent across every one
@@ -11,11 +10,12 @@ isn't safe to auto-rule, and a one-off coincidence isn't a pattern.
 """
 import logging
 import os
+import re
+import time
 from collections import Counter
 from pathlib import Path
 
 import anthropic
-import requests
 from dotenv import load_dotenv
 
 import alerts
@@ -24,8 +24,6 @@ from llm_labelling import MODEL, _extract_json
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
 CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
 
 log = logging.getLogger(__name__)
@@ -146,32 +144,64 @@ def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> 
     return kept
 
 
+def _text_matches(value: str, match_type: str, pattern: str) -> bool:
+    """Whether a rule's condition matches a merchant/counterparty name -- the
+    same tests the server's rules apply. Amount-type conditions never match a
+    name."""
+    try:
+        if match_type == "exact":
+            return value.lower() == pattern.lower()
+        if match_type == "contains":
+            return pattern.lower() in value.lower()
+        if match_type == "regex":
+            return bool(re.search(pattern, value, re.IGNORECASE))
+    except re.error:
+        return False
+    return False
+
+
+def _not_yet_asked(con, candidates: list[dict]) -> list[dict]:
+    """Drop a candidate already suggested -- in any status, so a denied one
+    stays denied -- and one an existing enabled rule already catches on its own.
+    A rule with a second condition can't be judged without a whole transaction,
+    so it doesn't count as covering one: better to still suggest than to
+    silently miss a useful rule. Done before the worthiness check, so Claude is
+    only ever asked about a pattern once."""
+    asked = {(f, v) for f, v in con.execute("SELECT match_field, match_value FROM rule_suggestions").fetchall()}
+    rules = con.execute(
+        """SELECT match_field, match_type, match_value FROM rules
+           WHERE enabled AND (match_field_2 IS NULL OR match_field_2 = '')"""
+    ).fetchall()
+    return [
+        c for c in candidates
+        if (c["match_field"], c["match_value"]) not in asked
+        and not any(field == c["match_field"] and _text_matches(c["match_value"], match_type, value)
+                    for field, match_type, value in rules)
+    ]
+
+
 def sync_candidates() -> int:
-    """Push every current candidate to the server, which dedupes against
-    what it has already asked about (or already covers with an existing
-    rule) and decides what, if anything, to send on Telegram. Returns how
-    many were sent in the request -- not how many the server acted on, which
-    it never reports back, same restraint as every other proposal sync."""
-    candidates = find_candidates()
+    """Suggest a rule for every new candidate Claude judges safe to automate:
+    a pending row in rule_suggestions, whose card the server then sends.
+    Returns how many were added."""
+    con = get_con()
+    candidates = _not_yet_asked(con, find_candidates())
     if not candidates:
         return 0
     if not CLAUDE_SECRET:
         log.warning("CLAUDE_SECRET not set -- skipping rule suggestions until it is")
         return 0
     candidates = filter_worth_a_rule(anthropic.Anthropic(api_key=CLAUDE_SECRET), candidates)
-    if not candidates:
-        return 0
-    try:
-        response = requests.post(
-            f"{SERVER_URL}/sync-rule-suggestions",
-            headers={"X-API-Key": LOCAL_API_KEY}, json={"candidates": candidates}, timeout=30,
+    for c in candidates:
+        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
+        con.execute(
+            """INSERT INTO rule_suggestions
+               (id, match_field, match_value, category, subcategory, txn_count, auto_context,
+                llm_reasoning, status, proposed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            [next_id, c["match_field"], c["match_value"], c["category"], c["subcategory"],
+             c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), time.strftime("%Y-%m-%d %H:%M:%S")],
         )
-    except Exception as e:
-        log.warning(f"Could not reach the server to sync rule suggestions: {e}")
-        return 0
-    if response.status_code == 404:
-        log.info("Server has no rule-suggestion endpoint yet — skipping until it is deployed")
-        return 0
-    response.raise_for_status()
-    log.info(f"Synced {len(candidates)} rule suggestion candidate(s) to the server")
+    if candidates:
+        log.info(f"Suggested {len(candidates)} rule(s); the server sends their cards")
     return len(candidates)

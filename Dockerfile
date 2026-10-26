@@ -16,6 +16,6 @@ RUN poetry install --no-root --only main
 # Only what the server runs. server_db.py finds its schema at ../../sql relative to
 # itself, hence sql/ sitting next to src/.
 COPY src/server_scripts/ ./src/server_scripts/
-COPY sql/server_tables.sql ./sql/server_tables.sql
+COPY sql/postgres/schema.sql ./sql/postgres/schema.sql
 
 CMD ["python", "src/server_scripts/main.py"]

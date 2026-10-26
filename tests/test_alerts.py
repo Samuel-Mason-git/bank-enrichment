@@ -26,7 +26,8 @@ def server_error():
 
 
 def sent(alert_post):
-    return [c.kwargs["json"] for c in alert_post.call_args_list]
+    """The text of every Telegram message sent."""
+    return [c.kwargs["json"]["text"] for c in alert_post.call_args_list]
 
 
 class TestClassifyError:
@@ -58,12 +59,16 @@ class TestClassifyError:
 
 
 class TestSendAlert:
-    def test_posts_title_and_message_to_the_server_with_the_api_key(self, alert_post):
+    def test_sends_title_and_message_to_telegram(self, alert_post):
         assert alerts.send_alert("credit", "Low credit", "Top up.") is True
         args, kwargs = alert_post.call_args
-        assert args[0] == "http://test-server/send-alert"
-        assert kwargs["headers"] == {"X-API-Key": "test-api-key"}
-        assert kwargs["json"] == {"title": "Low credit", "message": "Top up."}
+        assert args[0] == "https://api.telegram.org/bottest-token/sendMessage"
+        assert kwargs["json"] == {"chat_id": "12345", "text": "⚠️ <b>Low credit</b>\n\nTop up.",
+                                  "parse_mode": "HTML"}
+
+    def test_the_text_is_escaped_for_telegrams_html(self, alert_post):
+        alerts.send_alert("x", "a < b", "c & d")
+        assert sent(alert_post) == ["⚠️ <b>a &lt; b</b>\n\nc &amp; d"]
 
     def test_each_kind_is_sent_once_per_run(self, alert_post):
         assert alerts.send_alert("credit", "a", "b") is True
@@ -75,16 +80,12 @@ class TestSendAlert:
         alert_post.side_effect = requests.ConnectionError("no route")
         assert alerts.send_alert("credit", "a", "b") is False
 
-    def test_an_older_server_without_the_endpoint_is_tolerated(self, alert_post):
-        alert_post.return_value = MagicMock(status_code=404, ok=False)
-        assert alerts.send_alert("credit", "a", "b") is False
-
     def test_a_rejected_alert_is_reported_not_raised(self, alert_post):
         alert_post.return_value = MagicMock(status_code=500, ok=False)
         assert alerts.send_alert("credit", "a", "b") is False
 
-    def test_no_server_configured_means_no_request(self, alert_post, monkeypatch):
-        monkeypatch.setattr(alerts, "SERVER_URL", "")
+    def test_no_bot_configured_means_no_request(self, alert_post, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_API")
         assert alerts.send_alert("credit", "a", "b") is False
         alert_post.assert_not_called()
 
@@ -106,20 +107,20 @@ class TestClassifierReportsFailures:
 
         messages = sent(alert_post)
         assert len(messages) == 1, "three failed passes, one alert"
-        assert messages[0]["title"] == "Anthropic credit balance too low"
-        assert "Pass 0" in messages[0]["message"], "it says where it was first seen"
+        assert "Anthropic credit balance too low" in messages[0]
+        assert "Pass 0" in messages[0], "it says where it was first seen"
 
     def test_a_bad_key_is_reported_as_such(self, alert_post):
         ll.match_existing(self._client(auth_error()), self.TXNS, self.SUBS)
-        assert sent(alert_post)[0]["title"] == "Anthropic API key rejected"
+        assert "Anthropic API key rejected" in sent(alert_post)[0]
 
     def test_unparseable_model_output_is_reported_without_quoting_it(self, alert_post):
         client = MagicMock()
         client.messages.create.return_value = MagicMock(
             content=[MagicMock(text="SECRETMERCHANT paid £99 — no JSON here")], stop_reason="end_turn")
         ll.match_existing(client, self.TXNS, self.SUBS)
-        payload = sent(alert_post)[0]
-        assert "SECRETMERCHANT" not in payload["message"] and "£99" not in payload["message"]
+        text = sent(alert_post)[0]
+        assert "SECRETMERCHANT" not in text and "£99" not in text
 
     def test_a_working_pass_sends_nothing(self, alert_post):
         client = MagicMock()

@@ -65,7 +65,7 @@ jobs:
           docker run --rm -w /app \
             -e TELEGRAM_API=ci -e TELEGRAM_CHAT_ID=1 \
             bank-enrichment-server \
-            python -c "import sys; sys.path.insert(0, 'src/server_scripts'); import server_db, telegram, check_rules, follow_up_tg, main; print('server modules import OK')"
+            python -c "import os, sys; sys.path.insert(0, 'src/server_scripts'); import server_db, telegram, check_rules, follow_up_tg, main; assert os.path.isfile(server_db.SCHEMA_PATH), 'schema.sql is missing from the image'; print('server modules import OK')"
 
   # Only rebuild the server when something the server is made of changed. A pipeline
   # or dashboard change has no business restarting a service that is receiving live
@@ -94,7 +94,7 @@ jobs:
           changed=$(git diff --name-only "$before" "${{ github.sha }}")
           echo "Files changed in this push:"
           echo "$changed"
-          if echo "$changed" | grep -E -q '^(src/server_scripts/|sql/server_tables\.sql$|Dockerfile$|\.dockerignore$|docker-compose\.yml$|Caddyfile$|pyproject\.toml$|poetry\.lock$)'; then
+          if echo "$changed" | grep -E -q '^(src/server_scripts/|sql/postgres/schema\.sql$|Dockerfile$|\.dockerignore$|docker-compose\.yml$|Caddyfile$|pyproject\.toml$|poetry\.lock$)'; then
             echo "server=true" >> "$GITHUB_OUTPUT"
           else
             echo "Nothing the server is built from changed -- skipping deploy"

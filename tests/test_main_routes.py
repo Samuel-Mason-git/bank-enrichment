@@ -50,11 +50,23 @@ def _txn_payload(merchant="TestMerchant", description="Test Purchase", amount=-1
 def _insert_txn(con, id="tx1", status="pending", skipped=False,
                 user_context=None, merchant="TestMerchant",
                 description="Test Purchase", amount=-1000):
-    con.execute(
-        "INSERT INTO webhook_queue (id, payload, received_at, status, user_context, skipped) "
-        "VALUES (?, ?, NOW(), ?, ?, ?)",
-        [id, _txn_payload(merchant, description, amount), status, user_context, skipped],
-    )
+    """A transaction in a given state, built from events the way they really
+    happen: pending = just arrived; enriched = answered; classified = answered
+    and labelled; skipped = answered with a skip."""
+    con.execute("INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, NOW())",
+                [id, _txn_payload(merchant, description, amount)])
+    if status != "pending" or skipped or user_context is not None:
+        con.execute("INSERT INTO context_events (txn_id, user_context, skipped, source) VALUES (%s, %s, %s, 'telegram')",
+                    [id, user_context, skipped])
+    if status == "classified":
+        con.execute("INSERT INTO parent_categories (id, name, created_at) VALUES (1, 'Food', NOW()) ON CONFLICT DO NOTHING")
+        con.execute("INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (1, 'Groceries', 1, NOW()) "
+                    "ON CONFLICT DO NOTHING")
+        con.execute("INSERT INTO label_events (txn_id, parent_id, subcategory_id, source) VALUES (%s, 1, 1, 'llm')", [id])
+
+
+def _context(con, id="tx1"):
+    return con.execute("SELECT user_context FROM transactions WHERE id = %s", [id]).fetchone()[0]
 
 
 def _insert_rule(con, id=1, name="Gym Rule", match_field="description",
@@ -64,7 +76,7 @@ def _insert_rule(con, id=1, name="Gym Rule", match_field="description",
     con.execute(
         "INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, "
         "enabled, auto_skip, match_field_2, match_type_2, match_value_2) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         [id, name, match_field, match_type, match_value, auto_context,
          enabled, auto_skip, match_field_2, match_type_2, match_value_2],
     )
@@ -119,14 +131,28 @@ class TestDashboardFilter:
                                status_filter=status_filter, search=search)
             )
 
-    def test_no_filter_returns_all_non_processed(self, server_con):
+    def test_no_filter_shows_what_still_needs_something(self, server_con):
         _insert_txn(server_con, "tx1", status="pending")
         _insert_txn(server_con, "tx2", status="enriched")
-        _insert_txn(server_con, "tx3", status="processed")
+        _insert_txn(server_con, "tx3", status="classified")
+        _insert_txn(server_con, "tx4", status="enriched", skipped=True)
         resp = self._run(server_con)
         ids = {r["id"] for r in resp.context["queue"]}
-        assert "tx1" in ids and "tx2" in ids
-        assert "tx3" not in ids  # processed excluded
+        assert ids == {"tx1", "tx2"}  # classified and skipped need nothing
+
+    def test_filter_classified(self, server_con):
+        _insert_txn(server_con, "tx1", status="pending")
+        _insert_txn(server_con, "tx3", status="classified")
+        resp = self._run(server_con, status_filter="classified")
+        assert {r["id"] for r in resp.context["queue"]} == {"tx3"}
+
+    def test_the_counts_come_from_the_data(self, server_con):
+        _insert_txn(server_con, "tx1", status="pending", amount=-250)
+        _insert_txn(server_con, "tx2", status="classified", amount=-750)
+        server_con.execute("INSERT INTO context_events (txn_id, source) VALUES ('tx1', 'request')")
+        ctx = self._run(server_con).context
+        assert (ctx["total_received"], ctx["total_amount"], ctx["requests_sent"],
+                ctx["total_enriched"], ctx["total_processed"]) == (2, "£10.00", 1, 1, 1)
 
     def test_filter_skipped_returns_only_skipped(self, server_con):
         _insert_txn(server_con, "tx_skip", status="enriched", skipped=True)
@@ -209,20 +235,22 @@ class TestEditContext:
         req = _form_req({"context": "new context text"})
         with patch("main.get_con", return_value=server_con):
             asyncio.run(main.edit_transaction_context("tx1", req, _CREDS))
-        row = server_con.execute(
-            "SELECT user_context FROM webhook_queue WHERE id = 'tx1'"
-        ).fetchone()
-        assert row[0] == "new context text"
+        assert _context(server_con) == "new context text"
+
+    def test_the_old_context_stays_in_the_history(self, server_con):
+        _insert_txn(server_con, "tx1", status="enriched", user_context="old text")
+        with patch("main.get_con", return_value=server_con):
+            asyncio.run(main.edit_transaction_context("tx1", _form_req({"context": "new"}), _CREDS))
+        history = [r[0] for r in server_con.execute(
+            "SELECT user_context FROM context_events WHERE txn_id = 'tx1' ORDER BY event_id").fetchall()]
+        assert history == ["old text", "new"]
 
     def test_empty_context_not_saved(self, server_con):
         _insert_txn(server_con, "tx1", status="enriched", user_context="original")
         req = _form_req({"context": "   "})
         with patch("main.get_con", return_value=server_con):
             asyncio.run(main.edit_transaction_context("tx1", req, _CREDS))
-        row = server_con.execute(
-            "SELECT user_context FROM webhook_queue WHERE id = 'tx1'"
-        ).fetchone()
-        assert row[0] == "original"
+        assert _context(server_con) == "original"
 
     def test_redirects_back_to_transaction(self, server_con):
         _insert_txn(server_con, "tx1")
@@ -233,43 +261,31 @@ class TestEditContext:
         assert "/dashboard/transaction/tx1" in resp.headers["location"]
 
 
-# ── Bulk actions ───────────────────────────────────────────────────────────────
+# ── Skip, un-skip, delete ──────────────────────────────────────────────────────
 
-class TestBulkActions:
-    def test_delete_skipped_removes_all_skipped(self, server_con):
-        _insert_txn(server_con, "tx_skip1", skipped=True, status="enriched")
-        _insert_txn(server_con, "tx_skip2", skipped=True, status="enriched")
-        _insert_txn(server_con, "tx_keep", skipped=False, status="pending")
+class TestSkipUnskipDelete:
+    def test_skip_then_unskip_hands_it_to_the_classifier(self, server_con):
+        _insert_txn(server_con, "tx1", status="pending")
         with patch("main.get_con", return_value=server_con):
-            asyncio.run(main.bulk_delete_skipped(_req("POST"), _CREDS))
-        remaining = {r[0] for r in server_con.execute(
-            "SELECT id FROM webhook_queue"
-        ).fetchall()}
-        assert "tx_skip1" not in remaining
-        assert "tx_skip2" not in remaining
-        assert "tx_keep" in remaining
+            asyncio.run(main.skip_transaction("tx1", _req("POST"), _CREDS))
+            assert server_con.execute("SELECT skipped FROM transactions WHERE id = 'tx1'").fetchone()[0] is True
+            asyncio.run(main.unskip_transaction("tx1", _req("POST"), _CREDS))
+        assert server_con.execute("SELECT id FROM needs_label").fetchall() == [("tx1",)]
 
-    def test_delete_skipped_leaves_non_skipped_intact(self, server_con):
-        _insert_txn(server_con, "tx_pend", status="pending", skipped=False)
-        _insert_txn(server_con, "tx_enr", status="enriched", skipped=False)
-        with patch("main.get_con", return_value=server_con):
-            asyncio.run(main.bulk_delete_skipped(_req("POST"), _CREDS))
-        count = server_con.execute(
-            "SELECT COUNT(*) FROM webhook_queue"
-        ).fetchone()[0]
-        assert count == 2
+    def test_an_unknown_transaction_is_404(self, server_con):
+        with patch("main.get_con", return_value=server_con), pytest.raises(main.HTTPException) as e:
+            asyncio.run(main.unskip_transaction("nope", _req("POST"), _CREDS))
+        assert e.value.status_code == 404
 
-    def test_delete_skipped_redirects_to_dashboard(self, server_con):
+    def test_delete_removes_it_and_its_history(self, server_con):
+        _insert_txn(server_con, "tx1", status="classified")
+        _insert_txn(server_con, "tx2", status="pending")
         with patch("main.get_con", return_value=server_con):
-            resp = asyncio.run(main.bulk_delete_skipped(_req("POST"), _CREDS))
-        assert isinstance(resp, RedirectResponse)
+            resp = asyncio.run(main.delete_transaction("tx1", _req("POST"), _CREDS))
         assert resp.headers["location"] == "/dashboard"
-
-    def test_requeue_pending_redirects_to_dashboard(self, server_con):
-        with patch("main.get_con", return_value=server_con):
-            resp = asyncio.run(main.bulk_requeue_pending(_req("POST"), _CREDS))
-        assert isinstance(resp, RedirectResponse)
-        assert resp.headers["location"] == "/dashboard"
+        assert [r[0] for r in server_con.execute("SELECT id FROM transactions").fetchall()] == ["tx2"]
+        for table in ("context_events", "label_events"):
+            assert server_con.execute(f"SELECT COUNT(*) FROM {table} WHERE txn_id = 'tx1'").fetchone()[0] == 0
 
 
 # ── Logs viewer ────────────────────────────────────────────────────────────────

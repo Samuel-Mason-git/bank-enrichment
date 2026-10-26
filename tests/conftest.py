@@ -71,31 +71,54 @@ def _reset_db():
 
 
 @pytest.fixture
-def db():
-    """In-memory DuckDB with the full local schema applied."""
+def db(pg):
+    """The pipeline's database, as it really connects: DuckDB with the
+    throwaway Postgres schema (the `pg` fixture) attached, set as the
+    connection database_functions hands out. Writes through it land in the
+    same tables `pg` sees."""
     import database_functions
+    schema = pg.execute("SELECT current_schema()").fetchone()[0]
     con = duckdb.connect(":memory:")
-    for stmt in _SQL_PATH.read_text().split(";"):
-        s = stmt.strip()
-        if s:
-            con.execute(s)
+    database_functions.attach(con, os.environ["TEST_POSTGRES_URL"], schema=schema)
     database_functions._con = con
     yield con
     con.close()
     database_functions._con = None
 
 
+@pytest.fixture
+def old_local_db():
+    """The PC's database as it was before the move: an in-memory DuckDB with
+    sql/tables.sql. Only the copy script, which reads that shape, needs it."""
+    con = duckdb.connect(":memory:")
+    for stmt in _SQL_PATH.read_text().split(";"):
+        s = stmt.strip()
+        if s:
+            con.execute(s)
+    yield con
+    con.close()
+
+
 @pytest.fixture(autouse=True)
-def alert_post():
-    """Keep the pipeline's Telegram alerts off the network in every test, and
+def alert_post(monkeypatch):
+    """Keep the pipeline's Telegram messages off the network in every test, and
     start each one with nothing already sent (alerts.py sends each kind at most
     once per process). Yields the mocked requests.post so a test can assert on
     what would have been sent."""
     import alerts
+    monkeypatch.setenv("TELEGRAM_API", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     alerts._sent.clear()
     with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:
         yield post
     alerts._sent.clear()
+
+
+@pytest.fixture(autouse=True)
+def _backups_in_tmp(tmp_path, monkeypatch):
+    """Every backup a test takes goes in its own temporary folder, never the
+    real one (BACKUP_DIR, or ~/bank-enrichment-backups)."""
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
 
 @pytest.fixture(autouse=True)
@@ -123,15 +146,10 @@ def _reset_server_db():
 
 
 @pytest.fixture
-def server_con():
-    """In-memory DuckDB with the full server schema applied."""
+def server_con(pg):
+    """The server's database: a throwaway Postgres schema with the new tables
+    (the `pg` fixture), set as the connection server_db hands out."""
     import server_db
-    con = duckdb.connect(":memory:")
-    for stmt in _SERVER_SQL_PATH.read_text().split(";"):
-        s = stmt.strip()
-        if s:
-            con.execute(s)
-    server_db._con = con
-    yield con
-    con.close()
+    server_db._con = pg
+    yield pg
     server_db._con = None

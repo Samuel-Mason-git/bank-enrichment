@@ -3,21 +3,34 @@ import pytest
 
 import database_functions
 from database_functions import (
-    get_con, write_to_db, get_transaction, get_all_transactions,
-    get_unclassified, get_recent, get_stats, update_classification,
+    get_con, get_transaction, get_all_transactions,
+    get_unclassified, get_recent, get_stats,
     upsert_parent, upsert_subcategory, get_parents, get_subcategories,
     get_subscriptions, upsert_subscription, toggle_subscription,
-    delete_subscription, search, _ts, _rows,
-    get_top_subcategories, get_top_merchant_subcategories,
+    delete_subscription, search, _rows,
     apply_quick_tap_classifications,
     get_totals_by_role, get_category_totals_by_role, set_parent_role, set_subcategory_role,
     _seed_taxonomy,
 )
+from tests.local_helpers import ensure_category, write_to_db as _write_to_db
+
+
+def write_to_db(rows):
+    """A transaction arriving and being answered, as the old write_to_db's input describes it."""
+    _write_to_db(get_con(), rows)
+
+
+def update_classification(txn_id, category, subcategory, confidence, model):
+    """Label a transaction, creating the category first if the test hasn't --
+    the real function only files into categories that exist."""
+    if category:
+        ensure_category(get_con(), category, subcategory)
+    database_functions.update_classification(txn_id, category, subcategory, confidence, model)
 
 
 def _txn(id="tx_001", amount_pence=-1234, description="Coffee",
          user_context="morning coffee", skipped=False, merchant="Caffe Nero",
-         created="2026-01-15T10:00:00"):
+         created="2026-01-15T10:00:00Z"):
     return {
         "id": id,
         "payload": {
@@ -142,6 +155,26 @@ class TestGetStats:
 
 
 class TestUpdateClassification:
+    def test_a_category_that_doesnt_exist_is_refused(self, db):
+        write_to_db([_txn()])
+        with pytest.raises(ValueError):
+            database_functions.update_classification("tx_001", "Nope", "Never", None, "m")
+
+    def test_keeps_the_previous_label_in_the_history(self, db):
+        write_to_db([_txn()])
+        update_classification("tx_001", "Food & Drink", "Coffee Shops", 0.9, "m")
+        update_classification("tx_001", "Transport", "Fuel", 0.9, "m")
+        assert get_con().execute("SELECT COUNT(*) FROM label_events WHERE txn_id = 'tx_001'").fetchone()[0] == 2
+        assert get_transaction("tx_001")["llm_category"] == "Transport"
+
+    def test_releases_a_proposal_hold(self, db):
+        from tests.local_helpers import hold
+        write_to_db([_txn()])
+        hold(get_con(), 1, ["tx_001"])
+        assert get_transaction("tx_001")["pending_category_proposal_id"] == 1
+        update_classification("tx_001", "Food & Drink", "Coffee Shops", None, "manual")
+        assert get_transaction("tx_001")["pending_category_proposal_id"] is None
+
     def test_sets_all_classification_fields(self, db):
         write_to_db([_txn()])
         update_classification("tx_001", "Food & Drink", "Coffee Shops", 0.95, "claude-test")
@@ -219,6 +252,13 @@ class TestSeedTaxonomy:
         names = {p["name"] for p in get_parents()}
         assert names == {"My Custom Category"}
 
+    def test_seeds_again_once_every_category_is_archived(self, db):
+        """After the taxonomy is wiped, the defaults come back."""
+        pid = upsert_parent("Old")
+        get_con().execute("UPDATE parent_categories SET archived_at = NOW() WHERE id = ?", [pid])
+        _seed_taxonomy()
+        assert "Income" in {p["name"] for p in get_parents()}
+
     def test_does_not_top_up_missing_subcategories_of_an_existing_default_parent(self, db):
         """Even a parent that happens to share a default name shouldn't have
         its missing default subcategories filled back in once anything
@@ -293,8 +333,8 @@ class TestGetTotalsByRole:
         new income, and it's not money leaving either."""
         _seed_taxonomy()  # real startup path: seeds Income -> Refunds -> excluded
         write_to_db([
-            _txn(id="t1", amount_pence=5000, description="Refund", created="2026-01-05T10:00:00"),
-            _txn(id="t2", amount_pence=200000, description="Salary", created="2026-01-06T10:00:00"),
+            _txn(id="t1", amount_pence=5000, description="Refund", created="2026-01-05T10:00:00Z"),
+            _txn(id="t2", amount_pence=200000, description="Salary", created="2026-01-06T10:00:00Z"),
         ])
         update_classification("t1", "Income", "Refunds", 1.0, "test")
         update_classification("t2", "Income", "Salary", 1.0, "test")
@@ -306,7 +346,7 @@ class TestGetTotalsByRole:
     def test_investment_reported_as_positive_outgoing_magnitude(self, db):
         pid = upsert_parent("Investments")
         upsert_subcategory("Stocks & Shares ISA Contributions", pid)
-        write_to_db([_txn(id="t1", amount_pence=-30000, description="ISA", created="2026-01-05T10:00:00")])
+        write_to_db([_txn(id="t1", amount_pence=-30000, description="ISA", created="2026-01-05T10:00:00Z")])
         update_classification("t1", "Investments", "Stocks & Shares ISA Contributions", 1.0, "test")
 
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
@@ -324,8 +364,8 @@ class TestGetTotalsByRole:
         upsert_subcategory("Inbound Transfer", pid)
         upsert_subcategory("Outbound Transfer", pid)
         write_to_db([
-            _txn(id="t1", amount_pence=-67400, description="Outbound", created="2026-01-05T10:00:00"),
-            _txn(id="t2", amount_pence=54000, description="Inbound", created="2026-01-06T10:00:00"),
+            _txn(id="t1", amount_pence=-67400, description="Outbound", created="2026-01-05T10:00:00Z"),
+            _txn(id="t2", amount_pence=54000, description="Inbound", created="2026-01-06T10:00:00Z"),
         ])
         update_classification("t1", "Transfers", "Outbound Transfer", 1.0, "test")
         update_classification("t2", "Transfers", "Inbound Transfer", 1.0, "test")
@@ -347,10 +387,10 @@ class TestGetTotalsByRole:
         upsert_subcategory("Withdrawal", invest_pid)
         set_parent_role(invest_pid, "investment")
         write_to_db([
-            _txn(id="t1", amount_pence=-50000, description="Deposit", created="2026-01-05T10:00:00"),
-            _txn(id="t2", amount_pence=20000, description="Withdrawal", created="2026-01-06T10:00:00"),
-            _txn(id="t3", amount_pence=-30000, description="Contribution", created="2026-01-07T10:00:00"),
-            _txn(id="t4", amount_pence=10000, description="Withdrawal", created="2026-01-08T10:00:00"),
+            _txn(id="t1", amount_pence=-50000, description="Deposit", created="2026-01-05T10:00:00Z"),
+            _txn(id="t2", amount_pence=20000, description="Withdrawal", created="2026-01-06T10:00:00Z"),
+            _txn(id="t3", amount_pence=-30000, description="Contribution", created="2026-01-07T10:00:00Z"),
+            _txn(id="t4", amount_pence=10000, description="Withdrawal", created="2026-01-08T10:00:00Z"),
         ])
         update_classification("t1", "Savings", "Deposit", 1.0, "test")
         update_classification("t2", "Savings", "Withdrawal", 1.0, "test")
@@ -375,7 +415,7 @@ class TestGetTotalsByRole:
         a positive amount there contributes to neither spend nor income."""
         pid = upsert_parent("Holidays")
         upsert_subcategory("Accommodation", pid)
-        write_to_db([_txn(id="t1", amount_pence=5000, description="Refunded hotel", created="2026-01-05T10:00:00")])
+        write_to_db([_txn(id="t1", amount_pence=5000, description="Refunded hotel", created="2026-01-05T10:00:00Z")])
         update_classification("t1", "Holidays", "Accommodation", 1.0, "test")
 
         totals = get_totals_by_role("2026-01-01", "2026-01-31")
@@ -445,131 +485,6 @@ class TestSearch:
         assert len(ids) == len(set(ids))
 
 
-def _seed(pairs):
-    """upsert_parent/upsert_subcategory for each (category, subcategory) pair."""
-    for category, subcategory in pairs:
-        pid = upsert_parent(category)
-        upsert_subcategory(subcategory, pid)
-
-
-class TestGetTopSubcategories:
-    def test_orders_by_frequency(self, db):
-        write_to_db([_txn("tx_001"), _txn("tx_002"), _txn("tx_003")])
-        _seed([("Food & Drink", "Coffee Shops"), ("Transport", "Fuel")])
-        update_classification("tx_001", "Food & Drink", "Coffee Shops", None, "m")
-        update_classification("tx_002", "Food & Drink", "Coffee Shops", None, "m")
-        update_classification("tx_003", "Transport", "Fuel", None, "m")
-        rows = get_top_subcategories()
-        assert rows[0]["subcategory"] == "Coffee Shops"
-        assert rows[0]["transaction_count"] == 2
-
-    def test_limit_respected(self, db):
-        write_to_db([_txn(f"tx_{i:03d}") for i in range(4)])
-        pairs = [("Food & Drink", "Coffee Shops"), ("Food & Drink", "Groceries"),
-                  ("Transport", "Fuel"), ("Transport", "Parking")]
-        _seed(pairs)
-        for i, (cat, sub) in enumerate(pairs):
-            update_classification(f"tx_{i:03d}", cat, sub, None, "m")
-        assert len(get_top_subcategories(limit=2)) == 2
-
-    def test_unclassified_transactions_excluded(self, db):
-        write_to_db([_txn()])
-        assert get_top_subcategories() == []
-
-    def test_empty_when_no_transactions(self, db):
-        assert get_top_subcategories() == []
-
-
-class TestGetTopMerchantSubcategories:
-    def test_top_subcategories_per_merchant(self, db):
-        write_to_db([_txn(f"tx_{i:03d}", merchant="Tesco") for i in range(4)])
-        update_classification("tx_000", "Food & Drink", "Groceries", None, "m")
-        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
-        update_classification("tx_002", "Food & Drink", "Snacks", None, "m")
-        update_classification("tx_003", "Food & Drink", "Takeaway", None, "m")
-        rows = get_top_merchant_subcategories(per_merchant_limit=2)
-        assert len(rows) == 2
-        assert rows[0]["subcategory"] == "Groceries"
-        assert rows[0]["merchant_name"] == "Tesco"
-
-    def test_merchant_limit_caps_number_of_merchants(self, db):
-        write_to_db([
-            _txn("tx_001", merchant="Tesco"), _txn("tx_002", merchant="Tesco"),
-            _txn("tx_003", merchant="Amazon"),
-        ])
-        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
-        update_classification("tx_002", "Food & Drink", "Groceries", None, "m")
-        update_classification("tx_003", "Shopping", "Electronics", None, "m")
-        rows = get_top_merchant_subcategories(merchant_limit=1, per_merchant_limit=3)
-        merchants = {r["merchant_name"] for r in rows}
-        assert merchants == {"Tesco"}
-
-    def test_ignores_null_merchant(self, db):
-        write_to_db([_txn("tx_001", merchant=None)])
-        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
-        assert get_top_merchant_subcategories() == []
-
-    def test_empty_when_no_classified_transactions(self, db):
-        write_to_db([_txn(merchant="Tesco")])
-        assert get_top_merchant_subcategories() == []
-
-    def _counterparty_txn(self, id="tx_dd", counterparty="Octopus Energy"):
-        """A direct debit: no merchant block at all, only a counterparty --
-        the shape _txn() can't produce since it always sends merchant."""
-        return {
-            "id": id,
-            "payload": {"data": {
-                "amount": -8000, "currency": "GBP", "description": "89GJTS7",
-                "category": "bills", "counterparty": {"name": counterparty},
-                "is_load": False, "created": "2026-01-15T10:00:00", "settled": "2026-01-15T10:00:00",
-            }},
-            "user_context": "Electricity bill", "skipped": False,
-            "received_at": "2026-01-15T10:00:00", "enriched_at": "2026-01-15T10:00:01",
-        }
-
-    def test_falls_back_to_counterparty_when_merchant_is_absent(self, db):
-        """Regression test: direct debits and bank transfers -- rent, utility
-        bills, HMRC-style payments -- almost never populate merchant_name, only
-        counterparty_name. Grouping by merchant_name alone shut every one of
-        these recurring payments out of quick-tap suggestions entirely."""
-        write_to_db([self._counterparty_txn(f"tx_{i}") for i in range(3)])
-        for i in range(3):
-            update_classification(f"tx_{i}", "Bills & Utilities", "Electricity", None, "m")
-        rows = get_top_merchant_subcategories()
-        assert len(rows) == 1
-        assert rows[0]["merchant_name"] == "Octopus Energy"
-        assert rows[0]["subcategory"] == "Electricity"
-        assert rows[0]["transaction_count"] == 3
-
-    def test_merchant_name_is_preferred_over_counterparty_when_both_exist(self, db):
-        write_to_db([_txn("tx_card", merchant="Tesco")])
-        update_classification("tx_card", "Food & Drink", "Groceries", None, "m")
-        rows = get_top_merchant_subcategories()
-        assert rows[0]["merchant_name"] == "Tesco"
-
-    def test_a_transaction_with_neither_merchant_nor_counterparty_is_ignored(self, db):
-        """counterparty_name is stored as '' rather than NULL when Monzo sends
-        no counterparty block -- an empty string must not itself count as a
-        real payee identity."""
-        write_to_db([_txn("tx_001", merchant=None)])
-        update_classification("tx_001", "Food & Drink", "Groceries", None, "m")
-        assert get_top_merchant_subcategories() == []
-
-    def test_a_card_payment_and_a_direct_debit_with_the_same_name_pool_together(self, db):
-        """The point of falling back to counterparty_name at all: a card swipe
-        at 'Tesco' and a direct debit whose counterparty is also 'Tesco' are
-        the same real-world payee, so they should count as one merchant with
-        two transactions, not be split across a merchant-only and a
-        counterparty-only bucket that never combine."""
-        write_to_db([_txn("tx_card", merchant="Tesco"), self._counterparty_txn("tx_dd", counterparty="Tesco")])
-        update_classification("tx_card", "Food & Drink", "Groceries", None, "m")
-        update_classification("tx_dd", "Food & Drink", "Groceries", None, "m")
-        rows = get_top_merchant_subcategories()
-        assert len(rows) == 1
-        assert rows[0]["merchant_name"] == "Tesco"
-        assert rows[0]["transaction_count"] == 2
-
-
 class TestApplyQuickTapClassifications:
     def test_classifies_exact_match(self, db):
         pid = upsert_parent("Food & Drink")
@@ -632,14 +547,6 @@ class TestApplyQuickTapClassifications:
 
 
 class TestHelpers:
-    def test_ts_returns_value_when_truthy(self):
-        assert _ts("2026-01-01") == "2026-01-01"
-        assert _ts(42) == 42
-
-    def test_ts_returns_none_for_falsy(self):
-        assert _ts(None) is None
-        assert _ts("") is None
-
     def test_rows_returns_list_of_dicts(self, db):
         write_to_db([_txn()])
         rows = _rows("SELECT id, amount FROM transactions")
@@ -657,36 +564,31 @@ class TestHelpers:
 class TestBackups:
     @pytest.fixture(autouse=True)
     def _isolate_backup_dir(self, tmp_path, monkeypatch):
-        """backup_dir() derives from DB_PATH, so pointing DB_PATH at tmp_path
-        keeps every backup written by these tests out of the real data dir."""
-        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+        """Keep every backup these tests write out of the real backup folder."""
+        monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
-    def test_creates_a_restorable_export(self, db, tmp_path):
+    def test_saves_every_table_as_parquet(self, db, tmp_path):
         write_to_db([_txn(id="tx_backup", user_context="before the wipe")])
         target = database_functions.backup_db("test")
 
-        assert (target / "schema.sql").is_file()
-        assert (target / "load.sql").is_file()
-
-        restored = duckdb.connect(":memory:")
-        restored.execute(f"IMPORT DATABASE '{target}'")
-        rows = restored.execute(
-            "SELECT id, user_context FROM transactions"
+        assert {p.stem for p in target.glob("*.parquet")} == set(database_functions.BACKUP_TABLES)
+        copy = duckdb.connect(":memory:")
+        rows = copy.execute(
+            f"SELECT txn_id, user_context FROM '{target / 'context_events.parquet'}'"
         ).fetchall()
-        restored.close()
+        copy.close()
         assert rows == [("tx_backup", "before the wipe")]
 
-    def test_survives_wiping_the_live_data(self, db):
-        """The whole point: the backup must still hold the rows after the
-        destructive action it was taken to protect against."""
+    def test_survives_deleting_the_live_data(self, db):
+        """The whole point: the copy must still hold the rows afterwards."""
         write_to_db([_txn(id="tx_doomed")])
-        target = database_functions.backup_db("wipe-taxonomy")
-        get_con().execute("DELETE FROM transactions")
+        target = database_functions.backup_db("before")
+        get_con().execute("DELETE FROM context_events")
+        get_con().execute("DELETE FROM transactions_raw")
 
-        restored = duckdb.connect(":memory:")
-        restored.execute(f"IMPORT DATABASE '{target}'")
-        count = restored.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-        restored.close()
+        copy = duckdb.connect(":memory:")
+        count = copy.execute(f"SELECT COUNT(*) FROM '{target / 'transactions_raw.parquet'}'").fetchone()[0]
+        copy.close()
         assert count == 1
 
     def test_reason_appears_in_the_directory_name(self, db):
@@ -731,11 +633,11 @@ class TestBackups:
 class TestBackupManifest:
     @pytest.fixture(autouse=True)
     def _isolate_backup_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
     def test_records_what_the_backup_contains(self, db):
-        write_to_db([_txn(id="tx_a", created="2025-03-01T10:00:00")])
-        write_to_db([_txn(id="tx_b", created="2026-02-01T10:00:00")])
+        write_to_db([_txn(id="tx_a", created="2025-03-01T10:00:00Z")])
+        write_to_db([_txn(id="tx_b", created="2026-02-01T10:00:00Z")])
         update_classification("tx_a", "Food & Drink", "Coffee Shops", 1.0, "test")
         parent_id = upsert_parent("Food & Drink")
         upsert_subcategory("Coffee Shops", parent_id)
@@ -757,7 +659,8 @@ class TestBackupManifest:
         """The counts have to reflect what was saved, not what is left behind."""
         write_to_db([_txn(id="tx_doomed")])
         target = database_functions.backup_db("wipe")
-        get_con().execute("DELETE FROM transactions")
+        get_con().execute("DELETE FROM context_events")
+        get_con().execute("DELETE FROM transactions_raw")
         assert database_functions.read_backup_manifest(target)["transactions"] == 1
 
     def test_empty_database_has_no_coverage_dates(self, db):
@@ -789,7 +692,7 @@ class TestBackupManifest:
 class TestDeleteBackup:
     @pytest.fixture(autouse=True)
     def _isolate_backup_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(database_functions, "DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
     def test_removes_only_the_chosen_backup(self, db):
         keep = database_functions.backup_db("keep")

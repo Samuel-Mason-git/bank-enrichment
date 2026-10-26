@@ -1,3 +1,11 @@
+"""The PC side of the one Postgres database (the data box's `vault`, schema
+`bank_enrichment` -- see docs/server-move.md).
+
+DuckDB is still the query engine: the Postgres schema is ATTACHed, so the
+pipeline and the dashboard keep their DuckDB SQL and read the `transactions`
+view under the column names the old table had. Writes to a transaction are
+history, not updates: a label is a new label_events row, a corrected date or
+context a new context_events row."""
 import json
 import logging
 import os
@@ -10,11 +18,18 @@ import duckdb
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-DB_PATH = os.getenv("DB_PATH")
-
 log = logging.getLogger(__name__)
 
 _con: duckdb.DuckDBPyConnection | None = None
+
+SCHEMA = "bank_enrichment"
+
+
+def log_path(filename: str) -> str:
+    """Where a script's log file goes: LOG_DIR, or logs/ in the repo."""
+    folder = Path(os.getenv("LOG_DIR") or Path(__file__).parent.parent.parent / "logs")
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder / filename)
 
 
 # ── Connection ────────────────────────────────────────────────────────────────
@@ -26,41 +41,52 @@ def get_con() -> duckdb.DuckDBPyConnection:
     return _con
 
 
-def split_sql_statements(sql: str) -> list[str]:
-    """Split a schema file into executable statements.
+def postgres_dsn() -> str:
+    e = os.environ
+    return (f"host={e['DB_HOST']} port={e.get('DB_PORT', '5432')} dbname={e['DB_NAME']} "
+            f"user={e['DB_USER']} password={e['DB_PASSWORD']} connect_timeout=10")
 
-    Comments are stripped BEFORE splitting on the semicolon. Splitting naively
-    meant one semicolon inside a comment cut a CREATE TABLE in half, and the
-    resulting fragments are invalid SQL -- so the whole schema load failed on
-    something as innocuous as "sent for approval; the pipeline applies it".
-    Quotes are tracked so a '--' inside a string literal is left alone."""
-    cleaned = []
-    for line in sql.splitlines():
-        if line.strip().startswith("--"):
-            continue
-        in_string = False
-        for i, char in enumerate(line):
-            if char == "'":
-                in_string = not in_string
-            elif char == "-" and not in_string and line[i:i + 2] == "--":
-                line = line[:i]
-                break
-        cleaned.append(line)
-    return [s.strip() for s in "\n".join(cleaned).split(";") if s.strip()]
+
+def attach(con: duckdb.DuckDBPyConnection, dsn: str, schema: str = SCHEMA, read_only: bool = False) -> None:
+    """Make the Postgres schema this connection's default, so unqualified table
+    names are the Postgres tables. The role macro lives on the DuckDB side,
+    because DuckDB -- not Postgres -- runs the queries that use it."""
+    con.execute("INSTALL postgres; LOAD postgres")
+    options = f"TYPE postgres, SCHEMA '{schema}'" + (", READ_ONLY" if read_only else "")
+    con.execute(f"ATTACH '{dsn}' AS pg ({options})")
+    con.execute(f"SET search_path = 'pg.{schema},memory.main'")
+    con.execute(f"SET VARIABLE pg_schema = '{schema}'")
+    con.execute(
+        """CREATE OR REPLACE MACRO memory.main.default_role_for_parent(parent_name) AS
+               CASE parent_name WHEN 'Income' THEN 'income'
+                                WHEN 'Investments' THEN 'investment'
+                                WHEN 'Transfers' THEN 'transfer' END"""
+    )
+
+
+def set_json(con: duckdb.DuckDBPyConnection, table: str, row_id: int, **columns) -> None:
+    """Set JSONB columns on one row. DuckDB can't write a JSONB column through
+    the attachment (Postgres refuses the text it sends), so this one statement
+    goes to Postgres directly."""
+    schema = con.execute("SELECT getvariable('pg_schema')").fetchone()[0]
+    sets = ", ".join(
+        f"{name} = '{json.dumps(value).replace(chr(39), chr(39) * 2)}'::jsonb"
+        for name, value in columns.items()
+    )
+    con.execute("CALL postgres_execute('pg', ?)",
+                [f'UPDATE "{schema}".{table} SET {sets} WHERE id = {int(row_id)}'])
 
 
 def init_db(read_only: bool = False) -> None:
+    """Connect to Postgres through DuckDB. The tables themselves are made by the
+    server (it applies sql/postgres/schema.sql on every start)."""
     global _con
     if _con is not None:
         return
+    con = duckdb.connect()
+    attach(con, postgres_dsn(), read_only=read_only)
+    _con = con
     if not read_only:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    _con = duckdb.connect(DB_PATH, read_only=read_only)
-    if not read_only:
-        sql_path = Path(__file__).parent.parent.parent / "sql" / "tables.sql"
-        for statement in split_sql_statements(sql_path.read_text()):
-            _con.execute(statement)
-        _migrate()
         _seed_taxonomy()
 
 
@@ -116,125 +142,27 @@ _DEFAULT_TAXONOMY = {
 }
 
 
-# (table, column, type) added to databases created before the column existed.
-# CREATE TABLE IF NOT EXISTS does nothing once a table exists, so a column added
-# to tables.sql never reaches a database that already has that table -- the file
-# and the live database silently disagree until something fails at runtime.
-# Every column added to an EXISTING table must also be listed here.
-MIGRATIONS = [
-    ("subscriptions", "merchant_name", "VARCHAR(255)"),
-    ("monthly_summaries", "total_invested", "DECIMAL(19,4)"),
-    ("weekly_summaries", "total_invested", "DECIMAL(19,4)"),
-    ("transactions", "pending_category_proposal_id", "INTEGER"),
-    ("category_proposals", "regenerate_requested", "BOOLEAN DEFAULT FALSE"),
-    ("monthly_summaries", "total_saved", "DECIMAL(19,4)"),
-    ("weekly_summaries", "total_saved", "DECIMAL(19,4)"),
-]
-
-
-def _columns(con, table: str) -> set[str]:
-    return {r[0] for r in con.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
-        [table],
-    ).fetchall()}
-
-
-def _apply_migrations(con, migrations: list[tuple[str, str, str]]) -> list[str]:
-    """Add any missing columns. Additive only -- nothing is dropped, renamed or
-    rewritten, so this is safe to run on every startup and safe to re-run.
-    Returns what it added, for logging."""
-    added = []
-    for table, column, column_type in migrations:
-        existing = _columns(con, table)
-        if not existing:
-            continue  # table isn't there yet, so CREATE TABLE will include it
-        if column not in existing:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
-            added.append(f"{table}.{column}")
-    return added
-
-
-def _category_roles_check_constraint(con) -> str | None:
-    """The live text of category_roles' role CHECK constraint, e.g.
-    "CHECK((\"role\" IN ('income', 'spend', ...)))" -- or None if the table
-    doesn't exist yet (a brand-new database: the schema file above already
-    created it with every current role, nothing to migrate)."""
-    row = con.execute(
-        "SELECT constraint_text FROM duckdb_constraints() "
-        "WHERE table_name = 'category_roles' AND constraint_type = 'CHECK'"
-    ).fetchone()
-    return row[0] if row else None
-
-
-def _migrate_category_roles_roles() -> None:
-    """Add 'saving' to category_roles' role CHECK constraint on a database
-    created before that role existed.
-
-    Unlike MIGRATIONS/_apply_migrations above (ADD COLUMN only), DuckDB has no
-    ALTER TABLE support for modifying a CHECK constraint at all -- confirmed by
-    trying it (ALTER TABLE ... DROP CONSTRAINT raises "No support for that
-    ALTER TABLE option yet!" in the DuckDB version this project uses). The only
-    way to widen it is the classic SQLite-style dance: rename the table aside,
-    create a new one with the constraint this file now specifies, copy every
-    row across, drop the old one. Every existing role value already satisfies
-    the new (strictly wider) constraint, so the copy can't fail on old data."""
-    con = _con
-    constraint = _category_roles_check_constraint(con)
-    if constraint is None or "'saving'" in constraint:
-        return  # new database, or already migrated
-    con.execute("ALTER TABLE category_roles RENAME TO category_roles_pre_saving_role")
-    con.execute(
-        """CREATE TABLE category_roles (
-               parent_id      INTEGER NOT NULL REFERENCES parent_categories(id),
-               subcategory_id INTEGER REFERENCES subcategories(id),
-               role           VARCHAR NOT NULL CHECK (role IN ('income', 'spend', 'investment', 'saving', 'transfer', 'excluded')),
-               UNIQUE (parent_id, subcategory_id)
-           )"""
-    )
-    con.execute("INSERT INTO category_roles SELECT * FROM category_roles_pre_saving_role")
-    con.execute("DROP TABLE category_roles_pre_saving_role")
-    log.info("Migrated category_roles: added 'saving' to the allowed roles")
-
-
-def _migrate() -> None:
-    """Additive schema migrations — safe to run on every startup."""
-    added = _apply_migrations(_con, MIGRATIONS)
-    if added:
-        log.info(f"Applied schema migrations: {', '.join(added)}")
-    _migrate_category_roles_roles()
-
-
 def _seed_taxonomy() -> None:
-    """Insert the default taxonomy, but only into a genuinely empty database --
-    once any parent category exists (default or custom), seeding is skipped
-    entirely. This previously ran on every startup and topped up any missing
-    default categories/subcategories by name even on an otherwise-populated,
-    user-customized taxonomy -- so wiping the taxonomy and rebuilding your own
-    under different names would silently get the full default set added back
-    in alongside it on the next start."""
+    """Insert the default taxonomy, but only when there are no live categories
+    at all -- a new install, or after the taxonomy has been wiped. Once any
+    live parent category exists (default or custom), seeding is skipped, so a
+    taxonomy you've rebuilt your own way never gets the defaults added back
+    alongside it."""
     con = _con
-    if con.execute("SELECT COUNT(*) FROM parent_categories").fetchone()[0] > 0:
+    if con.execute("SELECT COUNT(*) FROM parent_categories WHERE archived_at IS NULL").fetchone()[0] > 0:
         return
     for parent_name, subs in _DEFAULT_TAXONOMY.items():
-        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories").fetchone()[0]
-        con.execute(
-            "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, NOW())",
-            [next_id, parent_name],
-        )
-        parent_id = next_id
+        parent_id = upsert_parent(parent_name)
         for sub_name in subs:
-            next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories").fetchone()[0]
-            con.execute(
-                "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, NOW())",
-                [next_id, sub_name, parent_id],
-            )
+            upsert_subcategory(sub_name, parent_id)
 
     # Refunds are money you already spent coming back, not new income — excluded
     # from Income totals by default (overridable in the dashboard's Settings tab).
     refunds = con.execute(
         """SELECT s.id, s.parent_id FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
-           WHERE s.name = 'Refunds' AND p.name = 'Income'"""
+           WHERE s.name = 'Refunds' AND p.name = 'Income'
+             AND s.archived_at IS NULL AND p.archived_at IS NULL"""
     ).fetchone()
     if refunds:
         refunds_id, income_parent_id = refunds
@@ -256,16 +184,11 @@ def get_transaction(transaction_id: str) -> dict | None:
 
 
 def get_unclassified() -> list[dict]:
-    # Transactions locked behind a pending category-creation proposal are
-    # excluded until a Telegram decision comes back -- otherwise every run
-    # would re-submit them to the LLM and risk a duplicate proposal/card.
-    return _rows(
-        """SELECT * FROM transactions
-           WHERE (llm_category IS NULL OR llm_subcategory IS NULL)
-           AND skipped = FALSE
-           AND pending_category_proposal_id IS NULL
-           ORDER BY created_at DESC"""
-    )
+    """The classifier's to-do list: answered, not skipped, not fully labelled,
+    and not held back behind a category proposal awaiting a Telegram decision
+    (otherwise every run would re-submit those to the LLM and risk a duplicate
+    proposal and card)."""
+    return _rows("SELECT * FROM needs_label ORDER BY created_at DESC")
 
 
 def get_by_category(category: str) -> list[dict]:
@@ -286,20 +209,24 @@ def get_recent(n: int = 10) -> list[dict]:
         "SELECT * FROM transactions ORDER BY created_at DESC LIMIT ?", [n]
     )
 
+
 def get_parents() -> list[dict]:
+    """Live parent categories, with how many transactions each holds."""
     return _rows(
         """SELECT p.id, p.name, p.created_at,
                   COUNT(t.id) AS transaction_count,
                   COALESCE(pr.role, default_role_for_parent(p.name), 'spend') AS role
            FROM parent_categories p
-           LEFT JOIN transactions t ON t.llm_category = p.name
+           LEFT JOIN transactions t ON t.parent_id = p.id
            LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
+           WHERE p.archived_at IS NULL
            GROUP BY p.id, p.name, p.created_at, pr.role
            ORDER BY transaction_count DESC, p.name ASC"""
     )
 
 
 def get_subcategories() -> list[dict]:
+    """Live subcategories, with how many transactions each holds."""
     return _rows(
         """SELECT s.id, s.name, s.parent_id, p.name AS parent_name, s.created_at,
                   COUNT(t.id) AS transaction_count,
@@ -307,61 +234,12 @@ def get_subcategories() -> list[dict]:
                   COALESCE(pr.role, default_role_for_parent(p.name), 'spend') AS parent_role
            FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
-           LEFT JOIN transactions t ON t.llm_subcategory = s.name
-                                    AND t.llm_category = p.name
+           LEFT JOIN transactions t ON t.subcategory_id = s.id
            LEFT JOIN category_roles sr ON sr.subcategory_id = s.id
            LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
+           WHERE s.archived_at IS NULL AND p.archived_at IS NULL
            GROUP BY s.id, s.name, s.parent_id, p.name, s.created_at, sr.role, pr.role
            ORDER BY p.name ASC, transaction_count DESC, s.name ASC"""
-    )
-
-
-def get_top_subcategories(limit: int = 10) -> list[dict]:
-    return _rows(
-        """SELECT p.name AS category, s.name AS subcategory, COUNT(t.id) AS transaction_count
-           FROM subcategories s
-           JOIN parent_categories p ON p.id = s.parent_id
-           JOIN transactions t ON t.llm_subcategory = s.name AND t.llm_category = p.name
-           GROUP BY p.name, s.name
-           ORDER BY transaction_count DESC
-           LIMIT ?""",
-        [limit]
-    )
-
-
-def get_top_merchant_subcategories(merchant_limit: int = 50, per_merchant_limit: int = 3) -> list[dict]:
-    """Top subcategories per merchant, for the `merchant_limit` most-transacted
-    merchants -- these feed the per-merchant Telegram quick-tap buttons.
-
-    Grouped by merchant_name falling back to counterparty_name (direct debits
-    and bank transfers -- rent, utility bills, HMRC-style payments -- almost
-    never populate merchant_name at all), or every one of those recurring
-    payments would be shut out of quick-tap suggestions entirely and always
-    fall back to the generic top-5."""
-    return _rows(
-        """WITH merchant_totals AS (
-               SELECT COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) AS merchant_name, COUNT(*) AS total
-               FROM transactions
-               WHERE COALESCE(NULLIF(merchant_name, ''), NULLIF(counterparty_name, '')) IS NOT NULL
-                 AND llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
-               GROUP BY 1
-               ORDER BY total DESC
-               LIMIT ?
-           )
-           SELECT COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, '')) AS merchant_name,
-                  t.llm_category AS category, t.llm_subcategory AS subcategory,
-                  COUNT(*) AS transaction_count,
-                  ROW_NUMBER() OVER (
-                      PARTITION BY COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
-                      ORDER BY COUNT(*) DESC
-                  ) AS rank
-           FROM transactions t
-           JOIN merchant_totals mt ON mt.merchant_name = COALESCE(NULLIF(t.merchant_name, ''), NULLIF(t.counterparty_name, ''))
-           WHERE t.llm_category IS NOT NULL AND t.llm_subcategory IS NOT NULL
-           GROUP BY 1, t.llm_category, t.llm_subcategory
-           QUALIFY rank <= ?
-           ORDER BY merchant_name, rank""",
-        [merchant_limit, per_merchant_limit]
     )
 
 
@@ -376,7 +254,6 @@ def search(term: str) -> list[dict]:
            ORDER BY created_at DESC""",
         [like, like, like, like]
     )
-
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -416,81 +293,118 @@ def get_stats() -> dict:
     }
 
 
-# ── Write ─────────────────────────────────────────────────────────────────────
+# ── Writing history ───────────────────────────────────────────────────────────
 
-def write_to_db(transactions: list[dict]) -> None:
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# What each kind of classification is recorded as. Anything else came from the
+# classifier itself.
+_SOURCE_BY_MODEL = {
+    "quick-tap": "quick_tap", "rule": "rule", "category-proposal": "proposal",
+    "taxonomy-proposal": "proposal", "manual": "manual", "judge": "judge",
+}
+
+
+def label_ids(category: str | None, subcategory: str | None) -> tuple[int | None, int | None]:
+    """(parent id, subcategory id) of a live category pair, by name. Either is
+    None if it doesn't exist (or the name was None)."""
     con = get_con()
-    for t in transactions:
-        data = t["payload"].get("data", {})
-        merchant = data.get("merchant") or {}
-        counterparty = data.get("counterparty") or {}
-        con.execute(
-            """INSERT INTO transactions (
-                id, amount, currency, description, monzo_category,
-                merchant_name, merchant_category, counterparty_name,
-                is_load, created_at, settled_at, raw_payload,
-                user_context, skipped, received_at, enriched_at, processed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO NOTHING""",  # type: ignore
-            [
-                t["id"],
-                data.get("amount", 0) / 100,
-                data.get("currency", "GBP"),
-                data.get("description"),
-                data.get("category"),
-                merchant.get("name"),
-                merchant.get("category"),
-                counterparty.get("name"),
-                data.get("is_load"),
-                _ts(data.get("created")),
-                _ts(data.get("settled")),
-                json.dumps(t["payload"]),
-                t["user_context"],
-                t["skipped"],
-                t["received_at"],
-                t["enriched_at"],
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-            ]
-        )
-        desc = data.get("description", "—")
-        amount = data.get("amount", 0) / 100
-        log.info(f"  Stored {t['id']} | £{amount:.2f} | {desc} | {t['user_context']}")
+    if category is None:
+        return None, None
+    parent = con.execute(
+        "SELECT id FROM parent_categories WHERE name = ? AND archived_at IS NULL", [category]
+    ).fetchone()
+    if not parent:
+        return None, None
+    if subcategory is None:
+        return parent[0], None
+    sub = con.execute(
+        "SELECT id FROM subcategories WHERE name = ? AND parent_id = ? AND archived_at IS NULL",
+        [subcategory, parent[0]],
+    ).fetchone()
+    return parent[0], (sub[0] if sub else None)
 
 
-def apply_rule_classifications(transactions: list[dict]) -> int:
-    """File each transaction a fixed-category rule matched straight into that
-    category, so the classifier never sees it. Returns how many were filed.
-
-    Only a pair that still exists in the local taxonomy is applied: the
-    server's dropdown can be up to one run stale, and filing into a name you
-    have since renamed or deleted would quietly recreate it. Those are left
-    unclassified instead, so the normal pipeline picks them up. Never
-    overwrites a transaction that is already classified."""
+def release_holds(transaction_ids: list[str]) -> None:
+    """Take these transactions out of whatever category proposal is holding
+    them back from the classifier."""
+    if not transaction_ids:
+        return
     con = get_con()
-    applied = 0
-    for t in transactions:
-        # .get(): an older server, deployed behind this local side, doesn't
-        # send these keys at all.
-        category, subcategory = t.get("rule_category"), t.get("rule_subcategory")
-        if not (category and subcategory):
-            continue
-        exists = con.execute(
-            """SELECT 1 FROM subcategories s JOIN parent_categories p ON p.id = s.parent_id
-               WHERE p.name = ? AND s.name = ?""",
-            [category, subcategory],
-        ).fetchone()
-        if not exists:
-            log.warning(
-                f"Rule placement '{category} / {subcategory}' for {t['id']} is no longer in the "
-                "taxonomy -- leaving it for the classifier"
-            )
-            continue
-        row = con.execute("SELECT llm_category FROM transactions WHERE id = ?", [t["id"]]).fetchone()
-        if not row or row[0] is not None:
-            continue
-        update_classification(t["id"], category, subcategory, None, "rule")
-        applied += 1
-    return applied
+    wanted = set(transaction_ids)
+    for proposal_id, txn_ids in con.execute(
+        "SELECT id, txn_ids FROM category_proposals WHERE txn_ids <> '[]'"
+    ).fetchall():
+        held = json.loads(txn_ids)
+        kept = [t for t in held if t not in wanted]
+        if len(kept) != len(held):
+            set_json(con, "category_proposals", proposal_id, txn_ids=kept)
+
+
+def update_classification(
+    transaction_id: str,
+    category: str | None,
+    subcategory: str | None,
+    confidence: float | None,
+    model: str,
+    source: str | None = None,
+) -> None:
+    """A new label for a transaction. Names that aren't (or are no longer) in
+    the taxonomy can't be recorded against an id, so they raise rather than
+    file the transaction somewhere that doesn't exist. A transaction that has
+    just been classified -- by any path -- is never still waiting on a
+    category decision, so any hold on it is released too."""
+    parent_id, subcategory_id = label_ids(category, subcategory)
+    if category is not None and (parent_id is None or (subcategory is not None and subcategory_id is None)):
+        raise ValueError(f"{category!r} / {subcategory!r} isn't in the taxonomy")
+    get_con().execute(
+        """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, confidence, set_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [transaction_id, parent_id, subcategory_id, source or _SOURCE_BY_MODEL.get(model, "llm"),
+         model, confidence, _now()],
+    )
+    release_holds([transaction_id])
+
+
+def clear_label(transaction_id: str, keep_parent: bool = False) -> None:
+    """Take a transaction's label away (or just its subcategory), as deleting a
+    category does."""
+    t = get_transaction(transaction_id)
+    parent_id = t["parent_id"] if (t and keep_parent) else None
+    get_con().execute(
+        "INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, set_at) VALUES (?, ?, NULL, 'manual', ?)",
+        [transaction_id, parent_id, _now()],
+    )
+
+
+def update_transaction_details(transaction_id: str, created_at, user_context: str | None) -> None:
+    """A corrected date and/or context from the dashboard, as a new context
+    event. The date is kept as an override only if it differs from Monzo's
+    own, so Monzo's stays in the payload untouched."""
+    con = get_con()
+    current = con.execute(
+        """SELECT skipped, (raw_payload::JSON ->> '$.data.created')
+           FROM transactions WHERE id = ?""",
+        [transaction_id],
+    ).fetchone()
+    if not current:
+        raise ValueError(f"No transaction {transaction_id}")
+    skipped, monzo_created = current
+    override = None
+    if created_at:
+        from datetime import datetime, timezone
+        wanted = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+        monzo = (datetime.fromisoformat(monzo_created).astimezone(timezone.utc).replace(tzinfo=None)
+                 if monzo_created else None)
+        if wanted.replace(tzinfo=None) != monzo:
+            override = wanted.replace(tzinfo=None)
+    con.execute(
+        """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
+           VALUES (?, ?, ?, ?, 'dashboard', ?)""",
+        [transaction_id, user_context, bool(skipped), override, _now()],
+    )
 
 
 def apply_quick_tap_classifications(review=None) -> int:
@@ -501,22 +415,19 @@ def apply_quick_tap_classifications(review=None) -> int:
     review, if given, is called as review(transaction, category, subcategory)
     before each tap is applied and returns True when it has taken the
     transaction over -- the placement judge does this when it thinks a tap was a
-    mis-tap, locking the transaction behind a Telegram card. It is then left
-    unclassified here, and excluded from later runs by the lock rather than
+    mis-tap, holding the transaction behind a Telegram card. It is then left
+    unclassified here, and excluded from later runs by the hold rather than
     matched again."""
     con = get_con()
     taxonomy = {
         f"{parent} - {sub}": (parent, sub)
         for parent, sub in con.execute(
             """SELECT p.name, s.name FROM subcategories s
-               JOIN parent_categories p ON p.id = s.parent_id"""
+               JOIN parent_categories p ON p.id = s.parent_id
+               WHERE s.archived_at IS NULL AND p.archived_at IS NULL"""
         ).fetchall()
     }
-    unclassified = _rows(
-        """SELECT * FROM transactions
-           WHERE llm_category IS NULL AND skipped = FALSE AND user_context IS NOT NULL
-           AND pending_category_proposal_id IS NULL"""
-    )
+    unclassified = _rows("SELECT * FROM needs_label WHERE user_context IS NOT NULL")
     count = 0
     for txn in unclassified:
         match = taxonomy.get(txn["user_context"])
@@ -598,10 +509,10 @@ def get_merchant_history(merchant_key: str, exclude_id: str) -> list[dict]:
 
 
 def upsert_parent(name: str) -> int:
-    """Get or create a parent category by name. Returns its id."""
+    """Get or create a live parent category by name. Returns its id."""
     con = get_con()
     row = con.execute(
-        "SELECT id FROM parent_categories WHERE name = ?", [name]
+        "SELECT id FROM parent_categories WHERE name = ? AND archived_at IS NULL", [name]
     ).fetchone()
     if row:
         return row[0]
@@ -610,16 +521,17 @@ def upsert_parent(name: str) -> int:
     ).fetchone()[0]
     con.execute(
         "INSERT INTO parent_categories (id, name, created_at) VALUES (?, ?, ?)",
-        [next_id, name, time.strftime("%Y-%m-%d %H:%M:%S")]
+        [next_id, name, _now()]
     )
     return next_id
 
 
 def upsert_subcategory(name: str, parent_id: int) -> int:
-    """Get or create a subcategory by name + parent_id. Returns its id."""
+    """Get or create a live subcategory by name + parent_id. Returns its id."""
     con = get_con()
     row = con.execute(
-        "SELECT id FROM subcategories WHERE name = ? AND parent_id = ?", [name, parent_id]
+        "SELECT id FROM subcategories WHERE name = ? AND parent_id = ? AND archived_at IS NULL",
+        [name, parent_id]
     ).fetchone()
     if row:
         return row[0]
@@ -628,9 +540,101 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     ).fetchone()[0]
     con.execute(
         "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
-        [next_id, name, parent_id, time.strftime("%Y-%m-%d %H:%M:%S")]
+        [next_id, name, parent_id, _now()]
     )
     return next_id
+
+
+# ── Editing the taxonomy (the dashboard's Settings tab) ───────────────────────
+#
+# Labels point at ids, so renaming or moving a category is one row and every
+# transaction follows. A deleted category is archived rather than removed --
+# old labels in the history still name it -- and the transactions it held get
+# a "cleared" label, so the change is itself part of the history.
+
+def _clear_labels_where(condition: str, params: list, keep_parent: bool = False) -> int:
+    """A cleared label (or, with keep_parent, a parent-only one) for every
+    labelled transaction matching `condition` on the transactions view."""
+    con = get_con()
+    count = con.execute(f"SELECT COUNT(*) FROM transactions WHERE {condition}", params).fetchone()[0]
+    con.execute(
+        f"""INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, set_at)
+            SELECT id, {'parent_id' if keep_parent else 'NULL'}, NULL, 'manual', ?
+            FROM transactions WHERE {condition}""",
+        [_now(), *params],
+    )
+    return count
+
+
+def rename_parent(parent_id: int, name: str) -> None:
+    get_con().execute("UPDATE parent_categories SET name = ? WHERE id = ?", [name, parent_id])
+
+
+def wipe_parent_labels(parent_id: int) -> int:
+    """Clear the labels of every transaction under a parent, so they're
+    classified again. The categories themselves stay."""
+    return _clear_labels_where("parent_id = ?", [parent_id])
+
+
+def delete_parent(parent_id: int) -> int:
+    """Archive a parent and all its subcategories, and clear the labels of the
+    transactions under them. Their role overrides go too. Returns how many
+    transactions were cleared."""
+    con = get_con()
+    cleared = _clear_labels_where("parent_id = ?", [parent_id])
+    con.execute(
+        "DELETE FROM category_roles WHERE parent_id = ? OR subcategory_id IN "
+        "(SELECT id FROM subcategories WHERE parent_id = ?)", [parent_id, parent_id]
+    )
+    con.execute("UPDATE subcategories SET archived_at = ? WHERE parent_id = ? AND archived_at IS NULL",
+                [_now(), parent_id])
+    con.execute("UPDATE parent_categories SET archived_at = ? WHERE id = ?", [_now(), parent_id])
+    return cleared
+
+
+def delete_subcategory(subcategory_id: int) -> int:
+    """Archive a subcategory. Its transactions keep their parent but lose the
+    subcategory, as deleting one always has. Returns how many were affected."""
+    con = get_con()
+    cleared = _clear_labels_where("subcategory_id = ?", [subcategory_id], keep_parent=True)
+    con.execute("DELETE FROM category_roles WHERE subcategory_id = ?", [subcategory_id])
+    con.execute("UPDATE subcategories SET archived_at = ? WHERE id = ?", [_now(), subcategory_id])
+    return cleared
+
+
+def edit_subcategory(subcategory_id: int, name: str, parent_id: int) -> None:
+    """Rename a subcategory and/or move it under another parent. Its
+    transactions follow on their own (the view takes a label's parent from its
+    subcategory), and so does any role override."""
+    con = get_con()
+    con.execute("UPDATE subcategories SET name = ?, parent_id = ? WHERE id = ?", [name, parent_id, subcategory_id])
+    con.execute("UPDATE category_roles SET parent_id = ? WHERE subcategory_id = ?", [parent_id, subcategory_id])
+
+
+def move_all_transactions(from_subcategory_id: int, to_subcategory_id: int) -> int:
+    """Relabel every transaction in one subcategory into another. Returns how many moved."""
+    con = get_con()
+    parent_id = con.execute("SELECT parent_id FROM subcategories WHERE id = ?", [to_subcategory_id]).fetchone()[0]
+    count = con.execute("SELECT COUNT(*) FROM transactions WHERE subcategory_id = ?",
+                        [from_subcategory_id]).fetchone()[0]
+    con.execute(
+        """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, set_at)
+           SELECT id, ?, ?, 'manual', 'manual', ? FROM transactions WHERE subcategory_id = ?""",
+        [parent_id, to_subcategory_id, _now(), from_subcategory_id],
+    )
+    return count
+
+
+def wipe_taxonomy() -> int:
+    """Clear every label and archive every category, for starting the taxonomy
+    again from scratch. The default one is seeded on the next start. Returns
+    how many transactions were cleared."""
+    con = get_con()
+    cleared = _clear_labels_where("llm_category IS NOT NULL", [])
+    con.execute("DELETE FROM category_roles")
+    con.execute("UPDATE subcategories SET archived_at = ? WHERE archived_at IS NULL", [_now()])
+    con.execute("UPDATE parent_categories SET archived_at = ? WHERE archived_at IS NULL", [_now()])
+    return cleared
 
 
 ROLES = ("income", "spend", "investment", "saving", "transfer", "excluded")
@@ -724,7 +728,7 @@ def upsert_subscription(name: str, amount: float, frequency: str, merchant_name:
     next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions").fetchone()[0]
     con.execute(
         "INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at) VALUES (?, ?, ?, ?, ?, TRUE, ?)",
-        [next_id, name, merchant_name, amount, frequency, time.strftime("%Y-%m-%d %H:%M:%S")]
+        [next_id, name, merchant_name, amount, frequency, _now()]
     )
     return next_id
 
@@ -744,16 +748,28 @@ def delete_subscription(sub_id: int) -> None:
     get_con().execute("DELETE FROM subscriptions WHERE id = ?", [sub_id])
 
 
-# ── Backups ───────────────────────────────────────────────────────────────────
+# ── "Back up now" ─────────────────────────────────────────────────────────────
+#
+# Looking after the data is the database's job, not the app's (the data box
+# backs it up every night). This is only a manual "save a copy of everything
+# before I try something", from the Settings tab: every table as a Parquet
+# file in a folder of its own, under BACKUP_DIR. It is never run automatically.
 
 BACKUPS_KEPT = 10
 MANIFEST_NAME = "manifest.json"
 
+# Every table there is, so a backup is the whole of it. The views are left out:
+# they store nothing, and come back with sql/postgres/schema.sql.
+BACKUP_TABLES = [
+    "transactions_raw", "context_events", "label_events",
+    "parent_categories", "subcategories", "category_roles",
+    "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
+    "judge_reviews", "subscriptions", "summaries",
+]
+
 
 def backup_dir() -> Path:
-    """backups/ sits alongside the database file, so a backup travels with the
-    data it protects rather than living next to the code."""
-    return Path(DB_PATH).parent / "backups"
+    return Path(os.getenv("BACKUP_DIR") or Path.home() / "bank-enrichment-backups")
 
 
 def list_backups() -> list[Path]:
@@ -765,31 +781,25 @@ def list_backups() -> list[Path]:
 
 
 def backup_db(reason: str = "manual") -> Path:
-    """Snapshot the whole database into backups/<timestamp>_<reason>/ before
-    something irreversible happens, keeping the most recent BACKUPS_KEPT.
-
-    EXPORT DATABASE rather than copying the .db file: the file is open and may
-    have un-checkpointed changes sitting in its WAL, so a copy taken mid-session
-    is not guaranteed to be a consistent database. The export is a logical dump
-    (schema.sql + load.sql + one Parquet file per table) restorable with
-    IMPORT DATABASE, and it stays readable even if the .db format changes
-    between DuckDB versions."""
+    """Save every table to backups/<timestamp>_<reason>/ as Parquet, keeping
+    the most recent BACKUPS_KEPT. Readable by DuckDB, pandas or anything else,
+    and loadable back with COPY ... FROM if it's ever needed."""
     con = get_con()
     # ':' is not a legal filename character on Windows, so this is a flattened
     # timestamp rather than an ISO one.
     stamp = time.strftime("%Y%m%d-%H%M%S")
     safe_reason = "".join(c if c.isalnum() or c in "-_" else "-" for c in reason)[:40]
     target = backup_dir() / f"{stamp}_{safe_reason}"
-    # Two destructive actions inside the same second would otherwise export into
-    # a directory that already holds another backup's files.
     suffix = 1
     while target.exists():
         suffix += 1
         target = backup_dir() / f"{stamp}_{safe_reason}-{suffix}"
     target.mkdir(parents=True)
-    # DuckDB parses this path itself, so the quotes have to be escaped rather
-    # than passed as a bind parameter (EXPORT DATABASE takes no parameters).
-    con.execute(f"EXPORT DATABASE '{str(target).replace(chr(39), chr(39) * 2)}' (FORMAT PARQUET)")
+    for table in BACKUP_TABLES:
+        # DuckDB parses this path itself, so quotes are escaped rather than
+        # passed as a parameter (COPY ... TO takes none for its path).
+        path = str(target / f"{table}.parquet").replace("'", "''")
+        con.execute(f"COPY (SELECT * FROM {table}) TO '{path}' (FORMAT PARQUET)")
     _write_manifest(target, reason)
     log.info(f"Backed up database to {target}")
     _prune_backups()
@@ -799,21 +809,13 @@ def backup_db(reason: str = "manual") -> Path:
 def _write_manifest(target: Path, reason: str) -> None:
     """Record what the backup actually contains, so the Settings tab can say
     'this one holds 1,240 transactions covering 2025-01 to 2026-08' without
-    opening every Parquet file to count. Written after the export so the counts
-    describe exactly what was captured.
-
-    A manifest that fails to write must not fail the backup -- the exported
-    data is the thing that matters, and a missing manifest only costs the
-    listing some detail."""
+    opening every file to count. A manifest that fails to write must not fail
+    the backup -- the data is the thing that matters."""
     con = get_con()
     try:
-        row = con.execute("""
-            SELECT COUNT(*),
-                   COUNT(llm_category),
-                   MIN(created_at),
-                   MAX(created_at)
-            FROM transactions
-        """).fetchone()
+        row = con.execute(
+            "SELECT COUNT(*), COUNT(llm_category), MIN(created_at), MAX(created_at) FROM transactions"
+        ).fetchone()
         manifest = {
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "reason": reason,
@@ -821,8 +823,10 @@ def _write_manifest(target: Path, reason: str) -> None:
             "classified": row[1],
             "earliest": str(row[2])[:10] if row[2] else None,
             "latest": str(row[3])[:10] if row[3] else None,
-            "parent_categories": con.execute("SELECT COUNT(*) FROM parent_categories").fetchone()[0],
-            "subcategories": con.execute("SELECT COUNT(*) FROM subcategories").fetchone()[0],
+            "parent_categories": con.execute(
+                "SELECT COUNT(*) FROM parent_categories WHERE archived_at IS NULL").fetchone()[0],
+            "subcategories": con.execute(
+                "SELECT COUNT(*) FROM subcategories WHERE archived_at IS NULL").fetchone()[0],
             "subscriptions": con.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0],
         }
         (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
@@ -831,9 +835,8 @@ def _write_manifest(target: Path, reason: str) -> None:
 
 
 def read_backup_manifest(path: Path) -> dict:
-    """Empty dict for a backup taken before manifests existed, or a folder a
-    human dropped into backups/ by hand -- both should still list, just without
-    the detail."""
+    """Empty dict for a backup without a manifest -- it should still list,
+    just without the detail."""
     try:
         return json.loads((path / MANIFEST_NAME).read_text())
     except (OSError, ValueError):
@@ -841,8 +844,6 @@ def read_backup_manifest(path: Path) -> dict:
 
 
 def backup_size_bytes(path: Path) -> int:
-    """Total size of the export on disk. Walks the tree rather than listing one
-    level, since EXPORT DATABASE is free to nest its data files."""
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
@@ -851,7 +852,7 @@ def delete_backup(path: Path | str) -> None:
 
     This ends in rmtree() on a path that arrives from a UI control, so the
     target is resolved and checked to be a direct child of backups/ first --
-    anything else (a symlink out, a traversal, the database directory itself)
+    anything else (a symlink out, a traversal, the backups directory itself)
     is refused rather than deleted."""
     target = Path(path).resolve()
     root = backup_dir().resolve()
@@ -863,57 +864,13 @@ def delete_backup(path: Path | str) -> None:
 
 def _prune_backups() -> None:
     """Keep only the newest BACKUPS_KEPT backups. Failing to delete an old one
-    must never take down the action that triggered the backup -- a stale backup
-    left on disk is harmless, a crashed wipe is not."""
+    is logged, never raised: a stale backup left on disk is harmless."""
     for old in list_backups()[BACKUPS_KEPT:]:
         try:
             shutil.rmtree(old)
             log.info(f"Pruned old backup {old}")
         except OSError as e:
             log.warning(f"Could not prune old backup {old}: {e}")
-
-
-def clear_db() -> None:
-    con = get_con()
-    count = con.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-    if count == 0:
-        print("Database is already empty.")
-        return
-    confirm = input(f"This will permanently delete all {count} transactions. Type YES to confirm: ")
-    if confirm.strip() == "YES":
-        con.execute("DELETE FROM transactions")
-        print(f"Deleted {count} transactions.")
-    else:
-        print("Cancelled.")
-
-
-def update_classification(
-    transaction_id: str,
-    category: str,
-    subcategory: str | None,
-    confidence: float | None,
-    model: str,
-) -> None:
-    # Clearing pending_category_proposal_id here too: a transaction that has
-    # just been classified -- by any path -- is never still waiting on a
-    # category decision, so a proposal approved later must not overwrite it.
-    get_con().execute(
-        """UPDATE transactions
-           SET llm_category = ?, llm_subcategory = ?, llm_confidence = ?,
-               llm_model = ?, classified_at = ?, pending_category_proposal_id = NULL
-           WHERE id = ?""",
-        [category, subcategory, confidence, model,
-         time.strftime("%Y-%m-%d %H:%M:%S"), transaction_id]
-    )
-
-
-def update_transaction_details(transaction_id: str, created_at: str, user_context: str | None) -> None:
-    get_con().execute(
-        """UPDATE transactions
-           SET created_at = ?, user_context = ?
-           WHERE id = ?""",
-        [created_at, user_context, transaction_id]
-    )
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
@@ -948,10 +905,6 @@ def print_stats() -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _ts(val):
-    return val if val else None
-
 
 def _rows(sql: str, params: list = []) -> list[dict]:
     result = get_con().execute(sql, params)

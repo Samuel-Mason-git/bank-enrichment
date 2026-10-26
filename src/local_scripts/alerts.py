@@ -6,15 +6,17 @@ bad call from killing a run, but it also means running out of credit produces
 nothing except error lines in a log file. That is easy to miss, and the
 symptom (transactions quietly not being classified) looks like nothing at all.
 
-Only the server can reach Telegram, so this posts to its /send-alert endpoint.
-Alerts carry a kind, a fix, and counts -- never transaction text. The exception
-classes, not their messages, are what get reported: a JSON parse error's
-message quotes the model's output, which can contain transaction details.
+This sends to Telegram directly, with the same bot the server uses (TELEGRAM_API
+and TELEGRAM_CHAT_ID in config/.env). Alerts carry a kind, a fix, and counts --
+never transaction text. The exception classes, not their messages, are what get
+reported: a JSON parse error's message quotes the model's output, which can
+contain transaction details.
 
 Nothing here may ever raise or slow the pipeline down: an alert that fails is
 logged and dropped, and each kind is sent at most once per run, so a run that
 fails 40 calls in a row sends one message, not 40.
 """
+import html
 import logging
 import os
 import threading
@@ -26,10 +28,28 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
-
 log = logging.getLogger(__name__)
+
+
+def send_telegram(text: str) -> bool:
+    """One HTML message to you on Telegram. Never raises: a message that can't
+    be sent is logged and dropped. True if Telegram accepted it."""
+    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram message not sent")
+        return False
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=15,
+        )
+    except Exception as e:
+        log.warning(f"Could not reach Telegram: {type(e).__name__}")
+        return False
+    if not response.ok:
+        log.warning(f"Telegram rejected a message: HTTP {response.status_code}")
+        return False
+    return True
 
 _sent: set[str] = set()
 _lock = threading.Lock()
@@ -65,21 +85,9 @@ def send_alert(kind: str, title: str, message: str) -> bool:
         if kind in _sent:
             return False
         _sent.add(kind)
-    if not SERVER_URL:
-        return False
-    try:
-        response = requests.post(
-            f"{SERVER_URL}/send-alert",
-            headers={"X-API-Key": LOCAL_API_KEY}, json={"title": title, "message": message}, timeout=15,
-        )
-    except Exception as e:
-        log.warning(f"Could not send Telegram alert '{title}': {e}")
-        return False
-    if response.status_code == 404:
-        log.info("Server has no /send-alert endpoint yet — alert not sent until it is deployed")
-        return False
-    if not response.ok:
-        log.warning(f"Telegram alert '{title}' was rejected by the server: HTTP {response.status_code}")
+    # Escaped because the text is the caller's, and Telegram rejects the whole
+    # message over a stray '<' in HTML mode.
+    if not send_telegram(f"⚠️ <b>{html.escape(title)}</b>\n\n{html.escape(message)}"):
         return False
     log.info(f"Sent Telegram alert: {title}")
     return True

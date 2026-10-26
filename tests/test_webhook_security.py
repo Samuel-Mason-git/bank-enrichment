@@ -35,7 +35,7 @@ def _monzo_payload(txn_id="tx1"):
 
 
 def _stored(con, txn_id="tx1"):
-    return con.execute("SELECT COUNT(*) FROM webhook_queue WHERE id = ?", [txn_id]).fetchone()[0]
+    return con.execute("SELECT COUNT(*) FROM transactions_raw WHERE id = %s", [txn_id]).fetchone()[0]
 
 
 class TestMonzoWebhook:
@@ -68,13 +68,13 @@ def _tap(data, user_id=OWNER):
 
 def _pending_txn(con, txn_id="tx1"):
     con.execute(
-        "INSERT INTO webhook_queue (id, payload, received_at, status) VALUES (?, ?, NOW(), 'pending')",
+        "INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, NOW())",
         [txn_id, json.dumps(_monzo_payload(txn_id))],
     )
 
 
 def _skipped(con, txn_id="tx1"):
-    return con.execute("SELECT skipped FROM webhook_queue WHERE id = ?", [txn_id]).fetchone()[0]
+    return con.execute("SELECT skipped FROM transactions WHERE id = %s", [txn_id]).fetchone()[0]
 
 
 class TestTelegramWebhook:
@@ -130,7 +130,7 @@ class TestTelegramWebhook:
         finally:
             main._sessions.pop(999, None)
         assert server_con.execute(
-            "SELECT user_context FROM webhook_queue WHERE id = 'tx1'").fetchone()[0] is None
+            "SELECT user_context FROM transactions WHERE id = 'tx1'").fetchone()[0] is None
 
 
 _RULE_FORM = {"name": "Skip everything", "match_field": "description", "match_type": "regex",

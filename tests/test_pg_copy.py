@@ -10,7 +10,7 @@ import json
 import duckdb
 import pytest
 
-import database_functions
+
 from pg_copy import CopyProblems, NEW_TABLES, check_all, copy_all
 from server_db import split_sql_statements
 from tests.conftest import _SERVER_SQL_PATH
@@ -36,21 +36,40 @@ def server():
     con.close()
 
 
+def _write_to_db(con, t):
+    """How the PC stored a pulled transaction before the move (the old
+    database_functions.write_to_db), so the old columns are exactly what that
+    code stored."""
+    data = t["payload"]["data"]
+    con.execute(
+        """INSERT INTO transactions (
+               id, amount, currency, description, monzo_category, merchant_name, merchant_category,
+               counterparty_name, is_load, created_at, settled_at, raw_payload,
+               user_context, skipped, received_at, enriched_at, processed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [t["id"], data.get("amount", 0) / 100, data.get("currency", "GBP"), data.get("description"),
+         data.get("category"), (data.get("merchant") or {}).get("name"),
+         (data.get("merchant") or {}).get("category"), (data.get("counterparty") or {}).get("name"),
+         data.get("is_load"), data.get("created") or None, data.get("settled") or None,
+         json.dumps(t["payload"]), t["user_context"], t["skipped"], t["received_at"], t["enriched_at"],
+         "2026-10-01 10:06:00"],
+    )
+
+
 @pytest.fixture
-def seeded(db, server):
-    """Both DuckDB databases, filled the way today's code fills them."""
-    local = db
+def seeded(old_local_db, server):
+    """Both DuckDB databases, filled the way the code before the move filled them."""
+    local = old_local_db
     local.execute("INSERT INTO parent_categories VALUES (1, 'Food', '2026-01-01'), (2, 'Income', '2026-01-01')")
     local.execute("INSERT INTO subcategories VALUES (1, 'Groceries', 1, '2026-01-01'), "
                   "(2, 'Takeaway', 1, '2026-01-01'), (3, 'Salary', 2, '2026-01-01')")
     local.execute("INSERT INTO category_roles VALUES (2, NULL, 'income')")
 
     def arrive(txn_id, amount, created, context=None, skipped=False):
-        # write_to_db itself, so the stored columns are exactly what today's code stores.
-        database_functions.write_to_db([{
+        _write_to_db(local, {
             "id": txn_id, "payload": _payload(txn_id, amount, created), "user_context": context,
             "skipped": skipped, "received_at": "2026-10-01 10:00:00", "enriched_at": "2026-10-01 10:05:00",
-        }])
+        })
 
     arrive("t1", -450, "2026-10-01T09:59:00.123Z", "weekly shop")
     arrive("t2", 250000, "2026-10-01T08:00:00Z", "pay")

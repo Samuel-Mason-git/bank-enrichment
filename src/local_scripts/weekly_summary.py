@@ -1,21 +1,18 @@
 import logging
-import os
 import time
 from datetime import date, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from dotenv import load_dotenv
-import requests
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-DB_PATH = os.getenv("DB_PATH")
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY")
-SERVER_URL = (os.getenv("SERVER_URL") or "").rstrip("/")
+import html
 
-LOG_PATH = os.path.join(os.path.dirname(DB_PATH), "weekly_summary.log") if DB_PATH else "weekly_summary.log"
+from alerts import send_telegram
+from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path
 
-from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role
+LOG_PATH = log_path("weekly_summary.log")
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +30,6 @@ def _configure_standalone_logging():
         ]
     )
 
-HEADERS = {"X-API-Key": LOCAL_API_KEY}
 
 
 def _week_key(d: date) -> str:
@@ -61,7 +57,7 @@ def get_missing_weeks() -> list[str]:
     earliest_row = con.execute("SELECT MIN(created_at) FROM transactions").fetchone()[0]
     if not earliest_row:
         return []
-    sent = {r[0] for r in con.execute("SELECT send_date FROM weekly_summaries").fetchall()}
+    sent = {r[0] for r in con.execute("SELECT period_key FROM summaries WHERE period = 'week'").fetchall()}
     today = date.today()
     # Only include completed weeks — the week that ended before this week started
     last_completed_monday = today - timedelta(days=today.weekday() + 7)
@@ -150,18 +146,14 @@ def format_weekly_message(stats: dict) -> str:
 
 def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
     con = get_con()
-    response = requests.post(
-        f"{SERVER_URL}/monthly-report",
-        headers=HEADERS,
-        json={"message": message},
-        timeout=30,
-    )
-    response.raise_for_status()
-    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM weekly_summaries").fetchone()[0]
+    # Escaped: category names like "Food & Drink" would otherwise break
+    # Telegram's HTML parsing and the message would be rejected.
+    if not send_telegram(html.escape(message)):
+        raise RuntimeError("Telegram didn't take the message -- not recorded, so it's retried next run")
     con.execute(
-        """INSERT INTO weekly_summaries (id, send_date, total_spend, total_income, net, total_invested, total_saved, sent_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        [next_id, week_key, stats["total_spend"], stats["total_income"], stats["net"],
+        """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
+           VALUES ('week', ?, ?, ?, ?, ?, ?, ?)""",
+        [week_key, stats["total_spend"], stats["total_income"], stats["net"],
          stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )
     log.info(f"Weekly report sent and recorded for {week_key}")
