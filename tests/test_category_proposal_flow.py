@@ -54,7 +54,7 @@ class TestTheRoundTrip:
 
         for txn_id in ("tx_1", "tx_2"):
             row = db.execute(
-                "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = ?",
+                "SELECT llm_category, llm_subcategory, pending_category_proposal_id FROM transactions WHERE id = %s",
                 [txn_id]).fetchone()
             assert row == ("Professional Services", "Tax Payments", None)
         assert _status(server_con, pid)[0] == "applied"

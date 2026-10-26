@@ -220,7 +220,7 @@ class TestGetMissingWeeks:
         # Mark the first missing week as sent
         first = missing_before[0]
         db.execute(
-            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('week', ?, 0, 0, 0, NOW())",
+            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('week', %s, 0, 0, 0, NOW())",
             [first]
         )
         missing_after = get_missing_weeks()
@@ -244,7 +244,7 @@ class TestGetMissingMonths:
         assert missing_before
         first = missing_before[0]
         db.execute(
-            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('month', ?, 0, 0, 0, NOW())",
+            "INSERT INTO summaries (period, period_key, total_spend, total_income, net, sent_at) VALUES ('month', %s, 0, 0, 0, NOW())",
             [first]
         )
         assert first not in get_missing_months()

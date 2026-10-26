@@ -225,7 +225,7 @@ def reviewable_subcategories() -> list[dict]:
         """SELECT llm_category, llm_subcategory, COUNT(*) AS n
            FROM transactions
            WHERE llm_category IS NOT NULL AND llm_subcategory IS NOT NULL
-           GROUP BY 1, 2 HAVING COUNT(*) >= ?
+           GROUP BY 1, 2 HAVING COUNT(*) >= %s
            ORDER BY n DESC""",
         [MIN_SUBCATEGORY_SIZE],
     ).fetchall()
@@ -236,7 +236,7 @@ def transactions_in(parent: str, subcategory: str) -> list[dict]:
     rows = get_con().execute(
         """SELECT id, amount, merchant_name, counterparty_name, user_context
            FROM transactions
-           WHERE llm_category = ? AND llm_subcategory = ?
+           WHERE llm_category = %s AND llm_subcategory = %s
            ORDER BY created_at""",
         [parent, subcategory],
     ).fetchall()
@@ -267,7 +267,7 @@ def taken_category_names() -> set[str]:
 
 def already_reviewed(key: str) -> bool:
     return get_con().execute(
-        "SELECT COUNT(*) FROM taxonomy_proposals WHERE run_key = ?", [key]
+        "SELECT COUNT(*) FROM taxonomy_proposals WHERE run_key = %s", [key]
     ).fetchone()[0] > 0
 
 
@@ -337,7 +337,7 @@ def store_proposals(proposals: list[dict], key: str) -> list[dict]:
             """INSERT INTO taxonomy_proposals
                (id, parent_name, source_sub, action, target_parent, proposed_sub,
                 rationale, evidence_ids, examples, status, proposed_at, run_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)""",
             [next_id, p["parent_name"], p["source_sub"], p["action"], p["target_parent"],
              p["target_sub"], p["rationale"], json.dumps(p["evidence_ids"]),
              json.dumps(p.get("examples", [])), time.strftime("%Y-%m-%d %H:%M:%S"), key],
@@ -357,8 +357,8 @@ def _record_empty_run(key: str) -> None:
         """INSERT INTO taxonomy_proposals
            (id, parent_name, source_sub, action, target_parent, proposed_sub,
             rationale, evidence_ids, status, proposed_at, run_key)
-           VALUES (?, '—', '—', 'create', '—', ?,
-                   'No clusters met the guardrails.', '[]', 'expired', ?, ?)""",
+           VALUES (%s, '—', '—', 'create', '—', %s,
+                   'No clusters met the guardrails.', '[]', 'expired', %s, %s)""",
         [next_id, f"(no proposals {key})", time.strftime("%Y-%m-%d %H:%M:%S"), key],
     )
 
@@ -373,7 +373,7 @@ def apply_approved(proposal: dict) -> int:
     from database_functions import update_classification, upsert_parent, upsert_subcategory
 
     con = get_con()
-    ids = json.loads(proposal["evidence_ids"])
+    ids = proposal["evidence_ids"]
     if not ids:
         return 0
     # A "move" targets a category that already exists, so target_parent may
@@ -385,16 +385,16 @@ def apply_approved(proposal: dict) -> int:
     if proposal.get("action", "create") == "create":
         upsert_subcategory(target_sub, upsert_parent(target_parent))
 
-    placeholders = ", ".join("?" for _ in ids)
+    placeholders = ", ".join("%s" for _ in ids)
     still_there = [r[0] for r in con.execute(
         f"""SELECT id FROM transactions
-            WHERE id IN ({placeholders}) AND llm_category = ? AND llm_subcategory = ?""",
+            WHERE id IN ({placeholders}) AND llm_category = %s AND llm_subcategory = %s""",
         [*ids, proposal["parent_name"], proposal["source_sub"]],
     ).fetchall()]
     for txn_id in still_there:
         update_classification(txn_id, target_parent, target_sub, None, "taxonomy-proposal")
     count = con.execute(
-        "SELECT COUNT(*) FROM transactions WHERE llm_category = ? AND llm_subcategory = ?",
+        "SELECT COUNT(*) FROM transactions WHERE llm_category = %s AND llm_subcategory = %s",
         [target_parent, target_sub],
     ).fetchone()[0]
     log.info(f"Applied '{target_sub}' — {count} transaction(s) now under it")
@@ -416,7 +416,7 @@ def collect_decisions() -> int:
             ("id", "parent_name", "source_sub", "action", "target_parent", "proposed_sub", "evidence_ids"), row))
         try:
             apply_approved(proposal)
-            con.execute("UPDATE taxonomy_proposals SET status = 'applied', applied_at = ? WHERE id = ?",
+            con.execute("UPDATE taxonomy_proposals SET status = 'applied', applied_at = %s WHERE id = %s",
                         [time.strftime("%Y-%m-%d %H:%M:%S"), proposal["id"]])
             applied += 1
         except Exception as e:

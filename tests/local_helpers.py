@@ -28,17 +28,17 @@ def ensure_category(con, category: str, subcategory: str | None = None) -> tuple
 def hold(con, proposal_id: int, txn_ids: list[str]) -> None:
     """Hold transactions behind a category proposal (creating a bare pending
     one if the test hasn't made it yet)."""
-    row = con.execute("SELECT txn_ids FROM category_proposals WHERE id = ?", [proposal_id]).fetchone()
+    row = con.execute("SELECT txn_ids FROM category_proposals WHERE id = %s", [proposal_id]).fetchone()
     if row is None:
         con.execute(
-            "INSERT INTO category_proposals (id, options, txn_ids, status, proposed_at) VALUES (?, '[]', ?, 'pending', NOW())",
+            "INSERT INTO category_proposals (id, options, txn_ids, status, proposed_at) VALUES (%s, '[]', %s, 'pending', NOW())",
             [proposal_id, json.dumps(list(txn_ids))],
         )
         return
-    held = json.loads(row[0])
+    held = list(row[0])
     held += [t for t in txn_ids if t not in held]
-    import database_functions
-    database_functions.set_json(con, "category_proposals", proposal_id, txn_ids=held)
+    from psycopg.types.json import Jsonb
+    con.execute("UPDATE category_proposals SET txn_ids = %s WHERE id = %s", [Jsonb(held), proposal_id])
 
 
 def insert_transaction(
@@ -64,18 +64,18 @@ def insert_transaction(
     }
     if scheme:
         data["scheme"] = scheme
-    con.execute("INSERT INTO transactions_raw (id, payload, received_at) VALUES (?, ?, ?)",
+    con.execute("INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, %s)",
                 [id, json.dumps({"type": "transaction.created", "data": data}), _ts(received_at) or created])
     if answered:
         con.execute(
-            "INSERT INTO context_events (txn_id, user_context, skipped, source, set_at) VALUES (?, ?, ?, 'migration', ?)",
+            "INSERT INTO context_events (txn_id, user_context, skipped, source, set_at) VALUES (%s, %s, %s, 'migration', %s)",
             [id, user_context, bool(skipped), _ts(enriched_at) or created],
         )
     if llm_category:
         parent_id, sub_id = ensure_category(con, llm_category, llm_subcategory)
         con.execute(
             """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, confidence, set_at)
-               VALUES (?, ?, ?, 'migration', ?, ?, ?)""",
+               VALUES (%s, %s, %s, 'migration', %s, %s, %s)""",
             [id, parent_id, sub_id, llm_model, llm_confidence, _ts(classified_at) or created],
         )
     if pending_category_proposal_id is not None:
@@ -87,12 +87,12 @@ def write_to_db(con, rows: list[dict]) -> None:
     as {id, payload, user_context, skipped, received_at, enriched_at} -- stored
     the way such a transaction arrives now. Duplicates are ignored, as they were."""
     for t in rows:
-        if con.execute("SELECT 1 FROM transactions_raw WHERE id = ?", [t["id"]]).fetchone():
+        if con.execute("SELECT 1 FROM transactions_raw WHERE id = %s", [t["id"]]).fetchone():
             continue
-        con.execute("INSERT INTO transactions_raw (id, payload, received_at) VALUES (?, ?, ?)",
+        con.execute("INSERT INTO transactions_raw (id, payload, received_at) VALUES (%s, %s, %s)",
                     [t["id"], json.dumps(t["payload"]), _ts(t.get("received_at")) or datetime.now()])
         con.execute(
-            "INSERT INTO context_events (txn_id, user_context, skipped, source, set_at) VALUES (?, ?, ?, 'migration', ?)",
+            "INSERT INTO context_events (txn_id, user_context, skipped, source, set_at) VALUES (%s, %s, %s, 'migration', %s)",
             [t["id"], t.get("user_context"), bool(t.get("skipped")), _ts(t.get("enriched_at")) or datetime.now()],
         )
 
@@ -100,18 +100,18 @@ def write_to_db(con, rows: list[dict]) -> None:
 def label(con, txn_id: str, category: str | None, subcategory: str | None = None, model="manual") -> None:
     """Set (or, with category None, clear) a transaction's label."""
     if category is None:
-        con.execute("INSERT INTO label_events (txn_id, source, set_at) VALUES (?, 'manual', NOW())", [txn_id])
+        con.execute("INSERT INTO label_events (txn_id, source, set_at) VALUES (%s, 'manual', NOW())", [txn_id])
         return
     parent_id, sub_id = ensure_category(con, category, subcategory)
     con.execute(
-        "INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, set_at) VALUES (?, ?, ?, 'manual', ?, NOW())",
+        "INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, set_at) VALUES (%s, %s, %s, 'manual', %s, NOW())",
         [txn_id, parent_id, sub_id, model],
     )
 
 
 def row(con, txn_id: str) -> dict | None:
-    cur = con.execute("SELECT * FROM transactions WHERE id = ?", [txn_id])
-    cols = [d[0] for d in cur.description]
+    cur = con.execute("SELECT * FROM transactions WHERE id = %s", [txn_id])
+    cols = [c.name for c in cur.description]
     r = cur.fetchone()
     return dict(zip(cols, r)) if r else None
 

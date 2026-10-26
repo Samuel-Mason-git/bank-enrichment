@@ -152,7 +152,7 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
         raise RuntimeError("Telegram didn't take the message -- not recorded, so it's retried next run")
     con.execute(
         """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
-           VALUES ('week', ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES ('week', %s, %s, %s, %s, %s, %s, %s)""",
         [week_key, stats["total_spend"], stats["total_income"], stats["net"],
          stats["total_invested"], stats["total_saved"], time.strftime("%Y-%m-%d %H:%M:%S")]
     )

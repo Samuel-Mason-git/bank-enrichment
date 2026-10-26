@@ -1,4 +1,3 @@
-import json
 from datetime import date
 
 import pytest
@@ -191,7 +190,7 @@ class TestDatabaseHelpers:
         row = db.execute("""SELECT proposed_sub, evidence_ids, status, sent_at
                             FROM taxonomy_proposals WHERE id = 1""").fetchone()
         assert row[0] == "Meal Deals"
-        assert json.loads(row[1]) == ["tx_1", "tx_2"]
+        assert row[1] == ["tx_1", "tx_2"]
         assert row[2] == "pending"
         assert row[3] is None, "unsent: the server sends its card"
 
@@ -362,7 +361,7 @@ class TestAReviewConsumesTheMonth:
         status, examples = db.execute(
             "SELECT status, examples FROM taxonomy_proposals WHERE id = 1").fetchone()
         assert status == "pending"
-        assert json.loads(examples) == ["Breakfast"] * 4
+        assert examples == ["Breakfast"] * 4
         assert tr.already_reviewed("2026-08") is True
 
 

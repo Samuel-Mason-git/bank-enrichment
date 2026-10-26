@@ -1,4 +1,3 @@
-import duckdb
 import pytest
 
 import database_functions
@@ -255,7 +254,7 @@ class TestSeedTaxonomy:
     def test_seeds_again_once_every_category_is_archived(self, db):
         """After the taxonomy is wiped, the defaults come back."""
         pid = upsert_parent("Old")
-        get_con().execute("UPDATE parent_categories SET archived_at = NOW() WHERE id = ?", [pid])
+        get_con().execute("UPDATE parent_categories SET archived_at = NOW() WHERE id = %s", [pid])
         _seed_taxonomy()
         assert "Income" in {p["name"] for p in get_parents()}
 
@@ -556,7 +555,7 @@ class TestHelpers:
 
     def test_rows_with_params(self, db):
         write_to_db([_txn("tx_001"), _txn("tx_002")])
-        rows = _rows("SELECT id FROM transactions WHERE id = ?", ["tx_001"])
+        rows = _rows("SELECT id FROM transactions WHERE id = %s", ["tx_001"])
         assert len(rows) == 1
         assert rows[0]["id"] == "tx_001"
 
@@ -572,12 +571,9 @@ class TestBackups:
         target = database_functions.backup_db("test")
 
         assert {p.stem for p in target.glob("*.parquet")} == set(database_functions.BACKUP_TABLES)
-        copy = duckdb.connect(":memory:")
-        rows = copy.execute(
-            f"SELECT txn_id, user_context FROM '{target / 'context_events.parquet'}'"
-        ).fetchall()
-        copy.close()
-        assert rows == [("tx_backup", "before the wipe")]
+        import pandas as pd
+        rows = pd.read_parquet(target / "context_events.parquet")[["txn_id", "user_context"]]
+        assert rows.values.tolist() == [["tx_backup", "before the wipe"]]
 
     def test_survives_deleting_the_live_data(self, db):
         """The whole point: the copy must still hold the rows afterwards."""
@@ -586,10 +582,8 @@ class TestBackups:
         get_con().execute("DELETE FROM context_events")
         get_con().execute("DELETE FROM transactions_raw")
 
-        copy = duckdb.connect(":memory:")
-        count = copy.execute(f"SELECT COUNT(*) FROM '{target / 'transactions_raw.parquet'}'").fetchone()[0]
-        copy.close()
-        assert count == 1
+        import pandas as pd
+        assert len(pd.read_parquet(target / "transactions_raw.parquet")) == 1
 
     def test_reason_appears_in_the_directory_name(self, db):
         target = database_functions.backup_db("delete-parent")

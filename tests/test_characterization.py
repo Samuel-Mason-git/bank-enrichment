@@ -12,7 +12,9 @@ answers, same rows. Any later change that alters what a function returns or
 writes shows up here too.
 
 To re-record it after a deliberate change, run this file with
-UPDATE_GOLDEN=1 and review the diff of the JSON like any other change.
+UPDATE_GOLDEN=1 and review the diff of the JSON like any other change. To see
+exactly what came out when it fails, CHAR_DUMP=<file> writes this run's
+results there, in the same form, for diffing against the golden file.
 """
 import json
 import os
@@ -220,7 +222,6 @@ def frozen(monkeypatch):
     monkeypatch.setattr(ll, "CLAUDE_SECRET", "test")
     monkeypatch.setattr(ll, "anthropic", SimpleNamespace(Anthropic=lambda **kw: FakeClaude()))
     monkeypatch.setattr(pj, "JUDGE_ENABLED", True)
-    monkeypatch.setenv("BACKUP_DIR", str(Path(os.environ.get("PYTEST_TMP", "/tmp")) / "char-backups"))
     return sent
 
 
@@ -408,6 +409,8 @@ def test_everything_behaves_exactly_as_recorded(db, pg, frozen, tmp_path, monkey
 
 
 def _compare_or_record(out: dict):
+    if os.environ.get("CHAR_DUMP"):
+        Path(os.environ["CHAR_DUMP"]).write_text(json.dumps(out, sort_keys=True, ensure_ascii=False), encoding="utf-8")
     if os.environ.get("UPDATE_GOLDEN"):
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(out, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
