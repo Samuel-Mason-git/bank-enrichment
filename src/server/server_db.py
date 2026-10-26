@@ -7,9 +7,9 @@ context_events, label_events), and the `transactions` view shows the latest of
 each. The helpers here are the one place those rows are written from, so every
 route records them the same way."""
 import json
+from datetime import datetime, timezone
 import logging
 import os
-import time
 
 import psycopg
 
@@ -25,6 +25,8 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Times are read and written in UTC whatever the server's own setting.
+        options="-c TimeZone=UTC",
     )
 
 
@@ -64,8 +66,9 @@ def insert_with_next_id(con, sql: str, params, table: str, attempts: int = 3) ->
                 raise
 
 
-def now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def now() -> datetime:
+    """The time now, in UTC -- every time is stored zone-aware."""
+    return datetime.now(timezone.utc)
 
 
 # ── Recording what happened ──────────────────────────────────────────────────

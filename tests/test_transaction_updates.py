@@ -36,7 +36,7 @@ class TestLaterWebhooksAreKept:
         settled["type"] = "transaction.updated"
         _webhook(server_con, settled)
         assert [s for s, _ in _updates(server_con)] == ["webhook"]
-        assert str(transaction(server_con)["settled_at"]) == "2026-10-02 03:00:00"
+        assert str(transaction(server_con)["settled_at"]) == "2026-10-02 04:00:00"  # 03:00 UTC, in London (BST)
 
     def test_the_first_version_is_never_changed(self, server_con):
         first = monzo_payload("tx_1")

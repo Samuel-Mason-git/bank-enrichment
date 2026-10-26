@@ -71,7 +71,7 @@ def weekly_check_in() -> None:
     """Sunday's "all fine", with what's waiting on you."""
     from database_functions import get_con
     con = get_con()
-    week = con.execute("SELECT COUNT(*) FROM transactions WHERE received_at >= NOW() - INTERVAL '7 days'").fetchone()[0]
+    week = con.execute("SELECT COUNT(*) FROM transactions_raw WHERE received_at >= now() - INTERVAL '7 days'").fetchone()[0]
     answer = con.execute("SELECT COUNT(*) FROM needs_context").fetchone()[0]
     classify = con.execute("SELECT COUNT(*) FROM needs_label").fetchone()[0]
     cards = con.execute(

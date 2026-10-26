@@ -4,9 +4,14 @@ import re
 import logging
 import time
 
+from zoneinfo import ZoneInfo
+
 import requests
 
 log = logging.getLogger(__name__)
+
+# Times on a card are shown as you lived them.
+LONDON = ZoneInfo("Europe/London")
 
 # Waits between retries -- a name of its own, so tests can skip them.
 _sleep = time.sleep
@@ -301,7 +306,7 @@ class TelegramBot:
         merchant_name = merchant.get('name') if is_merchant else None
 
         created = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['created'].replace("Z", "+00:00"))
-        dt = datetime.fromisoformat(created)
+        dt = datetime.fromisoformat(created).astimezone(LONDON)
         date_str = dt.strftime("%d %b %Y · %H:%M")
 
         counterparty = data.get('counterparty')
@@ -351,7 +356,7 @@ class TelegramBot:
 
         if data.get('settled'):
             settled_str = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], data['settled'].replace("Z", "+00:00"))
-            settled_dt = datetime.fromisoformat(settled_str)
+            settled_dt = datetime.fromisoformat(settled_str).astimezone(LONDON)
             lines.append(f"✅ <b>Settled</b>: {settled_dt.strftime('%d %b %Y · %H:%M')}")
 
         if location:

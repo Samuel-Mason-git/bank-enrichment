@@ -21,7 +21,7 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-from database_functions import get_con, init_db, insert_with_next_id
+from database_functions import get_con, init_db, insert_with_next_id, now
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
@@ -333,7 +333,7 @@ def store_proposals(proposals: list[dict], key: str) -> list[dict]:
                RETURNING id""",
             [p["parent_name"], p["source_sub"], p["action"], p["target_parent"],
              p["target_sub"], p["rationale"], json.dumps(p["evidence_ids"]),
-             json.dumps(p.get("examples", [])), time.strftime("%Y-%m-%d %H:%M:%S"), key],
+             json.dumps(p.get("examples", [])), now(), key],
             "taxonomy_proposals",
         )
         stored.append({**p, "id": proposal_id})
@@ -352,7 +352,7 @@ def _record_empty_run(key: str) -> None:
             rationale, evidence_ids, status, proposed_at, run_key)
            VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM taxonomy_proposals), '—', '—', 'create', '—', %s,
                    'No clusters met the guardrails.', '[]', 'expired', %s, %s) RETURNING id""",
-        [f"(no proposals {key})", time.strftime("%Y-%m-%d %H:%M:%S"), key], "taxonomy_proposals",
+        [f"(no proposals {key})", now(), key], "taxonomy_proposals",
     )
 
 
@@ -410,7 +410,7 @@ def collect_decisions() -> int:
         try:
             apply_approved(proposal)
             con.execute("UPDATE taxonomy_proposals SET status = 'applied', applied_at = %s WHERE id = %s",
-                        [time.strftime("%Y-%m-%d %H:%M:%S"), proposal["id"]])
+                        [now(), proposal["id"]])
             applied += 1
         except Exception as e:
             log.error(f"Failed to apply taxonomy decision {proposal['id']}: {e}", exc_info=True)

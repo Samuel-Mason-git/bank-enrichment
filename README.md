@@ -445,6 +445,9 @@ A Postgres database (schema `bank_enrichment`) of every transaction:
 - Every label it has had — LLM, quick-tap, rule or your own — with when and by what
 - A `transactions` view that puts the latest of each together, one row per transaction
 
+Every time is stored in UTC and shown in London time, so a day, a week or a month is
+counted the way you live it: a payment at 00:30 in summer belongs to that day, not the one before.
+
 Because context is stored separately from classification, you can re-run labelling 
 at any point using a new taxonomy and it will classify correctly every time.
 

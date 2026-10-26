@@ -137,12 +137,12 @@ def test_monzo_fields_come_out_of_the_payload_as_the_old_pipeline_flattened_them
     assert (one["currency"], one["description"], one["monzo_category"]) == ("GBP", "TESCO STORES", "groceries")
     assert (one["merchant_name"], one["merchant_category"], one["counterparty_name"]) == ("Tesco", "groceries", None)
     assert one["is_load"] is False
-    assert one["created_at"] == datetime(2026, 10, 1, 12, 34, 56, 789000)  # UTC, no zone
+    assert one["created_at"] == datetime(2026, 10, 1, 13, 34, 56, 789000)  # 12:34 UTC is 13:34 in London (BST)
     assert one["settled_at"] is None  # Monzo sends "" until it settles
     assert one["raw_payload"]["data"]["amount"] == -450
     two = _one(pg, "SELECT * FROM transactions WHERE id = 'tx2'")
     assert (two["amount"], two["merchant_name"], two["counterparty_name"]) == (Decimal("25"), None, "Mum")
-    assert two["settled_at"] == datetime(2026, 10, 2, 8, 0)
+    assert two["settled_at"] == datetime(2026, 10, 2, 9, 0)  # 08:00 UTC, in London (BST)
     assert two["is_load"] is True
 
 
@@ -164,7 +164,8 @@ def test_the_latest_context_wins_and_requests_dont_count_as_context(pg):
 def test_a_corrected_date_replaces_monzos(pg):
     _txn(pg, "tx1", created="2026-10-01T12:00:00Z")
     _context(pg, "tx1", "x", source="dashboard", override=datetime(2026, 9, 30, 9, 0))
-    assert _one(pg, "SELECT created_at FROM transactions")["created_at"] == datetime(2026, 9, 30, 9, 0)
+    # Stored 09:00 UTC, shown in London (BST).
+    assert _one(pg, "SELECT created_at FROM transactions")["created_at"] == datetime(2026, 9, 30, 10, 0)
 
 
 def test_the_latest_label_wins_and_a_parent_only_label_shows_as_such(pg):

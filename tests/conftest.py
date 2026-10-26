@@ -40,7 +40,8 @@ def pg():
     import uuid
     import psycopg
     schema = f"test_{uuid.uuid4().hex[:12]}"
-    con = psycopg.connect(url, autocommit=True)
+    # UTC, as the app's own connections are -- whatever the test server's setting.
+    con = psycopg.connect(url, autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"CREATE SCHEMA {schema}")
     con.execute(f"SET search_path TO {schema}")
     con.execute(_PG_SCHEMA_PATH.read_text())
@@ -72,7 +73,7 @@ def db(pg):
     import psycopg
     import database_functions
     schema = pg.execute("SELECT current_schema()").fetchone()[0]
-    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True)
+    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"SET search_path TO {schema}")
     database_functions._con = con
     yield con

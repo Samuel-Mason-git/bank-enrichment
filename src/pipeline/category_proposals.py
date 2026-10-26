@@ -23,17 +23,16 @@ there is no minimum size -- one transaction is reason enough to ask.
 """
 import json
 import logging
-import time
 
 from psycopg.types.json import Jsonb
 
-from database_functions import get_con, insert_with_next_id, release_holds, update_classification
+from database_functions import get_con, insert_with_next_id, now, release_holds, update_classification
 
 log = logging.getLogger(__name__)
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def _now():
+    return now()
 
 
 # ── Denial memory (threaded into the classifier prompts) ───────────────────────

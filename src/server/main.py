@@ -1103,7 +1103,8 @@ def _get_test_transactions(con, limit: int | None = 100):
         rows = con.execute(sql + " ORDER BY t.received_at DESC LIMIT %s", [int(limit)]).fetchall()
     else:
         rows = con.execute(
-            sql + " WHERE t.received_at >= LOCALTIMESTAMP - INTERVAL '30 days' ORDER BY t.received_at DESC"
+            sql + " WHERE t.received_at >= (now() AT TIME ZONE 'Europe/London') - INTERVAL '30 days'"
+                  " ORDER BY t.received_at DESC"
         ).fetchall()
     txns = []
     for row in rows:

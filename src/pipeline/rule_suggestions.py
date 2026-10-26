@@ -11,7 +11,6 @@ isn't safe to auto-rule, and a one-off coincidence isn't a pattern.
 import logging
 import os
 import re
-import time
 from collections import Counter
 from pathlib import Path
 
@@ -19,7 +18,7 @@ import anthropic
 from dotenv import load_dotenv
 
 import alerts
-from database_functions import get_con, insert_with_next_id
+from database_functions import get_con, insert_with_next_id, now
 from llm_labelling import MODEL, _extract_json
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
@@ -195,7 +194,7 @@ def _store(con, c: dict, status: str) -> None:
             llm_reasoning, status, proposed_at)
            VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions), %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         [c["match_field"], c["match_value"], c["category"], c["subcategory"],
-         c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), status, time.strftime("%Y-%m-%d %H:%M:%S")],
+         c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), status, now()],
         "rule_suggestions",
     )
 

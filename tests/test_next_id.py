@@ -13,7 +13,7 @@ import server_db
 
 def _second_connection(pg):
     schema = pg.execute("SELECT current_schema()").fetchone()[0]
-    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True)
+    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"SET search_path TO {schema}")
     return con
 

@@ -10,7 +10,9 @@ import os
 import shutil
 import statistics
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import psycopg
 from dotenv import load_dotenv
@@ -22,6 +24,9 @@ log = logging.getLogger(__name__)
 
 _con: psycopg.Connection | None = None
 _read_only = False
+
+# What "a day" means to the dashboards and summaries (the views show London time).
+LONDON = ZoneInfo("Europe/London")
 
 # What a parent category counts as when no role has been set for it -- the same
 # defaults the transaction_roles view uses (sql/postgres/schema.sql).
@@ -47,6 +52,8 @@ def _connect(read_only: bool = False) -> psycopg.Connection:
     con = psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Times are read and written in UTC whatever the server's own setting.
+        options="-c TimeZone=UTC",
     )
     if read_only:
         con.execute("SET default_transaction_read_only = on")
@@ -265,8 +272,12 @@ def get_stats() -> dict:
 
 # ── Writing history ───────────────────────────────────────────────────────────
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+def now() -> datetime:
+    """The time now, in UTC -- every time is stored zone-aware."""
+    return datetime.now(timezone.utc)
+
+
+_now = now
 
 
 # What each kind of classification is recorded as. Anything else came from the
@@ -377,12 +388,13 @@ def update_transaction_details(transaction_id: str, created_at, user_context: st
     skipped, monzo_created = current
     override = None
     if created_at:
-        from datetime import datetime, timezone
+        # A date typed in the dashboard is London time, as the dashboard shows it.
         wanted = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
-        monzo = (datetime.fromisoformat(monzo_created).astimezone(timezone.utc).replace(tzinfo=None)
-                 if monzo_created else None)
-        if wanted.replace(tzinfo=None) != monzo:
-            override = wanted.replace(tzinfo=None)
+        if wanted.tzinfo is None:
+            wanted = wanted.replace(tzinfo=LONDON)
+        monzo = datetime.fromisoformat(monzo_created.replace("Z", "+00:00")) if monzo_created else None
+        if monzo is None or wanted != monzo:
+            override = wanted
     con.execute(
         """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
            VALUES (%s, %s, %s, %s, 'dashboard', %s)""",

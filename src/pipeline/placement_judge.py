@@ -28,7 +28,6 @@ ever needs to stop holding things back.
 import json
 import logging
 import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -38,7 +37,7 @@ import alerts
 import category_proposals
 from database_functions import (
     get_con, get_parents, get_subcategories, get_subcategory_examples,
-    get_subcategory_stats, get_merchant_history,
+    get_subcategory_stats, get_merchant_history, now,
 )
 
 log = logging.getLogger(__name__)
@@ -269,7 +268,7 @@ class PlacementReviewer:
                ON CONFLICT (txn_id) DO UPDATE SET merchant_key = EXCLUDED.merchant_key,
                    category = EXCLUDED.category, subcategory = EXCLUDED.subcategory,
                    outcome = EXCLUDED.outcome, reviewed_at = EXCLUDED.reviewed_at""",
-            [txn["id"], merchant_key(txn), category, subcategory, outcome, time.strftime("%Y-%m-%d %H:%M:%S")],
+            [txn["id"], merchant_key(txn), category, subcategory, outcome, now()],
         )
 
     # -- review --

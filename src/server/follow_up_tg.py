@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 from monzo_oauth import fetch_transaction
 from server_db import get_con, get_quick_categories, now, record_context, record_request, record_update
@@ -20,8 +21,9 @@ FOLLOW_UP_SCHEDULE = [
 FOLLOW_UP_LABELS = {1: "1 hour", 2: "1 day", 3: "2 days"}
 
 
-def _cutoff(seconds_ago: int) -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - seconds_ago))
+def _cutoff(seconds_ago: int) -> datetime:
+    """That long ago, exactly (compared with zone-aware times)."""
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
 
 
 def _send(bot, con, transaction_id: str, payload: dict, follow_up: int = 0) -> None:
@@ -197,10 +199,10 @@ def run_merchant_repair(bot) -> None:
     _last_repair = time.time()
     con = get_con()
     missing = con.execute(
-        """SELECT t.id FROM transactions t
+        """SELECT t.id FROM transactions t JOIN transactions_raw r ON r.id = t.id
            WHERE t.merchant_name IS NULL AND COALESCE(t.counterparty_name, '') = ''
              AND t.raw_payload->'data'->>'scheme' = 'mastercard'
-             AND t.received_at BETWEEN %s AND %s
+             AND r.received_at BETWEEN %s AND %s
              AND NOT EXISTS (SELECT 1 FROM transaction_updates u WHERE u.txn_id = t.id AND u.source = 'api')
            ORDER BY t.received_at DESC LIMIT 10""",
         [_cutoff(REPAIR_FOR), _cutoff(MISSED_CARD_AFTER)],
