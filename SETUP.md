@@ -284,7 +284,7 @@ Then fill in at minimum the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` an
 
 The worker runs it every morning (step 5); this is for when you don't want to wait:
 ```bash
-poetry run python src/local_scripts/process.py
+poetry run python src/pipeline/process.py
 ```
 
 This single command does everything in sequence:
@@ -317,14 +317,14 @@ server. It runs the pipeline at **08:00 London time** every day, with the same `
 webhooks.
 
 - **See what it did:** `data/logs/bank_enrichment.log` on the server, or `docker compose logs worker`.
-- **Run it now** instead of waiting: `docker compose exec worker python src/local_scripts/worker.py --now`.
+- **Run it now** instead of waiting: `docker compose exec worker python src/pipeline/worker.py --now`.
 - **If a run can't start or crashes**, you get a Telegram alert, and it tries again the next morning.
 
 ### 6. View the Dashboard
 
 **Mac/Linux, or Windows unaffected by Smart App Control:**
 ```bash
-poetry run python -m streamlit run src/local_scripts/dashboard.py
+poetry run python -m streamlit run src/dashboard/dashboard.py
 ```
 (`python -m streamlit` rather than `streamlit` directly — some Windows security policies block the `streamlit.exe`
 binary but allow running it as a Python module. This alone won't help if Smart App Control is blocking pandas
@@ -387,7 +387,7 @@ touched — only the labels change.
 
 Print all transactions and stats to the terminal:
 ```bash
-poetry run python src/local_scripts/database_functions.py
+poetry run python src/pipeline/database_functions.py
 ```
 
 Wiping labels or the entire taxonomy is done from the **Settings tab** in the dashboard 

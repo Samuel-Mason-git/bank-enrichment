@@ -13,8 +13,9 @@ os.environ["TELEGRAM_API"] = "test-telegram-token"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
 _repo = Path(__file__).parent.parent
-sys.path.insert(0, str(_repo / "src" / "local_scripts"))
-sys.path.insert(0, str(_repo / "src" / "server_scripts"))
+sys.path.insert(0, str(_repo / "src" / "dashboard"))
+sys.path.insert(0, str(_repo / "src" / "pipeline"))
+sys.path.insert(0, str(_repo / "src" / "server"))
 
 import pytest
 

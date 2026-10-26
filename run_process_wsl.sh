@@ -4,4 +4,4 @@
 # "Bank Enrichment Collection" scheduled task -- see run_dashboard_wsl.sh for the
 # interactive version that also opens the dashboard.
 cd /mnt/c/Users/mason/Projects/bank-enrichment
-/home/mason/.local/bin/poetry run python src/local_scripts/process.py
+/home/mason/.local/bin/poetry run python src/pipeline/process.py

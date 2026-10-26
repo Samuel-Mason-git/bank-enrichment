@@ -365,7 +365,7 @@ The card is worded for what it is ("🔍 Second look", the keep option marked �
 #### Reviewing history
 
 Everything classified before the judge existed can get the same second look with
-`src/local_scripts/judge_backlog.py`. It costs one API call per transaction, so by default it
+`src/pipeline/judge_backlog.py`. It costs one API call per transaction, so by default it
 only counts them and estimates the cost — nothing is sent, written or held until you add
 `--yes`. Objections are held behind the same cards (10 at a time by default, `--cards N` to
 change it, `--list-only` to see them without sending any); a held transaction **stays
@@ -452,29 +452,34 @@ at any point using a new taxonomy and it will classify correctly every time.
 
 ```
 ├── src/
-│   ├── server_scripts/        # FastAPI server (runs in Docker)
-│   │   ├── main.py            # API endpoints, Telegram callbacks, dashboard
+│   ├── server/                # FastAPI server (runs in Docker on the server)
+│   │   ├── main.py            # Webhooks, Telegram callbacks, the server's dashboard
 │   │   ├── check_rules.py     # Rule matching logic
 │   │   ├── telegram.py        # Telegram bot logic
-│   │   ├── follow_up_tg.py    # Follow-up notification scheduler
-│   │   └── server_db.py       # Server-side database functions (psycopg)
-│   └── local_scripts/         # Runs on your local machine
-│       ├── process.py         # The daily run: classify, act on decisions, send summaries
-│       ├── worker.py          # Runs process.py every morning, in the server's worker container
-│       ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
-│       ├── category_proposals.py  # Real-time new-category approval (holds transactions behind a Telegram card)
-│       ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
-│       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
-│       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
-│       ├── database_functions.py  # The pipeline's and dashboard's database library (psycopg) — includes a CLI (run the file directly) to print stats/transactions
-│       ├── dashboard.py       # Streamlit dashboard
+│   │   ├── follow_up_tg.py    # Follow-ups, and sending the cards for new proposals
+│   │   ├── monzo_oauth.py     # Monzo API access, refreshed automatically
+│   │   └── server_db.py       # The server's database functions (psycopg)
+│   ├── pipeline/              # The daily run (the server's worker container; can be run by hand)
+│   │   ├── worker.py          # Runs process.py every morning at 08:00 London time
+│   │   ├── process.py         # The run: classify, act on decisions, send summaries
+│   │   ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
+│   │   ├── placement_judge.py # The second look at each placement
+│   │   ├── category_proposals.py  # Real-time new-category approval (holds transactions behind a Telegram card)
+│   │   ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
+│   │   ├── rule_suggestions.py    # Spots patterns worth a rule
+│   │   ├── weekly_summary.py, monthly_summary.py  # Telegram summaries
+│   │   ├── alerts.py          # Telegram alerts when something fails
+│   │   ├── judge_backlog.py   # Manual: a second look at older history
+│   │   └── database_functions.py  # The database library, shared with the dashboard — includes a CLI (run the file directly) to print stats/transactions
+│   └── dashboard/             # The Streamlit dashboard, on your own machine
+│       ├── dashboard.py
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
 ├── sql/
 │   └── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
 ├── config/
 │   └── .env.example           # Environment variable template
-├── Dockerfile                 # Server container (server dependencies + server files only)
-├── docker-compose.yml         # Server + Caddy
+├── Dockerfile                 # The server and worker image (src/server + src/pipeline, not the dashboard)
+├── docker-compose.yml         # Server, worker and Caddy
 └── Caddyfile                  # Reverse proxy + automatic HTTPS
 ```
 
@@ -489,7 +494,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |
-| CI/CD | GitHub Actions — tests and a server-image build/smoke test run on every PR; merging to `main` auto-deploys over SSH, but only when something the server is built from changed (`src/server_scripts/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — pipeline and dashboard changes don't restart it. Deploys never overlap. |
+| CI/CD | GitHub Actions — tests and server-image build/smoke tests run on every PR; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
 

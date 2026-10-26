@@ -13,9 +13,9 @@ remembered so the same merchant and placement isn't questioned again.
 Judging is one paid API call per transaction, so by default this only counts them and
 estimates the cost. Nothing is sent to Claude, written, or held without --yes:
 
-    python src/local_scripts/judge_backlog.py                 # how many, roughly what it costs
-    python src/local_scripts/judge_backlog.py --yes           # judge them, send up to 10 cards
-    python src/local_scripts/judge_backlog.py --yes --cards 5 # fewer cards at a time
+    python src/pipeline/judge_backlog.py                 # how many, roughly what it costs
+    python src/pipeline/judge_backlog.py --yes           # judge them, send up to 10 cards
+    python src/pipeline/judge_backlog.py --yes --cards 5 # fewer cards at a time
 
 Every transaction is judged once, and its verdict recorded, so re-running only reviews what
 is left (including objections that didn't get a card because of --cards). Transactions you
