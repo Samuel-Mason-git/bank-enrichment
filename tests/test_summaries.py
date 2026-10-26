@@ -4,7 +4,7 @@ import pytest
 from datetime import date, timedelta
 
 from weekly_summary import (
-    _week_key, _week_bounds, _prev_week,
+    _week_key, _week_bounds,
     format_weekly_message, get_missing_weeks, get_week_stats,
 )
 from monthly_summary import format_monthly_message, get_missing_months
@@ -56,26 +56,6 @@ class TestWeekBounds:
         monday, sunday = _week_bounds("2026-W27")
         assert monday == date(2026, 6, 29)
         assert sunday == date(2026, 7, 5)
-
-
-class TestPrevWeek:
-    def test_decrements_within_year(self):
-        assert _prev_week("2026-W27") == "2026-W26"
-        assert _prev_week("2026-W10") == "2026-W09"
-
-    def test_crosses_year_boundary(self):
-        # Monday of 2026-W01 is 2025-12-29; prev is 2025-W52
-        prev = _prev_week("2026-W01")
-        monday_1, _ = _week_bounds("2026-W01")
-        monday_prev, _ = _week_bounds(prev)
-        assert (monday_1 - monday_prev).days == 7
-
-    def test_prev_of_prev_is_two_weeks_back(self):
-        key = "2026-W27"
-        two_back = _prev_week(_prev_week(key))
-        m_key, _ = _week_bounds(key)
-        m_two, _ = _week_bounds(two_back)
-        assert (m_key - m_two).days == 14
 
 
 # ── Format weekly message ──────────────────────────────────────────────────────

@@ -44,8 +44,10 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-root
 
+      # With coverage: the report (which lines no test reaches) is in this
+      # step's log, and the run fails if the total drops below 80%.
       - name: Run tests
-        run: poetry run pytest --tb=short -q
+        run: poetry run pytest --tb=short -q --cov=src --cov-report=term-missing:skip-covered --cov-fail-under=80
 
   # The server image installs only the "main" dependency group and copies only the
   # server's files, so a dependency or file it needs but no longer gets would break

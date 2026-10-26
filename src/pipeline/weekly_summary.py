@@ -46,12 +46,6 @@ def _week_bounds(week_key: str) -> tuple[date, date]:
     return monday, sunday
 
 
-def _prev_week(week_key: str) -> str:
-    monday, _ = _week_bounds(week_key)
-    prev_monday = monday - timedelta(days=7)
-    return _week_key(prev_monday)
-
-
 def get_missing_weeks() -> list[str]:
     con = get_con()
     earliest_row = con.execute("SELECT MIN(created_at) FROM transactions").fetchone()[0]

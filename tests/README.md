@@ -18,6 +18,15 @@ Run with verbose output:
 poetry run pytest -v
 ```
 
+With coverage, as CI runs it (it fails below 80%):
+
+```
+poetry run pytest --cov=src --cov-report=term-missing:skip-covered --cov-fail-under=80
+```
+
+Waits between retries (Telegram, Monzo's API, the worker) never really
+sleep in a test: the `retry_waits` fixture records them instead.
+
 ## The database tests need a Postgres
 
 Most tests use a throwaway Postgres schema, built from `sql/postgres/schema.sql`

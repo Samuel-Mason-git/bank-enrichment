@@ -180,25 +180,6 @@ def get_unclassified() -> list[dict]:
     return _rows("SELECT * FROM needs_label ORDER BY created_at DESC")
 
 
-def get_by_category(category: str) -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions WHERE llm_category = %s ORDER BY created_at DESC",
-        [category]
-    )
-
-
-def get_skipped() -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions WHERE skipped = TRUE ORDER BY created_at DESC"
-    )
-
-
-def get_recent(n: int = 10) -> list[dict]:
-    return _rows(
-        "SELECT * FROM transactions ORDER BY created_at DESC LIMIT %s", [n]
-    )
-
-
 def get_parents() -> list[dict]:
     """Live parent categories, with how many transactions each holds."""
     return _rows(
@@ -294,6 +275,20 @@ _SOURCE_BY_MODEL = {
     "quick-tap": "quick_tap", "rule": "rule", "category-proposal": "proposal",
     "taxonomy-proposal": "proposal", "manual": "manual", "judge": "judge",
 }
+
+
+def insert_with_next_id(con, sql: str, params, table: str, attempts: int = 3) -> int:
+    """Run an INSERT whose id is (SELECT COALESCE(MAX(id), 0) + 1 FROM table),
+    ending RETURNING id, and return that id. Two writers at once (the worker,
+    a dashboard edit, the server) can pick the same one; the second then tries
+    again. Only a clash on the id itself is retried -- any other unique rule
+    broken (a name already taken) raises as it always has."""
+    for attempt in range(attempts):
+        try:
+            return con.execute(sql, params).fetchone()[0]
+        except psycopg.errors.UniqueViolation as e:
+            if e.diag.constraint_name != f"{table}_pkey" or attempt == attempts - 1:
+                raise
 
 
 def label_ids(category: str | None, subcategory: str | None) -> tuple[int | None, int | None]:
@@ -505,14 +500,11 @@ def upsert_parent(name: str) -> int:
     ).fetchone()
     if row:
         return row[0]
-    next_id = con.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories"
-    ).fetchone()[0]
-    con.execute(
-        "INSERT INTO parent_categories (id, name, created_at) VALUES (%s, %s, %s)",
-        [next_id, name, _now()]
+    return insert_with_next_id(
+        con,
+        "INSERT INTO parent_categories (id, name, created_at) VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM parent_categories), %s, %s) RETURNING id",
+        [name, _now()], "parent_categories",
     )
-    return next_id
 
 
 def upsert_subcategory(name: str, parent_id: int) -> int:
@@ -524,14 +516,11 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     ).fetchone()
     if row:
         return row[0]
-    next_id = con.execute(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories"
-    ).fetchone()[0]
-    con.execute(
-        "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES (%s, %s, %s, %s)",
-        [next_id, name, parent_id, _now()]
+    return insert_with_next_id(
+        con,
+        "INSERT INTO subcategories (id, name, parent_id, created_at) VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM subcategories), %s, %s, %s) RETURNING id",
+        [name, parent_id, _now()], "subcategories",
     )
-    return next_id
 
 
 # ── Editing the taxonomy (the dashboard's Settings tab) ───────────────────────
@@ -714,12 +703,12 @@ def get_subscriptions() -> list[dict]:
 
 def upsert_subscription(name: str, amount: float, frequency: str, merchant_name: str | None = None) -> int:
     con = get_con()
-    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions").fetchone()[0]
-    con.execute(
-        "INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at) VALUES (%s, %s, %s, %s, %s, TRUE, %s)",
-        [next_id, name, merchant_name, amount, frequency, _now()]
+    return insert_with_next_id(
+        con,
+        """INSERT INTO subscriptions (id, name, merchant_name, amount, frequency, active, created_at)
+           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM subscriptions), %s, %s, %s, %s, TRUE, %s) RETURNING id""",
+        [name, merchant_name, amount, frequency, _now()], "subscriptions",
     )
-    return next_id
 
 
 def update_subscription(sub_id: int, name: str, amount: float, frequency: str, merchant_name: str | None = None) -> None:

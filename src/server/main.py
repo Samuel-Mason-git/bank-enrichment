@@ -22,8 +22,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from server_db import (
-    init_db, get_con, get_quick_categories, now, payload, record_context, record_label, record_request,
-    record_update, subcategory, subcategory_id,
+    init_db, get_con, get_quick_categories, insert_with_next_id, now, payload, record_context, record_label,
+    record_request, record_update, subcategory, subcategory_id,
 )
 from telegram import TelegramBot
 from check_rules import check_rules, NO_MATCH
@@ -694,11 +694,11 @@ async def recieve_telegram(request: Request):
                         )
                         con.execute("DELETE FROM rule_suggestions WHERE id = %s", [suggestion_id])
                         return {"ok": True}
-                    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
-                    con.execute(
+                    insert_with_next_id(
+                        con,
                         """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context, subcategory_id)
-                           VALUES (%s, %s, %s, 'exact', %s, %s, %s)""",
-                        [next_id, f"Suggested: {match_value}", match_field, match_value, auto_context, sub_id]
+                           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules), %s, %s, 'exact', %s, %s, %s) RETURNING id""",
+                        [f"Suggested: {match_value}", match_field, match_value, auto_context, sub_id], "rules",
                     )
                     con.execute(
                         "UPDATE rule_suggestions SET status = 'approved', decided_at = %s WHERE id = %s",
@@ -1020,13 +1020,14 @@ async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends
     con = get_con()
     rule = _rule_form(con, await request.form())
     if rule:
-        next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rules").fetchone()[0]
-        con.execute(
+        insert_with_next_id(
+            con,
             """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context,
                                   match_field_2, match_type_2, match_value_2, auto_skip, subcategory_id)
-               VALUES (%(id)s, %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
-                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)""",
-            {**rule, "id": next_id}
+               VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules), %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
+                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)
+               RETURNING id""",
+            rule, "rules",
         )
     return RedirectResponse(url="/dashboard/rules", status_code=303)
 

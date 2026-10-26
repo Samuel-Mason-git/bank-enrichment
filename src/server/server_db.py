@@ -50,6 +50,20 @@ def init_db() -> None:
         _con.execute(f.read())
 
 
+def insert_with_next_id(con, sql: str, params, table: str, attempts: int = 3) -> int:
+    """Run an INSERT whose id is (SELECT COALESCE(MAX(id), 0) + 1 FROM table),
+    ending RETURNING id, and return that id. Two writers at once (the worker,
+    a dashboard edit, the server) can pick the same one; the second then tries
+    again. Only a clash on the id itself is retried -- any other unique rule
+    broken (a name already taken) raises as it always has."""
+    for attempt in range(attempts):
+        try:
+            return con.execute(sql, params).fetchone()[0]
+        except psycopg.errors.UniqueViolation as e:
+            if e.diag.constraint_name != f"{table}_pkey" or attempt == attempts - 1:
+                raise
+
+
 def now() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 

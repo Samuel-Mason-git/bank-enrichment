@@ -494,7 +494,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |
-| CI/CD | GitHub Actions — tests and server-image build/smoke tests run on every PR; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
+| CI/CD | GitHub Actions — tests (with coverage, which must stay at 80% or more) and server-image build/smoke tests run on every PR; Dependabot proposes dependency updates weekly; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
 

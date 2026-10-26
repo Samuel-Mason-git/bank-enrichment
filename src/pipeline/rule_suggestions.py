@@ -19,7 +19,7 @@ import anthropic
 from dotenv import load_dotenv
 
 import alerts
-from database_functions import get_con
+from database_functions import get_con, insert_with_next_id
 from llm_labelling import MODEL, _extract_json
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
@@ -188,14 +188,15 @@ def _not_yet_asked(con, candidates: list[dict]) -> list[dict]:
 
 
 def _store(con, c: dict, status: str) -> None:
-    next_id = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions").fetchone()[0]
-    con.execute(
+    insert_with_next_id(
+        con,
         """INSERT INTO rule_suggestions
            (id, match_field, match_value, category, subcategory, txn_count, auto_context,
             llm_reasoning, status, proposed_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        [next_id, c["match_field"], c["match_value"], c["category"], c["subcategory"],
+           VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rule_suggestions), %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        [c["match_field"], c["match_value"], c["category"], c["subcategory"],
          c["txn_count"], c["auto_context"], c.get("llm_reasoning", ""), status, time.strftime("%Y-%m-%d %H:%M:%S")],
+        "rule_suggestions",
     )
 
 
