@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 from tests.local_helpers import ensure_category, write_to_db as _write_to_db
 
 _DASHBOARD_PATH = str(
-    Path(__file__).parent.parent / "src" / "local_scripts" / "dashboard.py"
+    Path(__file__).parent.parent / "src" / "dashboard" / "dashboard.py"
 )
 
 

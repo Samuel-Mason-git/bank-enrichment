@@ -152,23 +152,3 @@ def get_quick_categories(merchant_name: str | None) -> list[dict]:
 def dumps(value) -> str:
     """JSON for a JSONB parameter."""
     return json.dumps(value)
-
-
-def split_sql_statements(sql: str) -> list[str]:
-    """Split a DuckDB schema file into statements, comments stripped first so a
-    semicolon in a comment can't cut a statement in half. Only the old DuckDB
-    files still need this (pg_copy's tests build a copy of the old server
-    database); it goes with them once the move is done."""
-    cleaned = []
-    for line in sql.splitlines():
-        if line.strip().startswith("--"):
-            continue
-        in_string = False
-        for i, char in enumerate(line):
-            if char == "'":
-                in_string = not in_string
-            elif char == "-" and not in_string and line[i:i + 2] == "--":
-                line = line[:i]
-                break
-        cleaned.append(line)
-    return [s.strip() for s in "\n".join(cleaned).split(";") if s.strip()]

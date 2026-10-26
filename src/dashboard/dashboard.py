@@ -10,6 +10,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
+# The pipeline's database library: the dashboard reads the same database the same way.
+sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 from database_functions import (

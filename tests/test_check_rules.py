@@ -1,4 +1,4 @@
-"""Tests for the pure matching logic in server_scripts/check_rules.py."""
+"""Tests for the pure matching logic in server/check_rules.py."""
 import pytest
 from unittest.mock import MagicMock
 

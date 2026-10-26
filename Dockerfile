@@ -18,10 +18,11 @@ COPY pyproject.toml poetry.lock ./
 # them made cold builds slow enough to exhaust a small free-tier VM.
 RUN poetry install --no-root --only main,worker
 
-# Only what the server and the worker run. server_db.py finds its schema at
-# ../../sql relative to itself, hence sql/ sitting next to src/.
-COPY src/server_scripts/ ./src/server_scripts/
-COPY src/local_scripts/ ./src/local_scripts/
+# Only what the server and the worker run -- not the dashboard, which is the
+# PC's. server_db.py finds its schema at ../../sql relative to itself, hence
+# sql/ sitting next to src/.
+COPY src/server/ ./src/server/
+COPY src/pipeline/ ./src/pipeline/
 COPY sql/postgres/schema.sql ./sql/postgres/schema.sql
 
-CMD ["python", "src/server_scripts/main.py"]
+CMD ["python", "src/server/main.py"]

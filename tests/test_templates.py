@@ -3,7 +3,7 @@ from pathlib import Path
 import jinja2
 import pytest
 
-_TEMPLATES_DIR = Path(__file__).parent.parent / "src" / "server_scripts" / "templates"
+_TEMPLATES_DIR = Path(__file__).parent.parent / "src" / "server" / "templates"
 
 
 @pytest.fixture

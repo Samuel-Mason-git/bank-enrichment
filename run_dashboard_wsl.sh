@@ -1,7 +1,6 @@
 #!/bin/bash
 # Runs the dashboard inside WSL, avoiding Windows Smart App Control blocking pandas' DLLs.
-# Launched by launch_dashboard.bat via: wsl -d Ubuntu-24.04 -- bash run_dashboard_wsl.sh
-cd /mnt/c/Users/mason/Projects/bank-enrichment
-POETRY=/home/mason/.local/bin/poetry
-"$POETRY" run python src/local_scripts/process.py
-"$POETRY" run streamlit run src/local_scripts/dashboard.py --server.headless true
+# Launched by launch_dashboard.bat. Set POETRY if Poetry isn't in ~/.local/bin.
+cd "$(dirname "$0")"
+POETRY="${POETRY:-$HOME/.local/bin/poetry}"
+"$POETRY" run streamlit run src/dashboard/dashboard.py --server.headless true

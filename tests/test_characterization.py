@@ -218,7 +218,7 @@ def frozen(monkeypatch):
     monkeypatch.setattr(alerts, "send_telegram", lambda text: sent.append(text) or True)
     monkeypatch.setattr(rs, "CLAUDE_SECRET", "test")
     monkeypatch.setattr(rs, "filter_worth_a_rule",
-                        lambda client, cands: [{**c, "llm_reasoning": "Single-purpose."} for c in cands])
+                        lambda client, cands: ([{**c, "llm_reasoning": "Single-purpose."} for c in cands], []))
     monkeypatch.setattr(ll, "CLAUDE_SECRET", "test")
     monkeypatch.setattr(ll, "anthropic", SimpleNamespace(Anthropic=lambda **kw: FakeClaude()))
     monkeypatch.setattr(pj, "JUDGE_ENABLED", True)

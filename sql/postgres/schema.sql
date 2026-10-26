@@ -123,8 +123,9 @@ CREATE TABLE IF NOT EXISTS rule_suggestions (
     auto_context VARCHAR(255) NOT NULL DEFAULT '',
     -- Shown on the card: why the classifier thought it worth a rule.
     llm_reasoning TEXT        NOT NULL DEFAULT '',
+    -- declined: Claude judged it not worth a rule. Never sent, never asked again.
     status       VARCHAR(20)  NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'denied')),
+        CHECK (status IN ('pending', 'approved', 'denied', 'declined')),
     proposed_at  TIMESTAMP    NOT NULL,
     -- NULL until its Telegram card has gone out; the server sends any that haven't.
     sent_at      TIMESTAMP,
@@ -227,6 +228,11 @@ CREATE TABLE IF NOT EXISTS summaries (
 ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS llm_reasoning TEXT NOT NULL DEFAULT '';
 ALTER TABLE rule_suggestions   ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP;
 ALTER TABLE taxonomy_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
+-- 'declined' added to rule_suggestions' statuses (a CHECK can't be widened in
+-- place, so it's made again -- every row already passes the wider one).
+ALTER TABLE rule_suggestions DROP CONSTRAINT IF EXISTS rule_suggestions_status_check;
+ALTER TABLE rule_suggestions ADD CONSTRAINT rule_suggestions_status_check
+    CHECK (status IN ('pending', 'approved', 'denied', 'declined'));
 ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
 
 -- ── Views (silver: worked out on every read, nothing stored) ─────────────────
