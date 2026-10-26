@@ -122,8 +122,27 @@ def subcategory_id(con, category: str, subcategory_name: str) -> int | None:
 
 
 def payload(con, txn_id: str) -> dict | None:
-    row = con.execute("SELECT payload FROM transactions_raw WHERE id = %s", [txn_id]).fetchone()
+    """The transaction as it stands now (transaction_current)."""
+    row = con.execute("SELECT payload FROM transaction_current WHERE id = %s", [txn_id]).fetchone()
     return row[0] if row else None
+
+
+def record_update(con, txn_id: str, payload: dict, source: str) -> bool:
+    """Keep a later version of a transaction, unless it says nothing new: the
+    same as a version already stored (Monzo sends near-identical webhooks in a
+    burst). True if it was kept."""
+    seen = con.execute(
+        """SELECT EXISTS (SELECT 1 FROM transactions_raw WHERE id = %s AND payload = %s::jsonb)
+               OR EXISTS (SELECT 1 FROM transaction_updates WHERE txn_id = %s AND payload = %s::jsonb)""",
+        [txn_id, json.dumps(payload), txn_id, json.dumps(payload)],
+    ).fetchone()[0]
+    if seen:
+        return False
+    con.execute(
+        "INSERT INTO transaction_updates (txn_id, payload, source, received_at) VALUES (%s, %s, %s, %s)",
+        [txn_id, json.dumps(payload), source, now()],
+    )
+    return True
 
 
 def get_quick_categories(merchant_name: str | None) -> list[dict]:

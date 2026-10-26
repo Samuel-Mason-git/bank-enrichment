@@ -7580,7 +7580,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_0"
+    "txn_id": "tapped"
    },
    {
     "confidence": null,
@@ -7590,7 +7590,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_1"
+    "txn_id": "tesco_0"
    },
    {
     "confidence": null,
@@ -7600,7 +7600,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_2"
+    "txn_id": "tesco_1"
    },
    {
     "confidence": null,
@@ -7610,7 +7610,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_3"
+    "txn_id": "tesco_2"
    },
    {
     "confidence": null,
@@ -7620,7 +7620,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tapped"
+    "txn_id": "tesco_3"
    },
    {
     "confidence": null,
@@ -13048,7 +13048,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_0"
+    "txn_id": "tapped"
    },
    {
     "confidence": null,
@@ -13058,7 +13058,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_1"
+    "txn_id": "tesco_0"
    },
    {
     "confidence": null,
@@ -13068,7 +13068,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_2"
+    "txn_id": "tesco_1"
    },
    {
     "confidence": null,
@@ -13078,7 +13078,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_3"
+    "txn_id": "tesco_2"
    },
    {
     "confidence": null,
@@ -13088,7 +13088,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tapped"
+    "txn_id": "tesco_3"
    },
    {
     "confidence": null,
@@ -19140,7 +19140,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_0"
+    "txn_id": "tapped"
    },
    {
     "confidence": null,
@@ -19150,7 +19150,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_1"
+    "txn_id": "tesco_0"
    },
    {
     "confidence": null,
@@ -19160,7 +19160,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_2"
+    "txn_id": "tesco_1"
    },
    {
     "confidence": null,
@@ -19170,7 +19170,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tesco_3"
+    "txn_id": "tesco_2"
    },
    {
     "confidence": null,
@@ -19180,7 +19180,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": 56.0,
-    "txn_id": "tapped"
+    "txn_id": "tesco_3"
    },
    {
     "confidence": null,
@@ -19240,7 +19240,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_0"
+    "txn_id": "dentist"
    },
    {
     "confidence": null,
@@ -19250,7 +19250,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_1"
+    "txn_id": "deposit"
    },
    {
     "confidence": null,
@@ -19260,7 +19260,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_2"
+    "txn_id": "fuel"
    },
    {
     "confidence": null,
@@ -19270,7 +19270,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_3"
+    "txn_id": "hmrc"
    },
    {
     "confidence": null,
@@ -19280,7 +19280,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_4"
+    "txn_id": "netflix"
    },
    {
     "confidence": null,
@@ -19290,7 +19290,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tesco_5"
+    "txn_id": "refund"
    },
    {
     "confidence": null,
@@ -19320,7 +19320,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "deposit"
+    "txn_id": "salary_1"
    },
    {
     "confidence": null,
@@ -19330,7 +19330,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "salary_1"
+    "txn_id": "salary_2"
    },
    {
     "confidence": null,
@@ -19340,7 +19340,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "salary_2"
+    "txn_id": "tapped"
    },
    {
     "confidence": null,
@@ -19350,7 +19350,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "refund"
+    "txn_id": "tesco_0"
    },
    {
     "confidence": null,
@@ -19360,7 +19360,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "netflix"
+    "txn_id": "tesco_1"
    },
    {
     "confidence": null,
@@ -19370,7 +19370,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "tapped"
+    "txn_id": "tesco_2"
    },
    {
     "confidence": null,
@@ -19380,7 +19380,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "hmrc"
+    "txn_id": "tesco_3"
    },
    {
     "confidence": null,
@@ -19390,7 +19390,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "dentist"
+    "txn_id": "tesco_4"
    },
    {
     "confidence": null,
@@ -19400,7 +19400,7 @@
     "set_at": "<now>",
     "source": "manual",
     "subcategory_id": null,
-    "txn_id": "fuel"
+    "txn_id": "tesco_5"
    }
   ],
   "parent_categories": [
@@ -21590,6 +21590,7 @@
   "subscriptions.parquet",
   "summaries.parquet",
   "taxonomy_proposals.parquet",
+  "transaction_updates.parquet",
   "transactions_raw.parquet"
  ],
  "backup label_events": [
@@ -21871,7 +21872,7 @@
    "set_at": "<now>",
    "source": "manual",
    "subcategory_id": 56.0,
-   "txn_id": "tesco_0"
+   "txn_id": "tapped"
   },
   {
    "confidence": null,
@@ -21881,7 +21882,7 @@
    "set_at": "<now>",
    "source": "manual",
    "subcategory_id": 56.0,
-   "txn_id": "tesco_1"
+   "txn_id": "tesco_0"
   },
   {
    "confidence": null,
@@ -21891,7 +21892,7 @@
    "set_at": "<now>",
    "source": "manual",
    "subcategory_id": 56.0,
-   "txn_id": "tesco_2"
+   "txn_id": "tesco_1"
   },
   {
    "confidence": null,
@@ -21901,7 +21902,7 @@
    "set_at": "<now>",
    "source": "manual",
    "subcategory_id": 56.0,
-   "txn_id": "tesco_3"
+   "txn_id": "tesco_2"
   },
   {
    "confidence": null,
@@ -21911,7 +21912,7 @@
    "set_at": "<now>",
    "source": "manual",
    "subcategory_id": 56.0,
-   "txn_id": "tapped"
+   "txn_id": "tesco_3"
   },
   {
    "confidence": null,

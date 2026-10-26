@@ -12,12 +12,13 @@ from datetime import datetime
 from decimal import Decimal
 
 TABLES = {
-    "transactions_raw", "context_events", "label_events",
+    "transactions_raw", "transaction_updates", "context_events", "label_events",
     "parent_categories", "subcategories", "category_roles",
     "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
     "judge_reviews", "subscriptions", "summaries",
 }
-VIEWS = {"transactions", "transaction_roles", "needs_context", "needs_label", "quick_categories"}
+VIEWS = {"transactions", "transaction_current", "transaction_roles", "needs_context", "needs_label",
+         "quick_categories"}
 
 # The columns the old DuckDB transactions table had, minus processed_at,
 # which nothing read. The view offers every one of them, under the same names.

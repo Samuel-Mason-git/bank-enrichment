@@ -549,7 +549,7 @@ def _clear_labels_where(condition: str, params: list, keep_parent: bool = False)
     con.execute(
         f"""INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, set_at)
             SELECT id, {'parent_id' if keep_parent else 'NULL'}, NULL, 'manual', %s
-            FROM transactions WHERE {condition}""",
+            FROM transactions WHERE {condition} ORDER BY id""",
         [_now(), *params],
     )
     return count
@@ -608,7 +608,7 @@ def move_all_transactions(from_subcategory_id: int, to_subcategory_id: int) -> i
                         [from_subcategory_id]).fetchone()[0]
     con.execute(
         """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, set_at)
-           SELECT id, %s, %s, 'manual', 'manual', %s FROM transactions WHERE subcategory_id = %s""",
+           SELECT id, %s, %s, 'manual', 'manual', %s FROM transactions WHERE subcategory_id = %s ORDER BY id""",
         [parent_id, to_subcategory_id, _now(), from_subcategory_id],
     )
     return count
@@ -750,7 +750,7 @@ MANIFEST_NAME = "manifest.json"
 # Every table there is, so a backup is the whole of it. The views are left out:
 # they store nothing, and come back with sql/postgres/schema.sql.
 BACKUP_TABLES = [
-    "transactions_raw", "context_events", "label_events",
+    "transactions_raw", "transaction_updates", "context_events", "label_events",
     "parent_categories", "subcategories", "category_roles",
     "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
     "judge_reviews", "subscriptions", "summaries",

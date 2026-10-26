@@ -3,7 +3,8 @@ import logging
 import os
 import time
 
-from server_db import get_con, get_quick_categories, now, record_context, record_request
+from monzo_oauth import fetch_transaction
+from server_db import get_con, get_quick_categories, now, record_context, record_request, record_update
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def run_requester(bot) -> None:
     # Transactions whose first card never went out (bot was down, send failed).
     # Not straight away -- the webhook may still be sending it.
     missed = con.execute(
-        """SELECT n.id, r.payload FROM needs_context n JOIN transactions_raw r ON r.id = n.id
+        """SELECT n.id, c.payload FROM needs_context n JOIN transaction_current c ON c.id = n.id
            WHERE n.request_count = 0 AND n.received_at <= %s ORDER BY n.received_at LIMIT 1""",
         [_cutoff(MISSED_CARD_AFTER)]
     ).fetchone()
@@ -61,7 +62,7 @@ def run_requester(bot) -> None:
 
     for request_count, delay_seconds in FOLLOW_UP_SCHEDULE:
         row = con.execute(
-            """SELECT n.id, r.payload FROM needs_context n JOIN transactions_raw r ON r.id = n.id
+            """SELECT n.id, c.payload FROM needs_context n JOIN transaction_current c ON c.id = n.id
                WHERE n.request_count = %s AND n.last_requested_at <= %s
                ORDER BY n.last_requested_at LIMIT 1""",
             [request_count, _cutoff(delay_seconds)]
@@ -178,10 +179,46 @@ def run_taxonomy_follow_ups(bot) -> None:
         return
 
 
+# Card payments still without a merchant are looked up in Monzo's API again,
+# this often, for this long after they arrived.
+REPAIR_EVERY = 3_600
+REPAIR_FOR = 86_400 * 7
+_last_repair = 0.0
+
+
+def run_merchant_repair(bot) -> None:
+    """Card payments still without a merchant -- the webhook's own lookup
+    failed, or Monzo hadn't filled it in yet -- looked up again, at most hourly,
+    for a week after each arrived. Monzo's answer is kept as an update, merchant
+    or not, and once there is one that payment isn't looked up again."""
+    global _last_repair
+    if time.time() - _last_repair < REPAIR_EVERY:
+        return
+    _last_repair = time.time()
+    con = get_con()
+    missing = con.execute(
+        """SELECT t.id FROM transactions t
+           WHERE t.merchant_name IS NULL AND COALESCE(t.counterparty_name, '') = ''
+             AND t.raw_payload->'data'->>'scheme' = 'mastercard'
+             AND t.received_at BETWEEN %s AND %s
+             AND NOT EXISTS (SELECT 1 FROM transaction_updates u WHERE u.txn_id = t.id AND u.source = 'api')
+           ORDER BY t.received_at DESC LIMIT 10""",
+        [_cutoff(REPAIR_FOR), _cutoff(MISSED_CARD_AFTER)],
+    ).fetchall()
+    for (txn_id,) in missing:
+        fetched = fetch_transaction(txn_id)
+        if fetched is None:
+            continue  # Monzo couldn't be asked: next hour
+        record_update(con, txn_id, {"type": "transaction.updated", "data": fetched}, "api")
+        merchant = (fetched.get("merchant") or {}).get("name") if isinstance(fetched.get("merchant"), dict) else None
+        log.info(f"Merchant repair for {txn_id}: {merchant!r}" if merchant else
+                 f"Merchant repair for {txn_id}: Monzo has none either")
+
+
 async def requester_loop(bot) -> None:
     while True:
         await asyncio.sleep(300)  # check every 5 minutes
-        for job in (run_new_cards, run_requester, run_taxonomy_follow_ups):
+        for job in (run_new_cards, run_requester, run_taxonomy_follow_ups, run_merchant_repair):
             # In a thread: Telegram and the database can be slow, and retries
             # wait -- none of which may hold up a webhook arriving meanwhile.
             try:
