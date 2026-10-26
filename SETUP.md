@@ -226,10 +226,12 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 ---
 
-## Part 2 — Local Script Setup
+## Part 2 — Local Setup (the dashboard)
 
-The processing script and dashboard run on your own machine — the compute — against the same database
-the server uses, reached over the data box's WireGuard VPN. Import the config data-vault's
+The daily run happens on the server: Docker Compose starts a `worker` container next to the server, which
+runs the pipeline every morning at 08:00 London time (see step 5). Your own machine is for the dashboard, and
+for running the pipeline by hand when you want to. Both reach the same database over the data box's
+WireGuard VPN. Import the config data-vault's
 `wg_add_device.sh` made for this machine into the WireGuard app and switch it on; it only routes
 the data box's addresses, so the rest of your traffic is unaffected. (On Windows with WSL, WSL
 reaches the database through the Windows tunnel — nothing to set up inside WSL.)
@@ -246,8 +248,8 @@ reaches the database through the Windows tunnel — nothing to set up inside WSL
 > 2. Inside the WSL shell: install Poetry and run `poetry install` there, against this same repo at its `/mnt/c/...`
 >    path — you don't need a second clone.
 > 3. Use `run_dashboard_wsl.sh` (dashboard) and `run_process_wsl.sh` (pipeline only) instead of calling `poetry run`
->    directly — both just `cd` into the project and call Poetry's WSL install. Steps 5 and 6 below show how
->    `launch_dashboard.bat` and Task Scheduler call these.
+>    directly — both just `cd` into the project and call Poetry's WSL install. Step 6 below shows how
+>    `launch_dashboard.bat` calls the first.
 > 4. A Windows-side Poetry install (`poetry env info --executable`) can still be pointed at from an editor for
 >    autocomplete — it just can't run pandas-dependent code, only WSL's install can.
 
@@ -278,9 +280,9 @@ cp config/.env.example config/.env
 
 Then fill in at minimum the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` and `CLAUDE_SECRET` (see the table in step 4 of Part 1).
 
-### 4. Run the Scripts
+### 4. Run the Pipeline by Hand (optional)
 
-**Run the pipeline:**
+The worker runs it every morning (step 5); this is for when you don't want to wait:
 ```bash
 poetry run python src/local_scripts/process.py
 ```
@@ -298,47 +300,25 @@ within five minutes.
 
 The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
-Log files are written to `logs/` in the repo (or `LOG_DIR`):
+Only one run can happen at a time: one started while the worker is running (or the other way round) says so and
+stops, rather than classifying the same transactions twice.
+
+Log files are written to `logs/` in the repo (or `LOG_DIR`; on the server, `data/logs/`):
 - `bank_enrichment.log` — the run's own log
 - `llm_classifier.log` — LLM classification log
 
 `llm_labelling.py` can also be run standalone at any time if you only want to classify.
 
-### 5. Schedule the Task
+### 5. The Daily Run on the Server
 
-**Windows — Task Scheduler:**
+Nothing to set up: `docker compose up -d` (and every deploy) starts the `worker` container alongside the
+server. It runs the pipeline at **08:00 London time** every day, with the same `config/.env` as the server
+(it needs `CLAUDE_SECRET` there too), and is capped at 350 MB of memory so a run can never starve the
+webhooks.
 
-If you're routing through WSL (see the Smart App Control note above — this is the common case on Windows 11):
-
-1. Open **Task Scheduler** → **Create Basic Task**
-2. Name it `Bank Enrichment Collection` → Next
-3. Trigger: **Daily** → set your preferred time (e.g. 08:00) → Next
-4. Action: **Start a program** → Next
-5. **Program/script**: `C:\WINDOWS\system32\wsl.exe`
-6. **Add arguments**: `-d Ubuntu-24.04 -- bash /mnt/c/Users/you/Projects/bank-enrichment/run_process_wsl.sh` (adjust the path and distro name to match yours)
-7. **Start in**: leave blank — the script `cd`s into the project itself
-8. Finish → open Properties → **General** tab → tick **Run whether user is logged on or not** (you'll be asked for your Windows password so the task can run while you're logged out)
-
-If you've confirmed you're *not* affected by Smart App Control, point the task directly at Poetry's Python instead:
-get the path with `poetry env info --executable`, use that as the program, and `src\local_scripts\process.py` as
-the arguments — everything else above is the same.
-
-**Whichever setup you use:** a scheduled task's action isn't visible day-to-day, so it can quietly start failing —
-for example if a later Windows Update changes what Smart App Control blocks — with nothing but a daily "1" in
-`(Get-ScheduledTaskInfo -TaskName "Bank Enrichment Collection").LastTaskResult` to show it. Check on it occasionally:
-a `LastTaskResult` of `0` means the last run's command exited cleanly (check `bank_enrichment.log` for what it
-actually did), anything else means it never got that far.
-
-The script is safe to re-run manually at any time.
-
-**Mac/Linux — cron:**
-```bash
-crontab -e
-```
-Add one line (adjust path and time as needed):
-```
-0 8 * * * cd /path/to/bank-enrichment && poetry run python src/local_scripts/process.py
-```
+- **See what it did:** `data/logs/bank_enrichment.log` on the server, or `docker compose logs worker`.
+- **Run it now** instead of waiting: `docker compose exec worker python src/local_scripts/worker.py --now`.
+- **If a run can't start or crashes**, you get a Telegram alert, and it tries again the next morning.
 
 ### 6. View the Dashboard
 

@@ -46,7 +46,7 @@ context sentences tell it exactly what each transaction was.
 5. You reply with one sentence of context, tap a quick-category button if one's shown, or tap Skip to dismiss
 6. Your context is stored as an event alongside the raw transaction — every answer and every label is kept, so nothing is ever overwritten
 7. If you don't respond, the system follows up at 1 hour, 1 day, 2 days, and 1 week — then auto-skips
-8. A daily script on your own machine (the compute) runs the LLM classifier against the same database, over a VPN — one scheduled task does everything
+8. Every morning at 08:00 a worker on the server runs the LLM classifier and the rest of the pipeline against the same database — nothing needs your PC to be on
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time — a genuinely new category is never created silently; it's proposed with a Telegram approval card first (see [New Category Approval](#new-category-approval) below)
 10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
@@ -232,7 +232,7 @@ Both summaries catch up automatically if the script was inactive — a summary i
 
 ## LLM Classification
 
-A multi-pass classification system runs on your machine against the shared database:
+A multi-pass classification system runs every morning on the server, against the shared database:
 
 **Pass 0 — Match existing taxonomy:** Claude first checks whether each transaction 
 confidently matches an already-existing subcategory. If it does, the transaction is 
@@ -397,8 +397,7 @@ Nothing changes until you approve one.
 
 ## Local Dashboard
 
-A Streamlit dashboard runs on your machine and reads the shared database directly (through
-DuckDB, over the VPN).
+A Streamlit dashboard runs on your machine and reads the shared database directly, over the VPN.
 Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
 filters, a text search across merchant/description/context, toggles for skipped/unclassified
 transactions, and an **Exclude** block for hiding noise — pick merchants/counterparties from a
@@ -460,13 +459,14 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── follow_up_tg.py    # Follow-up notification scheduler
 │   │   └── server_db.py       # Server-side database functions (psycopg)
 │   └── local_scripts/         # Runs on your local machine
-│       ├── process.py         # Classify and send summaries — one task does all
+│       ├── process.py         # The daily run: classify, act on decisions, send summaries
+│       ├── worker.py          # Runs process.py every morning, in the server's worker container
 │       ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
 │       ├── category_proposals.py  # Real-time new-category approval (holds transactions behind a Telegram card)
 │       ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
 │       ├── monthly_summary.py # Monthly Telegram summary (spend, income, categories)
 │       ├── weekly_summary.py  # Weekly Telegram summary (spend, income, categories)
-│       ├── database_functions.py  # The pipeline's database library (DuckDB attached to Postgres) — includes a CLI (run the file directly) to print stats/transactions
+│       ├── database_functions.py  # The pipeline's and dashboard's database library (psycopg) — includes a CLI (run the file directly) to print stats/transactions
 │       ├── pg_copy.py         # One-off: copies the old DuckDB files into Postgres
 │       ├── dashboard.py       # Streamlit dashboard
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
@@ -488,10 +488,10 @@ at any point using a new taxonomy and it will classify correctly every time.
 | Server | Python, FastAPI, psycopg |
 | Reverse proxy | Caddy (automatic HTTPS) |
 | Notifications | Telegram Bot API |
-| Database | Postgres 18 on a separate data box, reached over WireGuard; the pipeline and dashboard read it through DuckDB |
+| Database | Postgres 18 on a separate data box; the server and worker reach it on the cloud's private network, the dashboard over WireGuard |
 | LLM classification | Anthropic Claude (Sonnet) |
 | Local dashboard | Streamlit, Plotly |
-| Deployment | Docker Compose |
+| Deployment | Docker Compose: the server, the daily worker, and Caddy |
 | CI/CD | GitHub Actions — tests and a server-image build/smoke test run on every PR; merging to `main` auto-deploys over SSH, but only when something the server is built from changed (`src/server_scripts/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — pipeline and dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
