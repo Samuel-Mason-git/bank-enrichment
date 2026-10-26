@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # The worker keeps London time (TZ in docker-compose.yml), as the pipeline
 # always has; the slim image has no time zone data of its own.
