@@ -205,6 +205,18 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
+@app.get("/health")
+def health():
+    """For an uptime monitor: 200 while the server is up and can reach the
+    database, 503 when it can't. Says nothing else, so it needs no login."""
+    try:
+        get_con().execute("SELECT 1")
+    except Exception as e:
+        log.error(f"Health check: database unreachable: {e}")
+        raise HTTPException(status_code=503, detail="database unreachable")
+    return {"ok": True}
+
+
 @app.middleware("http")
 async def reject_cross_site_dashboard_posts(request: Request, call_next):
     if request.method == "POST" and request.url.path.startswith("/dashboard") and not _is_same_site(request):
@@ -462,8 +474,11 @@ async def recieve_monzo(request: Request):
             log.warning(f"Failed to fetch quick categories for {transaction_id}, sending without them: {e}")
             quick_categories = []
         log.info(f"Initial send for {transaction_id}: merchant={merchant_name!r}, quick_categories={quick_categories}")
+        # In a thread, because a send that has to be retried waits. Recorded
+        # only once it has gone; if it hasn't, the follow-up loop sends it again
+        # (follow_up_tg.MISSED_CARD_AFTER).
         try:
-            bot.send_card(json.loads(body), quick_categories=quick_categories)
+            await asyncio.to_thread(bot.send_card, json.loads(body), quick_categories=quick_categories)
             record_request(con, transaction_id)
         except Exception as e:
             log.error(f"Failed to send Telegram notification for {transaction_id}: {e}", exc_info=True)

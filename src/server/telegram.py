@@ -2,9 +2,25 @@ import html
 import os
 import re
 import logging
+import time
+
 import requests
 
 log = logging.getLogger(__name__)
+
+# Waits between retries -- a name of its own, so tests can skip them.
+_sleep = time.sleep
+
+# Waits between attempts when Telegram can't be reached or is having a moment.
+RETRY_WAITS = (1, 3)
+# The longest Telegram's own "retry after" is honoured for; past that, give up.
+MAX_RETRY_AFTER = 30
+
+
+class TelegramSendError(Exception):
+    """A card that didn't go out. Raised (rather than logged and dropped) by the
+    sends whose callers record that a card was sent, so they don't record it
+    and send it again later."""
 
 
 class TelegramBot:
@@ -18,24 +34,52 @@ class TelegramBot:
         if not self.chat_id:
             raise ValueError("Missing TELEGRAM_CHAT_ID env variable")
 
-    def _post(self, endpoint: str, payload: dict) -> dict | None:
+    def _post(self, endpoint: str, payload: dict, attempts: int = 1 + len(RETRY_WAITS)) -> dict | None:
         """POST to the Telegram Bot API. Never raises — logs and returns None on
-        any transport failure, non-200 response, or unparseable body."""
+        any transport failure, non-200 response, or unparseable body.
+
+        A failure that might pass (no connection, a timeout, Telegram's own 5xx,
+        or a 429 asking to slow down) is tried again, up to `attempts` times. One
+        that won't (a 4xx: the message itself is wrong) isn't."""
         url = f"https://api.telegram.org/bot{self.api_key}/{endpoint}"
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-        except requests.RequestException as e:
-            log.error(f"Telegram API request to {endpoint} failed: {e}")
-            return None
-        if response.status_code != 200:
-            log.error(f"Telegram API {endpoint} returned {response.status_code}: {response.text}")
-        try:
-            data = response.json()
-        except ValueError as e:
-            log.error(f"Telegram API {endpoint} returned unparseable response: {e}")
-            return None
-        if isinstance(data, dict) and not data.get("ok"):
-            log.error(f"Telegram API {endpoint} rejected payload: {data}")
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+            except requests.RequestException as e:
+                log.error(f"Telegram API request to {endpoint} failed (attempt {attempt + 1}/{attempts}): {e}")
+                if last:
+                    return None
+                _sleep(RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)])
+                continue
+            try:
+                data = response.json()
+            except ValueError as e:
+                data = None
+                log.error(f"Telegram API {endpoint} returned unparseable response: {e}")
+            if response.status_code == 429 and not last:
+                wait = ((data or {}).get("parameters") or {}).get("retry_after", RETRY_WAITS[-1])
+                if wait <= MAX_RETRY_AFTER:
+                    log.warning(f"Telegram asked to slow down; retrying {endpoint} in {wait}s")
+                    _sleep(wait)
+                    continue
+            if response.status_code >= 500 and not last:
+                log.warning(f"Telegram API {endpoint} returned {response.status_code}; retrying")
+                _sleep(RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)])
+                continue
+            if response.status_code != 200:
+                log.error(f"Telegram API {endpoint} returned {response.status_code}: {response.text}")
+            if isinstance(data, dict) and not data.get("ok"):
+                log.error(f"Telegram API {endpoint} rejected payload: {data}")
+            return data
+        return None
+
+    def _send_tracked(self, payload: dict) -> dict:
+        """sendMessage for a card whose sending is recorded: raises
+        TelegramSendError if it didn't go out, after the retries."""
+        data = self._post("sendMessage", payload)
+        if not (isinstance(data, dict) and data.get("ok")):
+            raise TelegramSendError(f"Telegram didn't take the message: {(data or {}).get('description', 'no answer')}")
         return data
 
     def send_message(self, chat_id: int, text: str, reply_markup: dict | None = None):
@@ -71,7 +115,8 @@ class TelegramBot:
         self._post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
     def ack_callback(self, callback_query_id: str):
-        self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
+        # Only clears the button's spinner, and has to be quick: no retries.
+        self._post("answerCallbackQuery", {"callback_query_id": callback_query_id}, attempts=1)
 
 
 
@@ -130,7 +175,7 @@ class TelegramBot:
             lines.append("")
             lines.append("<b>For example:</b>")
             lines += [f"  • {e}" for e in examples]
-        return self._post("sendMessage", {
+        return self._send_tracked({
             "chat_id": chat_id,
             "text": "\n".join(lines),
             "parse_mode": "HTML",
@@ -197,7 +242,7 @@ class TelegramBot:
         # is, so "stay unclassified" would be wrong there.
         lines += ["", "Nothing changes until you choose." if second_look else "Until you decide, these stay unclassified."]
 
-        return self._post("sendMessage", {
+        return self._send_tracked({
             "chat_id": chat_id,
             "text": "\n".join(lines),
             "parse_mode": "HTML",
@@ -223,7 +268,7 @@ class TelegramBot:
         if suggestion.get("llm_reasoning"):
             lines += ["", f"🤖 {html.escape(suggestion['llm_reasoning'])}"]
         lines += ["", "Create a rule so future ones skip the card and go straight to that category?"]
-        return self._post("sendMessage", {
+        return self._send_tracked({
             "chat_id": chat_id,
             "text": "\n".join(lines),
             "parse_mode": "HTML",
@@ -341,7 +386,7 @@ class TelegramBot:
                 "inline_keyboard": keyboard_rows
             }
         }
-        return self._post("sendMessage", payload_send)
+        return self._send_tracked(payload_send)
 
 
 

@@ -49,9 +49,28 @@ class TestRunOnce:
         alert_post.assert_not_called()
 
     def test_a_run_that_cannot_start_says_so(self, alert_post):
-        with patch.object(process, "main", return_value=1):
-            assert worker.run_once() == 1
+        with patch.object(process, "main", return_value=process.NO_DATABASE):
+            assert worker.run_once() == process.NO_DATABASE
         assert "The daily run didn&#x27;t start" in alert_post.call_args.kwargs["json"]["text"]
+
+    def test_no_database_is_retried_every_half_hour_before_alerting(self, alert_post, retry_waits):
+        with patch.object(process, "main", return_value=process.NO_DATABASE) as main:
+            worker.run_once()
+        assert main.call_count == 1 + worker.RETRIES
+        assert retry_waits == [worker.RETRY_EVERY] * worker.RETRIES
+        assert alert_post.call_count == 1, "one alert, after the last try"
+
+    def test_a_database_back_on_a_retry_runs_with_no_alert(self, alert_post, retry_waits):
+        with patch.object(process, "main", side_effect=[process.NO_DATABASE, process.RAN]) as main:
+            assert worker.run_once() == process.RAN
+        assert main.call_count == 2 and retry_waits == [worker.RETRY_EVERY]
+        alert_post.assert_not_called()
+
+    def test_another_run_going_is_not_retried(self, alert_post, retry_waits):
+        with patch.object(process, "main", return_value=process.ALREADY_RUNNING) as main:
+            assert worker.run_once() == process.ALREADY_RUNNING
+        assert main.call_count == 1 and retry_waits == []
+        assert "Another run was already going" in alert_post.call_args.kwargs["json"]["text"]
 
     def test_a_crash_is_reported_and_the_worker_carries_on(self, alert_post):
         with patch.object(process, "main", side_effect=RuntimeError("boom")):
@@ -62,7 +81,7 @@ class TestRunOnce:
     def test_every_run_can_alert_again(self, alert_post):
         """The worker lives for weeks; an alert sent yesterday must not
         silence the same alert today."""
-        with patch.object(process, "main", return_value=1):
+        with patch.object(process, "main", return_value=process.ALREADY_RUNNING):
             worker.run_once()
             worker.run_once()
         assert alert_post.call_count == 2
@@ -88,7 +107,7 @@ class TestOneRunAtATime:
         run, the PC's or the worker's) is refused until it's released."""
         pg.execute("SELECT pg_advisory_lock(hashtext(%s))", [process.RUN_LOCK])
         with patch.object(process, "_steps") as steps:
-            assert process.main() == 1
+            assert process.main() == process.ALREADY_RUNNING
         steps.assert_not_called()
         pg.execute("SELECT pg_advisory_unlock(hashtext(%s))", [process.RUN_LOCK])
 
@@ -113,7 +132,7 @@ class TestOneRunAtATime:
         monkeypatch.setattr(database_functions, "init_db", lambda read_only=False: (_ for _ in ()).throw(OSError("no route")))
         monkeypatch.setattr(process, "init_db", database_functions.init_db)
         with patch.object(process, "_steps") as steps:
-            assert process.main() == 1
+            assert process.main() == process.NO_DATABASE
         steps.assert_not_called()
 
 

@@ -1,5 +1,10 @@
 from unittest.mock import MagicMock, patch
 
+
+def _ok_response():
+    """What Telegram answers when it takes a message."""
+    return MagicMock(status_code=200, json=lambda: {"ok": True, "result": {"message_id": 1}})
+
 from telegram import TelegramBot
 
 
@@ -20,7 +25,7 @@ def _payload(txn_id="tx_001", merchant_name="Tesco", amount_pence=-500):
 class TestSendCardKeyboard:
     def test_no_quick_categories_only_enrich_and_skip(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload())
@@ -31,7 +36,7 @@ class TestSendCardKeyboard:
 
     def test_quick_categories_rendered_above_enrich_skip(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         quick_categories = [
             {"id": 1, "category": "Food & Drink", "subcategory": "Groceries"},
@@ -49,7 +54,7 @@ class TestSendCardKeyboard:
 
     def test_quick_categories_wrap_after_three_per_row(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         quick_categories = [
             {"id": i, "category": "C", "subcategory": f"Sub{i}"} for i in range(1, 6)
@@ -64,7 +69,7 @@ class TestSendCardKeyboard:
 
     def test_callback_data_uses_transaction_id(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         quick_categories = [{"id": 7, "category": "X", "subcategory": "Y"}]
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
@@ -75,7 +80,7 @@ class TestSendCardKeyboard:
 
     def test_empty_quick_categories_list_same_as_none(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload(), quick_categories=[])
@@ -87,7 +92,7 @@ class TestSendCardKeyboard:
 class TestSendCardFollowUpText:
     def test_full_card_includes_details(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload())
@@ -104,7 +109,7 @@ class TestSendCardFollowUpText:
         needs to actually place the transaction a day or two later. The
         reminder header is additive, not a replacement for the full card."""
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload(), follow_up=1)
@@ -116,7 +121,7 @@ class TestSendCardFollowUpText:
 
     def test_follow_up_keeps_essential_recall_info(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_card(_payload(txn_id="tx_042", merchant_name="Tesco", amount_pence=-1234), follow_up=2)
@@ -128,7 +133,7 @@ class TestSendCardFollowUpText:
 
     def test_follow_up_labels_by_stage(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         expected = {1: "1 hour ago", 2: "1 day ago", 3: "2 days ago"}
         for stage, label in expected.items():
@@ -139,7 +144,7 @@ class TestSendCardFollowUpText:
 
     def test_follow_up_still_has_quick_category_buttons(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         mock_resp.json.return_value = {"ok": True}
         quick_categories = [{"id": 1, "category": "Food & Drink", "subcategory": "Groceries"}]
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
@@ -157,7 +162,7 @@ class TestSendRuleSuggestion:
             "txn_count": 5, "auto_context": "Weekly shop",
             **overrides,
         }
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_rule_suggestion(123, suggestion)
         return mock_post.call_args[1]["json"]
@@ -196,7 +201,7 @@ class TestSendRuleSuggestion:
 class TestSendAlert:
     def _sent_text(self, title, message):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_alert(123, title, message)
         payload = mock_post.call_args[1]["json"]
@@ -221,7 +226,7 @@ class TestSendCategoryProposalCards:
 
     def _card(self, options):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_category_proposal(123, {"local_id": 7, "options": options, "txn_count": 1, "examples": ["Dentist"]})
         payload = mock_post.call_args[1]["json"]
@@ -279,7 +284,7 @@ class TestSendCategoryProposalCards:
 class TestSendMessageReplyMarkup:
     def test_no_reply_markup_by_default(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_message(123, "hello")
         _, kwargs = mock_post.call_args
@@ -287,7 +292,7 @@ class TestSendMessageReplyMarkup:
 
     def test_reply_markup_included_when_provided(self):
         bot = TelegramBot()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = _ok_response()
         markup = {"inline_keyboard": [[{"text": "✏️ Edit", "callback_data": "enrich:tx_001"}]]}
         with patch("telegram.requests.post", return_value=mock_resp) as mock_post:
             bot.send_message(123, "saved", reply_markup=markup)

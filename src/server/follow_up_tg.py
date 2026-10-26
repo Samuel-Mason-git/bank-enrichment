@@ -45,10 +45,11 @@ def run_requester(bot) -> None:
     con = get_con()
 
     # Transactions whose first card never went out (bot was down, send failed).
+    # Not straight away -- the webhook may still be sending it.
     missed = con.execute(
         """SELECT n.id, r.payload FROM needs_context n JOIN transactions_raw r ON r.id = n.id
            WHERE n.request_count = 0 AND n.received_at <= %s ORDER BY n.received_at LIMIT 1""",
-        [_cutoff(86_400)]
+        [_cutoff(MISSED_CARD_AFTER)]
     ).fetchone()
     if missed:
         try:
@@ -139,6 +140,10 @@ def run_new_cards(bot) -> None:
 # arrives too fast reads as nagging about something the user consciously left.
 # Two gentle reminders, then it stops asking and the proposal simply waits --
 # an undecided proposal is expired by the next month's run, never auto-applied.
+# A first card that didn't go out is sent again this long after the payment
+# arrived (long enough that the webhook isn't still sending it).
+MISSED_CARD_AFTER = 600
+
 TAXONOMY_FOLLOW_UPS = [
     (0, 86_400 * 3),   # 3 days after the cards were sent
     (1, 86_400 * 7),   # a week after that
@@ -177,7 +182,9 @@ async def requester_loop(bot) -> None:
     while True:
         await asyncio.sleep(300)  # check every 5 minutes
         for job in (run_new_cards, run_requester, run_taxonomy_follow_ups):
+            # In a thread: Telegram and the database can be slow, and retries
+            # wait -- none of which may hold up a webhook arriving meanwhile.
             try:
-                job(bot)
+                await asyncio.to_thread(job, bot)
             except Exception as e:
                 log.error(f"{job.__name__} failed: {e}", exc_info=True)

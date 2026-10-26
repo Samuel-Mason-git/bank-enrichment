@@ -109,6 +109,19 @@ def alert_post(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def retry_waits(monkeypatch):
+    """Retries never really wait in a test. Yields the list of waits asked
+    for, so a test can check how long something would have waited."""
+    import monzo_oauth
+    import telegram
+    import worker
+    waits = []
+    for module in (telegram, monzo_oauth, worker):
+        monkeypatch.setattr(module, "_sleep", waits.append)
+    yield waits
+
+
+@pytest.fixture(autouse=True)
 def _backups_in_tmp(tmp_path, monkeypatch):
     """Every backup a test takes goes in its own temporary folder, never the
     real one (BACKUP_DIR, or ~/bank-enrichment-backups)."""

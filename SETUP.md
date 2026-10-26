@@ -222,7 +222,9 @@ Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the 
 - **Current Queue** — paginated list of transactions with where each is up to, and inline controls to enrich, skip, unskip or delete. Each row links to a detail page with the full payload and all actions.
 - **Database view** at `/dashboard/db` — the latest raw transactions and context/label events
 
-A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped.
+A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped. A card that couldn't be sent (Telegram down, say) is sent again 10 minutes later; every send to Telegram is itself tried up to three times first.
+
+**Optional — an uptime monitor.** `https://your-name.duckdns.org/health` answers `{"ok": true}` while the server is up and can reach the database, and 503 when it can't. It needs no login and shows nothing else, so a free monitor (UptimeRobot, Better Stack and the like) can check it every few minutes and email you if the server goes down.
 
 ---
 
@@ -318,7 +320,10 @@ webhooks.
 
 - **See what it did:** `data/logs/bank_enrichment.log` on the server, or `docker compose logs worker`.
 - **Run it now** instead of waiting: `docker compose exec worker python src/pipeline/worker.py --now`.
+- **If it can't reach the database**, it tries again every 30 minutes, three times, before alerting.
 - **If a run can't start or crashes**, you get a Telegram alert, and it tries again the next morning.
+- **On Sundays** it sends a short "all fine", with what's waiting on you. No Sunday message means
+  something's wrong.
 
 ### 6. View the Dashboard
 
