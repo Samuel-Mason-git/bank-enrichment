@@ -1,7 +1,8 @@
 #!/bin/bash
-# Runs the local pipeline (process.py) inside WSL Ubuntu, since Windows Smart App
-# Control blocks pandas' compiled DLLs when run directly on Windows. Used by the
-# "Bank Enrichment Collection" scheduled task -- see run_dashboard_wsl.sh for the
-# interactive version that also opens the dashboard.
-cd /mnt/c/Users/mason/Projects/bank-enrichment
-/home/mason/.local/bin/poetry run python src/pipeline/process.py
+# Runs the pipeline (process.py) once, by hand, inside WSL Ubuntu, since Windows
+# Smart App Control blocks pandas' compiled DLLs when run directly on Windows.
+# The server's worker runs it every morning anyway; this is for not waiting.
+# Set POETRY if Poetry isn't in ~/.local/bin.
+cd "$(dirname "$0")"
+POETRY="${POETRY:-$HOME/.local/bin/poetry}"
+"$POETRY" run python src/pipeline/process.py
