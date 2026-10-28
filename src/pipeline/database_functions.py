@@ -34,6 +34,17 @@ _DEFAULT_ROLE = """CASE p.name WHEN 'Income' THEN 'income'
                                WHEN 'Investments' THEN 'investment'
                                WHEN 'Transfers' THEN 'transfer' END"""
 
+# Each labelled transaction's current label, as a CTE body: its newest label
+# event, with the parent its subcategory has now -- exactly what the
+# transactions view gives as parent_id/subcategory_id. For counting what each
+# category holds, it reads only label_events, where joining the view rebuilt
+# every transaction's current version first (seconds, per query).
+CURRENT_LABELS = """SELECT DISTINCT ON (l.txn_id) l.txn_id, l.subcategory_id,
+                          COALESCE(sc.parent_id, l.parent_id) AS parent_id
+                   FROM label_events l
+                   LEFT JOIN subcategories sc ON sc.id = l.subcategory_id
+                   ORDER BY l.txn_id, l.event_id DESC"""
+
 
 def log_path(filename: str) -> str:
     """Where a script's log file goes: LOG_DIR, or logs/ in the repo."""
@@ -190,11 +201,12 @@ def get_unclassified() -> list[dict]:
 def get_parents() -> list[dict]:
     """Live parent categories, with how many transactions each holds."""
     return _rows(
-        f"""SELECT p.id, p.name, p.created_at,
-                  COUNT(t.id) AS transaction_count,
+        f"""WITH labels AS ({CURRENT_LABELS})
+           SELECT p.id, p.name, p.created_at,
+                  COUNT(t.txn_id) AS transaction_count,
                   COALESCE(pr.role, {_DEFAULT_ROLE}, 'spend') AS role
            FROM parent_categories p
-           LEFT JOIN transactions t ON t.parent_id = p.id
+           LEFT JOIN labels t ON t.parent_id = p.id
            LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
            WHERE p.archived_at IS NULL
            GROUP BY p.id, p.name, p.created_at, pr.role
@@ -205,13 +217,14 @@ def get_parents() -> list[dict]:
 def get_subcategories() -> list[dict]:
     """Live subcategories, with how many transactions each holds."""
     return _rows(
-        f"""SELECT s.id, s.name, s.parent_id, p.name AS parent_name, s.created_at,
-                  COUNT(t.id) AS transaction_count,
+        f"""WITH labels AS ({CURRENT_LABELS})
+           SELECT s.id, s.name, s.parent_id, p.name AS parent_name, s.created_at,
+                  COUNT(t.txn_id) AS transaction_count,
                   sr.role AS role_override,
                   COALESCE(pr.role, {_DEFAULT_ROLE}, 'spend') AS parent_role
            FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
-           LEFT JOIN transactions t ON t.subcategory_id = s.id
+           LEFT JOIN labels t ON t.subcategory_id = s.id
            LEFT JOIN category_roles sr ON sr.subcategory_id = s.id
            LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
            WHERE s.archived_at IS NULL AND p.archived_at IS NULL
