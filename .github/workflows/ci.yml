@@ -131,10 +131,13 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           # The action's default is 10 minutes, which a cold Docker build can exceed.
           command_timeout: 30m
+          # Another project deploys to this server too. Both builds take this
+          # lock, so they wait for each other instead of building at once --
+          # two at once on 1 GB is what hung the server in September.
           script: |
             set -e
             cd /home/ubuntu/bank-enrichment
             git pull
-            docker compose up -d --build
+            flock /home/ubuntu/.deploy.lock docker compose up -d --build
             docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
             docker image prune -f
