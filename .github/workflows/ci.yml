@@ -34,9 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The image's Python (Dockerfile: python:3.11-slim), so the tests run on
+      # what production runs. Read from pyproject's ">=3.11" this was always the
+      # newest Python, and a brand-new one has no ready-built wheels for some
+      # dependencies yet -- the install then tries to compile them, and fails.
       - uses: actions/setup-python@v5
         with:
-          python-version-file: pyproject.toml
+          python-version: "3.11"
 
       - name: Install Poetry
         run: pipx install poetry
