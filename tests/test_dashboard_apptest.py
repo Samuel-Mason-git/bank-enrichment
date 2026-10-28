@@ -297,8 +297,8 @@ def test_overview_actual_income_excludes_refunds(db):
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     overview_tab = at.tabs[0]  # "All time" is the default preset, covers both seeded dates
 
-    assert _has_card(overview_tab, "Income", "£2005.00")
-    assert _has_card(overview_tab, "Income", "£2000.00")
+    assert _has_card(overview_tab, "Income", "£2,005.00")
+    assert _has_card(overview_tab, "Income", "£2,000.00")
 
 
 def test_overview_chart_metric_selector_switches_without_crash(db):
@@ -432,9 +432,11 @@ def _seed_two_merchants(db):
 
 
 def _txn_count(at) -> str:
-    """The Transactions tab's subheader is 'N transactions' for the currently
-    filtered set -- the most direct read of what the filters actually did."""
-    return at.tabs[2].subheader[0].value
+    """'N transactions' for the currently filtered set, read off the
+    Transactions tab's 'Edit transactions (N)' heading -- the most direct read
+    of what the filters actually did."""
+    heading = next(s.value for s in at.tabs[2].subheader if s.value.startswith("Edit transactions ("))
+    return f"{heading.removeprefix('Edit transactions (').removesuffix(')')} transactions"
 
 
 def test_exclude_merchant_offers_counterparty_only_payees(db):
@@ -769,9 +771,9 @@ class TestInvestedAndSavedStayNumericallySeparate:
         _seed_investment_and_saving(db)
         at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         df = at.tabs[0].dataframe[0].value
-        assert "Invested (£)" in df.columns and "Saved (£)" in df.columns
+        assert "Invested" in df.columns and "Saved" in df.columns
         row = df.iloc[0]
-        assert row["Invested (£)"] == "£250.00" and row["Saved (£)"] == "£500.00"
+        assert row["Invested"] == 250 and row["Saved"] == 500
 
     def test_monthly_breakdown_table_nets_a_withdrawal_against_a_deposit(self, db):
         """Regression test: this table has its own separate computation from
@@ -782,7 +784,7 @@ class TestInvestedAndSavedStayNumericallySeparate:
         at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
         df = at.tabs[0].dataframe[0].value
         row = df.iloc[0]
-        assert row["Saved (£)"] == "£300.00"
+        assert row["Saved"] == 300
 
     def test_standard_row_omits_the_roles_it_never_populates(self, db):
         """Invested/Saved/Transferred have no Standard-side value at all (that
