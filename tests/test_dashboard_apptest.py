@@ -294,8 +294,8 @@ def test_overview_actual_income_excludes_refunds(db):
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     overview_tab = at.tabs[0]  # "All time" is the default preset, covers both seeded dates
 
-    assert _has_card(overview_tab, "Income", "£2005.00")
-    assert _has_card(overview_tab, "Income", "£2000.00")
+    assert _has_card(overview_tab, "Income", "£2,005.00")
+    assert _has_card(overview_tab, "Income", "£2,000.00")
 
 
 def test_overview_chart_metric_selector_switches_without_crash(db):

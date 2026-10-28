@@ -384,9 +384,13 @@ with tab_overview:
     )
 
     def _fmt(v, is_pct=False):
-        if v is None:
+        """£28,906.31 and −£4,710.64 (the minus before the £, as it's said),
+        or 12.3% -- thousands separated so big figures read at a glance."""
+        if v is None or pd.isna(v):
             return "—"
-        return f"{v:.1f}%" if is_pct else f"£{v:.2f}"
+        if is_pct:
+            return f"{v:.1f}%".replace("-", "−")
+        return f"{'−' if v < 0 else ''}£{abs(v):,.2f}"
 
     def _info_icon(tooltip: str) -> str:
         return (
@@ -403,7 +407,8 @@ with tab_overview:
         money moving, not a gain or a loss)."""
         if delta_value is None:
             return ""
-        text = f"{delta_value:+.1f}{suffix} vs prev"
+        arrow = "▲" if delta_value > 0 else "▼" if delta_value < 0 else "■"
+        text = f"{arrow} {abs(delta_value):.1f}{suffix} vs prev"
         if direction == "neutral":
             bg, fg = "rgba(149, 165, 166, 0.25)", "rgba(210, 214, 215, 0.95)"
         else:
@@ -413,25 +418,59 @@ with tab_overview:
                 else ("rgba(231, 76, 60, 0.25)", "rgba(243, 158, 148, 0.95)")
             )
         return (
-            f'<div style="margin-top:6px;"><span style="display:inline-block;background:{bg};'
-            f'color:{fg};border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:600;">'
-            f'{html.escape(text)}</span></div>'
+            f'<span style="display:inline-block;background:{bg};'
+            f'color:{fg};border-radius:999px;padding:2px 9px;font-size:0.7rem;font-weight:600;'
+            f'white-space:nowrap;">{html.escape(text)}</span>'
         )
 
-    def _card(label, value, color, tooltip=None, delta_html=""):
+    def _accent(color: str) -> str:
+        """A row's tint at full strength, for the card's edge."""
+        return color.rsplit(",", 1)[0] + ", 0.85)"
+
+    def _card(label, value, color, tooltip=None, delta_html="", reserve_delta=False):
         """A colored div standing in for a metric card -- st.metric can't take
         a background color, and st.dataframe can't do a real per-cell hover,
         so this is plain HTML: a visible ⓘ icon with its own native `title`
         tooltip (hover, no JS) rather than a silent hover-anywhere-on-the-card,
-        plus a CSS background tint matching the row's color."""
+        plus a faint tint and a solid edge in the row's color. reserve_delta
+        keeps room for a vs-prev pill even when there isn't one, so a row's
+        cards all come out the same height."""
         icon = _info_icon(tooltip) if tooltip else ""
-        return (
-            f'<div style="background:{color};border-radius:10px;'
-            f'padding:12px 14px;min-height:82px;margin-bottom:12px;">'
-            f'<div style="font-size:0.78rem;color:rgba(255,255,255,0.65);font-weight:500;">{html.escape(label)}{icon}</div>'
-            f'<div style="font-size:1.45rem;font-weight:700;margin-top:4px;">{html.escape(value)}</div>'
-            f'{delta_html}</div>'
+        delta_row = (
+            f'<div style="margin-top:8px;height:20px;">{delta_html}</div>'
+            if delta_html or reserve_delta else ""
         )
+        return (
+            f'<div style="background:{color};border:1px solid rgba(255,255,255,0.06);'
+            f'border-left:3px solid {_accent(color)};border-radius:10px;'
+            f'padding:12px 16px;margin-bottom:12px;">'
+            f'<div style="font-size:0.7rem;letter-spacing:0.05em;text-transform:uppercase;'
+            f'color:rgba(255,255,255,0.6);font-weight:600;white-space:nowrap;overflow:hidden;'
+            f'text-overflow:ellipsis;">{html.escape(label)}{icon}</div>'
+            f'<div style="font-size:1.6rem;font-weight:700;margin-top:6px;line-height:1.2;'
+            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+            f'font-variant-numeric:tabular-nums;">{html.escape(value)}</div>'
+            f'{delta_row}</div>'
+        )
+
+    def _section(title: str, tooltip: str, subtitle: str) -> None:
+        st.markdown(
+            f'<div style="margin:6px 0 10px;"><span style="font-size:1rem;font-weight:700;">'
+            f'{html.escape(title)}</span>{_info_icon(tooltip)}'
+            f'<span style="margin-left:10px;font-size:0.8rem;color:rgba(255,255,255,0.5);">'
+            f'{html.escape(subtitle)}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    def _card_rows(cards: list[tuple], per_row: int = 4, reserve_delta=False) -> None:
+        """Cards in rows of per_row, so a long row never squeezes its numbers
+        onto two lines, and the same position lines up from row to row."""
+        for start in range(0, len(cards), per_row):
+            cols = st.columns(per_row)
+            for col, (label, value, color, tooltip, delta_html) in zip(cols, cards[start:start + per_row]):
+                with col:
+                    st.markdown(_card(label, value, color, tooltip=tooltip, delta_html=delta_html,
+                                      reserve_delta=reserve_delta), unsafe_allow_html=True)
 
     row_colors = {
         "Income": "rgba(46, 204, 113, 0.14)",
@@ -487,40 +526,38 @@ with tab_overview:
     if excluded_in > 0:
         actual_rows.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in, excluded_in_d, excluded_in_mask, False))
 
+    # With nothing before the range (All time, say) there are no vs-prev
+    # pills at all, so the cards needn't keep room for one.
+    _prev_has_data = not prev_filtered.empty
+
     st.caption(f"{len(filtered)} transactions · {int(filtered['llm_category'].isna().sum())} unclassified.")
 
-    st.markdown(
-        "**Standard**" + _info_icon(
-            "Every £ is counted by amount sign alone — money in is Income, "
-            "money out is Spend, regardless of category or role."
-        ),
-        unsafe_allow_html=True,
+    _section(
+        "Standard",
+        "Every £ is counted by amount sign alone — money in is Income, "
+        "money out is Spend, regardless of category or role.",
+        "by amount sign",
     )
-    std_cols = st.columns(len(standard_metrics))
-    for col, (label, std_val, std_d, is_pct) in zip(std_cols, standard_metrics):
-        badge = _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label])
-        with col:
-            st.markdown(
-                _card(label, _fmt(std_val, is_pct), row_colors[label], tooltip=standard_tooltips[label], delta_html=badge),
-                unsafe_allow_html=True,
-            )
+    _card_rows([
+        (label, _fmt(std_val, is_pct), row_colors[label], standard_tooltips[label],
+         _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label]))
+        for label, std_val, std_d, is_pct in standard_metrics
+    ], reserve_delta=_prev_has_data)
 
-    st.markdown(
-        "**Actual**" + _info_icon(
-            "Each category has a role (set in the Settings tab) that decides what "
-            "it counts as — e.g. refunds and transfers don't count as Income here."
-        ),
-        unsafe_allow_html=True,
+    _section(
+        "Actual",
+        "Each category has a role (set in the Settings tab) that decides what "
+        "it counts as — e.g. refunds and transfers don't count as Income here.",
+        "by category role",
     )
-    act_cols = st.columns(len(actual_rows))
-    for col, (label, color_key, act_val, act_d, mask, is_pct) in zip(act_cols, actual_rows):
-        badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[color_key])
-        tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[color_key]
-        with col:
-            st.markdown(
-                _card(label, _fmt(act_val, is_pct), row_colors[color_key], tooltip=tooltip, delta_html=badge),
-                unsafe_allow_html=True,
-            )
+    # Income/Spend/Net/Savings Rate first, so they sit under the same cards in
+    # Standard; where the money went besides spending on the row below.
+    _card_rows([
+        (label, _fmt(act_val, is_pct), row_colors[color_key],
+         _categories_for(mask) if mask is not None else actual_static_tooltips[color_key],
+         _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[color_key]))
+        for label, color_key, act_val, act_d, mask, is_pct in actual_rows
+    ], reserve_delta=_prev_has_data)
 
     st.divider()
 
@@ -758,14 +795,11 @@ with tab_time:
             "Saved": (monthly_totals_raw["Saved"].mean(), False),
             "Transferred / Excluded": (monthly_totals_raw["Transferred"].mean(), False),
         }
-        avg_cols = st.columns(7)
-        for col, (label, (val, is_pct)) in zip(avg_cols, avg_values.items()):
-            with col:
-                st.markdown(
-                    _card(f"Avg {label}", _fmt(val, is_pct), row_colors[label],
-                          tooltip=f"Average monthly {label.lower()} across the selected range."),
-                    unsafe_allow_html=True,
-                )
+        _card_rows([
+            (f"Avg {label}", _fmt(val, is_pct), row_colors[label],
+             f"Average monthly {label.lower()} across the selected range.", "")
+            for label, (val, is_pct) in avg_values.items()
+        ])
 
         st.divider()
         st.subheader("Savings & Investing Over Time")
@@ -912,17 +946,14 @@ with tab_txns:
             ("Most Frequent Merchant",
              merchant_counts.index[0] if not merchant_counts.empty else "—",
              f"Appears {merchant_counts.iloc[0]} times." if not merchant_counts.empty else "No merchant data."),
-            ("Biggest Transaction", f"£{abs(biggest_row['amount']):.2f}",
+            ("Biggest Transaction", _fmt(abs(biggest_row["amount"])),
              f"{biggest_label} on {biggest_row['created_at'].date()}."),
-            ("Avg Transaction Size", f"£{filtered['amount'].abs().mean():.2f}",
+            ("Avg Transaction Size", _fmt(filtered['amount'].abs().mean()),
              "Mean absolute amount across every transaction in range."),
             ("Busiest Day", day_counts.index[0] if not day_counts.empty else "—",
              f"{day_counts.iloc[0]} transactions fall on a {day_counts.index[0]}." if not day_counts.empty else ""),
         ]
-        fun_cols = st.columns(6)
-        for col, (label, value, tooltip) in zip(fun_cols, fun_cards):
-            with col:
-                st.markdown(_card(label, value, fun_color, tooltip=tooltip), unsafe_allow_html=True)
+        _card_rows([(label, value, fun_color, tooltip, "") for label, value, tooltip in fun_cards], per_row=3)
 
         st.divider()
 
@@ -1092,7 +1123,7 @@ with tab_drill:
                                tooltip="Distinct subcategories used within this category."),
                         unsafe_allow_html=True)
         with top_cols[2]:
-            st.markdown(_card("Net", f"£{net_cat:.2f}", row_colors["Net"],
+            st.markdown(_card("Net", _fmt(net_cat), row_colors["Net"],
                                tooltip="Actual Income minus Actual Spend for this category."),
                         unsafe_allow_html=True)
 
@@ -1118,7 +1149,7 @@ with tab_drill:
         role_cols = st.columns(len(role_cards))
         for col, (label, color_key, value, tooltip) in zip(role_cols, role_cards):
             with col:
-                st.markdown(_card(label, f"£{value:.2f}", row_colors[color_key], tooltip=tooltip),
+                st.markdown(_card(label, _fmt(value), row_colors[color_key], tooltip=tooltip),
                             unsafe_allow_html=True)
 
         st.divider()
@@ -1293,11 +1324,11 @@ with tab_merchants:
                                    tooltip="Distinct merchants matching the current search, in range."),
                             unsafe_allow_html=True)
             with stat_cols[1]:
-                st.markdown(_card("Total Spend", f"£{total_spend_all:.2f}", row_colors["Spend"],
+                st.markdown(_card("Total Spend", _fmt(total_spend_all), row_colors["Spend"],
                                    tooltip="Actual Spend summed across all matching merchants."),
                             unsafe_allow_html=True)
             with stat_cols[2]:
-                st.markdown(_card("Avg per Merchant", f"£{(total_spend_all / len(by_merchant)):.2f}", stat_color,
+                st.markdown(_card("Avg per Merchant", _fmt(total_spend_all / len(by_merchant)), stat_color,
                                    tooltip="Total Spend divided by the number of matching merchants."),
                             unsafe_allow_html=True)
             with stat_cols[3]:
@@ -1373,11 +1404,11 @@ with tab_subs:
                            tooltip="Subscriptions not marked Inactive."),
                     unsafe_allow_html=True)
     with kpi_cols[1]:
-        st.markdown(_card("Est. Monthly Cost", f"£{monthly_cost:.2f}", row_colors["Spend"],
+        st.markdown(_card("Est. Monthly Cost", _fmt(monthly_cost), row_colors["Spend"],
                            tooltip="Sum of every active subscription's amount, normalized to a monthly rate."),
                     unsafe_allow_html=True)
     with kpi_cols[2]:
-        st.markdown(_card("Est. Annual Cost", f"£{annual_cost:.2f}", row_colors["Spend"],
+        st.markdown(_card("Est. Annual Cost", _fmt(annual_cost), row_colors["Spend"],
                            tooltip="Est. Monthly Cost x 12."),
                     unsafe_allow_html=True)
 
