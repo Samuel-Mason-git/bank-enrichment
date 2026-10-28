@@ -812,7 +812,10 @@ with tab_time:
                              markers=True)
             fig_sr.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.4,
                              annotation_text="break even", annotation_position="bottom right")
-            fig_sr.update_traces(name="Savings Rate (%)", line_color="#2ecc71", marker_color="#2ecc71")
+            # showlegend: px.line leaves a lone line out of the legend, so
+            # without it this one was an unlabelled green line.
+            fig_sr.update_traces(name="Savings Rate (%)", line_color="#2ecc71", marker_color="#2ecc71",
+                                 showlegend=True)
             fig_sr.add_trace(go.Scatter(
                 x=sr_chart["Month"], y=sr_chart["Investment Rate"], name="Investment Rate (%)",
                 mode="lines+markers", line=dict(color="#9b59b6"),
@@ -831,27 +834,30 @@ with tab_time:
         else:
             st.info("Need at least two months with income to chart savings.")
 
-        invested_chart = monthly_totals_raw[monthly_totals_raw["Invested"] > 0]
-        if len(invested_chart) > 1:
-            fig_inv = px.line(invested_chart, x="Month", y="Invested",
-                              labels={"Invested": "Invested (£)"}, markers=True)
-            fig_inv.update_traces(line_color="#9b59b6", marker_color="#9b59b6")
-            fig_inv.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
-                                  xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig_inv, width="stretch", key="invested_over_time_chart")
+        def _net_flow_chart(column: str, color: str, key: str):
+            """Each month's net into savings or investments, every month in
+            range: one that took money back out is a bar below zero, not a
+            month left off the chart. Its own chart rather than a fourth line
+            on the combined one above, which already has three on two axes."""
+            if len(monthly_totals_raw) < 2 or not monthly_totals_raw[column].any():
+                return
+            values = monthly_totals_raw[column]
+            fig = go.Figure(go.Bar(
+                x=monthly_totals_raw["Month"], y=values, name=column,
+                marker_color=[color if v >= 0 else "#e74c3c" for v in values],
+                hovertemplate="%{x}: £%{y:,.2f}<extra></extra>",
+            ))
+            fig.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
+            fig.update_layout(
+                title=f"{column} each month (net; below zero = taken back out)",
+                yaxis_title=f"{column} (£)", yaxis_tickprefix="£", xaxis_tickangle=-45,
+                margin=dict(t=40, b=0), height=320,
+                xaxis_type="category", xaxis_categoryorder="category ascending",
+            )
+            st.plotly_chart(fig, width="stretch", key=key)
 
-        # Its own standalone chart, same as Invested above, rather than a
-        # fourth line on the combined Savings & Investing chart -- that chart
-        # is already three lines across two axes, and a Saved Rate line there
-        # would make it harder to read, not more useful.
-        saved_chart = monthly_totals_raw[monthly_totals_raw["Saved"] > 0]
-        if len(saved_chart) > 1:
-            fig_saved = px.line(saved_chart, x="Month", y="Saved",
-                                labels={"Saved": "Saved (£)"}, markers=True)
-            fig_saved.update_traces(line_color="#2ab0a0", marker_color="#2ab0a0")
-            fig_saved.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
-                                    xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig_saved, width="stretch", key="saved_over_time_chart")
+        _net_flow_chart("Invested", "#9b59b6", "invested_over_time_chart")
+        _net_flow_chart("Saved", "#2ab0a0", "saved_over_time_chart")
     else:
         st.info("No transactions in the selected range.")
 
