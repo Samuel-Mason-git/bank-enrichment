@@ -32,7 +32,7 @@ anthropic = ">=0.104.1,<0.105.0"
 # `poetry install` like any other group, so local setup and CI are unchanged.
 [tool.poetry.group.local.dependencies]
 streamlit = ">=1.57.0,<2.0.0"
-plotly = ">=6.7.0,<7.0.0"
+plotly = ">=7.1.0,<8.0.0"
 pandas = ">=3.0.3,<4.0.0"
 
 [tool.poetry.group.dev.dependencies]
