@@ -32,7 +32,7 @@ jobs:
       REQUIRE_POSTGRES_TESTS: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The image's Python (Dockerfile: python:3.11-slim), so the tests run on
       # what production runs. Read from pyproject's ">=3.11" this was always the
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the server image
         run: docker build -t bank-enrichment-server .
@@ -92,7 +92,7 @@ jobs:
       server: ${{ steps.filter.outputs.server }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
