@@ -39,7 +39,7 @@ services:
   caddy:
     # A fixed version, not :latest, so a rebuild never picks up a change
     # unannounced; Dependabot proposes updates.
-    image: caddy:2.11.3
+    image: caddy:2.11.7
     ports:
       - "80:80"
       - "443:443"

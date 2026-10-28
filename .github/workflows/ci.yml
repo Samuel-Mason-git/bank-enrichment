@@ -32,11 +32,15 @@ jobs:
       REQUIRE_POSTGRES_TESTS: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      # The image's Python (Dockerfile: python:3.11-slim), so the tests run on
+      # what production runs. Read from pyproject's ">=3.11" this was always the
+      # newest Python, and a brand-new one has no ready-built wheels for some
+      # dependencies yet -- the install then tries to compile them, and fails.
+      - uses: actions/setup-python@v7
         with:
-          python-version-file: pyproject.toml
+          python-version: "3.11"
 
       - name: Install Poetry
         run: pipx install poetry
@@ -57,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the server image
         run: docker build -t bank-enrichment-server .
@@ -88,7 +92,7 @@ jobs:
       server: ${{ steps.filter.outputs.server }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -124,17 +128,20 @@ jobs:
 
     steps:
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           # The action's default is 10 minutes, which a cold Docker build can exceed.
           command_timeout: 30m
+          # Another project deploys to this server too. Both builds take this
+          # lock, so they wait for each other instead of building at once --
+          # two at once on 1 GB is what hung the server in September.
           script: |
             set -e
             cd /home/ubuntu/bank-enrichment
             git pull
-            docker compose up -d --build
+            flock /home/ubuntu/.deploy.lock docker compose up -d --build
             docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
             docker image prune -f

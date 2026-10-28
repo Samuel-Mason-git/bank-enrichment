@@ -66,6 +66,10 @@ def load_transactions():
     """)
     cols = [c.name for c in result.description]
     df = pd.DataFrame(result.fetchall(), columns=cols)
+    # Postgres NUMERIC arrives as Decimal, which pandas keeps as plain objects:
+    # Plotly then reads amounts as labels, not numbers (a bar chart's colour
+    # scale came out as one random colour per bar). Floats are plenty for £.
+    df["amount"] = df["amount"].astype(float)
     df["created_at"] = pd.to_datetime(df["created_at"])
     df["month"] = df["created_at"].dt.to_period("M").astype(str)
     return df
@@ -384,9 +388,13 @@ with tab_overview:
     )
 
     def _fmt(v, is_pct=False):
-        if v is None:
+        """£28,906.31 and −£4,710.64 (the minus before the £, as it's said),
+        or 12.3% -- thousands separated so big figures read at a glance."""
+        if v is None or pd.isna(v):
             return "—"
-        return f"{v:.1f}%" if is_pct else f"£{v:.2f}"
+        if is_pct:
+            return f"{v:.1f}%".replace("-", "−")
+        return f"{'−' if v < 0 else ''}£{abs(v):,.2f}"
 
     def _info_icon(tooltip: str) -> str:
         return (
@@ -403,7 +411,8 @@ with tab_overview:
         money moving, not a gain or a loss)."""
         if delta_value is None:
             return ""
-        text = f"{delta_value:+.1f}{suffix} vs prev"
+        arrow = "▲" if delta_value > 0 else "▼" if delta_value < 0 else "■"
+        text = f"{arrow} {abs(delta_value):.1f}{suffix} vs prev"
         if direction == "neutral":
             bg, fg = "rgba(149, 165, 166, 0.25)", "rgba(210, 214, 215, 0.95)"
         else:
@@ -413,25 +422,65 @@ with tab_overview:
                 else ("rgba(231, 76, 60, 0.25)", "rgba(243, 158, 148, 0.95)")
             )
         return (
-            f'<div style="margin-top:6px;"><span style="display:inline-block;background:{bg};'
-            f'color:{fg};border-radius:6px;padding:2px 8px;font-size:0.7rem;font-weight:600;">'
-            f'{html.escape(text)}</span></div>'
+            f'<span style="display:inline-block;background:{bg};'
+            f'color:{fg};border-radius:999px;padding:2px 9px;font-size:0.7rem;font-weight:600;'
+            f'white-space:nowrap;">{html.escape(text)}</span>'
         )
 
-    def _card(label, value, color, tooltip=None, delta_html=""):
+    def _colour_range(values) -> list[float]:
+        """A bar chart's colour scale, started a little below zero so its
+        smallest bar is a pale tint of the colour, not white on a dark page."""
+        top = float(values.max()) if len(values) else 1.0
+        return [-0.25 * top, top]
+
+    def _accent(color: str) -> str:
+        """A row's tint at full strength, for the card's edge."""
+        return color.rsplit(",", 1)[0] + ", 0.85)"
+
+    def _card(label, value, color, tooltip=None, delta_html="", reserve_delta=False):
         """A colored div standing in for a metric card -- st.metric can't take
         a background color, and st.dataframe can't do a real per-cell hover,
         so this is plain HTML: a visible ⓘ icon with its own native `title`
         tooltip (hover, no JS) rather than a silent hover-anywhere-on-the-card,
-        plus a CSS background tint matching the row's color."""
+        plus a faint tint and a solid edge in the row's color. reserve_delta
+        keeps room for a vs-prev pill even when there isn't one, so a row's
+        cards all come out the same height."""
         icon = _info_icon(tooltip) if tooltip else ""
-        return (
-            f'<div style="background:{color};border-radius:10px;'
-            f'padding:12px 14px;min-height:82px;margin-bottom:12px;">'
-            f'<div style="font-size:0.78rem;color:rgba(255,255,255,0.65);font-weight:500;">{html.escape(label)}{icon}</div>'
-            f'<div style="font-size:1.45rem;font-weight:700;margin-top:4px;">{html.escape(value)}</div>'
-            f'{delta_html}</div>'
+        delta_row = (
+            f'<div style="margin-top:8px;height:20px;">{delta_html}</div>'
+            if delta_html or reserve_delta else ""
         )
+        return (
+            f'<div style="background:{color};border:1px solid rgba(255,255,255,0.06);'
+            f'border-left:3px solid {_accent(color)};border-radius:10px;'
+            f'padding:12px 16px;margin-bottom:12px;">'
+            f'<div style="font-size:0.7rem;letter-spacing:0.05em;text-transform:uppercase;'
+            f'color:rgba(255,255,255,0.6);font-weight:600;white-space:nowrap;overflow:hidden;'
+            f'text-overflow:ellipsis;">{html.escape(label)}{icon}</div>'
+            f'<div style="font-size:1.6rem;font-weight:700;margin-top:6px;line-height:1.2;'
+            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+            f'font-variant-numeric:tabular-nums;">{html.escape(value)}</div>'
+            f'{delta_row}</div>'
+        )
+
+    def _section(title: str, tooltip: str, subtitle: str) -> None:
+        st.markdown(
+            f'<div style="margin:6px 0 10px;"><span style="font-size:1rem;font-weight:700;">'
+            f'{html.escape(title)}</span>{_info_icon(tooltip)}'
+            f'<span style="margin-left:10px;font-size:0.8rem;color:rgba(255,255,255,0.5);">'
+            f'{html.escape(subtitle)}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    def _card_rows(cards: list[tuple], per_row: int = 4, reserve_delta=False) -> None:
+        """Cards in rows of per_row, so a long row never squeezes its numbers
+        onto two lines, and the same position lines up from row to row."""
+        for start in range(0, len(cards), per_row):
+            cols = st.columns(per_row)
+            for col, (label, value, color, tooltip, delta_html) in zip(cols, cards[start:start + per_row]):
+                with col:
+                    st.markdown(_card(label, value, color, tooltip=tooltip, delta_html=delta_html,
+                                      reserve_delta=reserve_delta), unsafe_allow_html=True)
 
     row_colors = {
         "Income": "rgba(46, 204, 113, 0.14)",
@@ -487,40 +536,38 @@ with tab_overview:
     if excluded_in > 0:
         actual_rows.append(("Transferred / Excluded (Incoming)", "Transferred / Excluded", excluded_in, excluded_in_d, excluded_in_mask, False))
 
+    # With nothing before the range (All time, say) there are no vs-prev
+    # pills at all, so the cards needn't keep room for one.
+    _prev_has_data = not prev_filtered.empty
+
     st.caption(f"{len(filtered)} transactions · {int(filtered['llm_category'].isna().sum())} unclassified.")
 
-    st.markdown(
-        "**Standard**" + _info_icon(
-            "Every £ is counted by amount sign alone — money in is Income, "
-            "money out is Spend, regardless of category or role."
-        ),
-        unsafe_allow_html=True,
+    _section(
+        "Standard",
+        "Every £ is counted by amount sign alone — money in is Income, "
+        "money out is Spend, regardless of category or role.",
+        "by amount sign",
     )
-    std_cols = st.columns(len(standard_metrics))
-    for col, (label, std_val, std_d, is_pct) in zip(std_cols, standard_metrics):
-        badge = _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label])
-        with col:
-            st.markdown(
-                _card(label, _fmt(std_val, is_pct), row_colors[label], tooltip=standard_tooltips[label], delta_html=badge),
-                unsafe_allow_html=True,
-            )
+    _card_rows([
+        (label, _fmt(std_val, is_pct), row_colors[label], standard_tooltips[label],
+         _delta_badge(std_d, "pp" if is_pct else "%", delta_direction[label]))
+        for label, std_val, std_d, is_pct in standard_metrics
+    ], reserve_delta=_prev_has_data)
 
-    st.markdown(
-        "**Actual**" + _info_icon(
-            "Each category has a role (set in the Settings tab) that decides what "
-            "it counts as — e.g. refunds and transfers don't count as Income here."
-        ),
-        unsafe_allow_html=True,
+    _section(
+        "Actual",
+        "Each category has a role (set in the Settings tab) that decides what "
+        "it counts as — e.g. refunds and transfers don't count as Income here.",
+        "by category role",
     )
-    act_cols = st.columns(len(actual_rows))
-    for col, (label, color_key, act_val, act_d, mask, is_pct) in zip(act_cols, actual_rows):
-        badge = _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[color_key])
-        tooltip = _categories_for(mask) if mask is not None else actual_static_tooltips[color_key]
-        with col:
-            st.markdown(
-                _card(label, _fmt(act_val, is_pct), row_colors[color_key], tooltip=tooltip, delta_html=badge),
-                unsafe_allow_html=True,
-            )
+    # Income/Spend/Net/Savings Rate first, so they sit under the same cards in
+    # Standard; where the money went besides spending on the row below.
+    _card_rows([
+        (label, _fmt(act_val, is_pct), row_colors[color_key],
+         _categories_for(mask) if mask is not None else actual_static_tooltips[color_key],
+         _delta_badge(act_d, "pp" if is_pct else "%", delta_direction[color_key]))
+        for label, color_key, act_val, act_d, mask, is_pct in actual_rows
+    ], reserve_delta=_prev_has_data)
 
     st.divider()
 
@@ -530,28 +577,48 @@ with tab_overview:
 
     def _breakdown_chart(col, key_prefix: str, title: str, metric: str, color_scale: str, sign: str):
         with col:
-            group_by = st.radio(
-                "Group by", ["Category", "Subcategory"],
-                key=f"{key_prefix}_group_by", horizontal=True,
-            )
-            group_col = "llm_subcategory" if group_by == "Subcategory" else "llm_category"
-            breakdown = role_breakdown(filtered, ROLE_METRICS[metric], group_col, sign=sign).sort_values("Amount", ascending=True)
+            # A choice of grouping only when there's a choice: with one
+            # category (Income is all "Income") grouping by category is a
+            # single bar, so it goes straight to the subcategories.
+            by_category = role_breakdown(filtered, ROLE_METRICS[metric], "llm_category", sign=sign)
+            if len(by_category) > 1:
+                group_by = st.radio(
+                    "Group by", ["Category", "Subcategory"],
+                    key=f"{key_prefix}_group_by", horizontal=True,
+                )
+            else:
+                group_by = "Subcategory"
+            if group_by == "Category":
+                breakdown = by_category
+            else:
+                breakdown = role_breakdown(filtered, ROLE_METRICS[metric], "llm_subcategory", sign=sign)
+            breakdown = breakdown.sort_values("Amount", ascending=True)
             if not breakdown.empty:
                 fig = px.bar(breakdown, x="Amount", y=group_by, orientation="h",
-                             title=f"{title} by {group_by}", labels={"Amount": f"{title} (£)"},
-                             color="Amount", color_continuous_scale=color_scale)
+                             title=f"{title} by {group_by}", labels={"Amount": f"{title} (£)", group_by: ""},
+                             color="Amount", color_continuous_scale=color_scale,
+                             range_color=_colour_range(breakdown["Amount"]))
+                fig.update_traces(hovertemplate="%{y}: £%{x:,.2f}<extra></extra>")
                 fig.update_layout(showlegend=False, coloraxis_showscale=False,
-                                  height=max(300, len(breakdown) * 45),
+                                  height=max(300, len(breakdown) * 34 + 80),
+                                  xaxis_tickprefix="£", xaxis_tickformat=",.0f",
                                   margin=dict(l=0, r=0, t=40, b=0))
                 st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
                 total = breakdown["Amount"].sum()
                 if total > 0:
                     pct_table = breakdown.sort_values("Amount", ascending=False).copy()
-                    pct_table["% of total"] = (pct_table["Amount"] / total * 100).round(1).astype(str) + "%"
+                    pct_table["% of total"] = pct_table["Amount"] / total * 100
+                    columns = {
+                        "Amount": st.column_config.NumberColumn("Amount", format="£%,.2f"),
+                        "% of total": st.column_config.NumberColumn("% of total", format="%.1f%%"),
+                    }
                     if sign == "negative" and _income_total > 0:
-                        pct_table["% of income"] = (pct_table["Amount"] / _income_total * 100).round(1).astype(str) + "%"
-                    pct_table["Amount"] = pct_table["Amount"].map("£{:.2f}".format)
-                    st.dataframe(pct_table, hide_index=True, width="stretch")
+                        pct_table["% of income"] = pct_table["Amount"] / _income_total * 100
+                        columns["% of income"] = st.column_config.NumberColumn(
+                            "% of income", format="%.1f%%",
+                            help="This much of the period's Actual Income.")
+                    st.dataframe(pct_table, hide_index=True, width="stretch", column_config=columns,
+                                 height=min(35 * (len(pct_table) + 1) + 2, 600))
             else:
                 st.info(f"No {title.lower()} in range.")
 
@@ -595,23 +662,28 @@ with tab_overview:
                 .sort_values("_month", ascending=False)
             )
             _monthly["Net"] = (_monthly["_income"] - _monthly["_spend"]).round(2)
-            _monthly["Savings Rate"] = _monthly.apply(
-                lambda r: f"{(r['Net'] / r['_income'] * 100):.1f}%" if r["_income"] > 0 else "—", axis=1)
-            _monthly["Saved Rate"] = _monthly.apply(
-                lambda r: f"{(r['_saved'] / r['_income'] * 100):.1f}%" if r["_income"] > 0 else "—", axis=1)
+            _per_income = _monthly["_income"].where(_monthly["_income"] > 0)
+            _monthly["Savings Rate"] = _monthly["Net"] / _per_income * 100
+            _monthly["Saved Rate"] = _monthly["_saved"] / _per_income * 100
             _monthly = _monthly.rename(columns={
-                "_month": "Month", "_income": "Income (£)",
-                "_spend": "Spend (£)", "_invested": "Invested (£)", "_saved": "Saved (£)",
+                "_month": "Month", "_income": "Income",
+                "_spend": "Spend", "_invested": "Invested", "_saved": "Saved",
             })
-            _monthly["Income (£)"] = _monthly["Income (£)"].map("£{:.2f}".format)
-            _monthly["Spend (£)"] = _monthly["Spend (£)"].map("£{:.2f}".format)
-            _monthly["Invested (£)"] = _monthly["Invested (£)"].map("£{:.2f}".format)
-            _monthly["Saved (£)"] = _monthly["Saved (£)"].map("£{:.2f}".format)
-            _monthly["Net"] = _monthly["Net"].map(lambda v: f"£{v:.2f}")
+            _money = lambda label, help=None: st.column_config.NumberColumn(label, format="£%,.2f", help=help)
             st.dataframe(
-                _monthly[["Month", "Income (£)", "Spend (£)", "Invested (£)", "Saved (£)",
+                _monthly[["Month", "Income", "Spend", "Invested", "Saved",
                           "Net", "Savings Rate", "Saved Rate"]],
                 hide_index=True, width="stretch",
+                column_config={
+                    "Income": _money("Income"), "Spend": _money("Spend"),
+                    "Invested": _money("Invested", "Net into investments; negative = taken back out."),
+                    "Saved": _money("Saved", "Net into savings pots; negative = taken back out."),
+                    "Net": _money("Net", "Income minus Spend."),
+                    "Savings Rate": st.column_config.NumberColumn(
+                        "Savings Rate", format="%.1f%%", help="Net as a share of Income."),
+                    "Saved Rate": st.column_config.NumberColumn(
+                        "Saved Rate", format="%.1f%%", help="Saved as a share of Income."),
+                },
             )
         else:
             st.info("No data in current filter range.")
@@ -636,12 +708,29 @@ with tab_time:
         totals["Rolling Avg"] = totals["Amount"].rolling(3, min_periods=1).mean()
         fig.add_trace(go.Scatter(
             x=totals["Month"], y=totals["Amount"], mode="lines", name="Total",
-            line=dict(color="#2c3e50", width=3),
+            # Light, so it stands out on the dark theme (it was a navy that
+            # all but vanished into the background).
+            line=dict(color="rgba(236, 240, 241, 0.85)", width=3),
         ))
         fig.add_trace(go.Scatter(
             x=totals["Month"], y=totals["Rolling Avg"], mode="lines", name="3-mo Avg",
             line=dict(color="#f39c12", width=3, dash="dash"),
         ))
+        # Hovering a month lists every line's £ for it, rather than one raw
+        # "Month=… Amount=…" box per point.
+        fig.update_traces(hovertemplate="£%{y:,.2f}")
+        fig.update_layout(hovermode="x unified", yaxis_tickprefix="£", yaxis_tickformat=",.0f")
+
+    def _every_month(monthly: pd.DataFrame, group: str) -> pd.DataFrame:
+        """Give each line a point for every month in range: a month a category
+        had nothing in is £0, not missing -- otherwise the line skips it, and a
+        category seen in one month only is a lone dot with no line at all."""
+        if monthly.empty:
+            return monthly
+        months = sorted(filtered["month"].unique())
+        grid = pd.MultiIndex.from_product([months, monthly[group].unique()], names=["Month", group])
+        return (monthly.set_index(["Month", group])["Amount"]
+                .reindex(grid, fill_value=0).reset_index())
 
     def _time_chart_pair(key_prefix: str, metric: str, sign: str):
         """Monthly category + subcategory trend lines for one metric, restricted
@@ -659,30 +748,40 @@ with tab_time:
         if metric_time.empty:
             st.info(f"No {metric.lower()} in range.")
             return
-        col1, col2 = st.columns(2)
-        with col1:
-            st.caption("All categories")
-            monthly = role_breakdown(metric_time, ROLE_METRICS[metric], "llm_category", by_month=True, sign=sign)
-            category_order = monthly.groupby("Category")["Amount"].sum().sort_values(ascending=False).index.tolist()
-            fig = px.line(monthly, x="Month", y="Amount", color="Category", markers=True,
-                          title=f"Monthly {metric} by Category",
-                          labels={"Amount": f"{metric} (£)"},
-                          category_orders={"Category": category_order})
-            _add_total_and_trend(fig, monthly)
-            # "Month" is a monthly bin ("2026-07"), not a specific day -- without
-            # forcing a category axis, Plotly auto-detects it as a date and
-            # snaps every point to the 1st, implying a precision the data
-            # doesn't have (it's a whole month's total, not a day-1 reading).
-            fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
-                              xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_category_chart")
+        monthly = _every_month(role_breakdown(
+            metric_time, ROLE_METRICS[metric], "llm_category", by_month=True, sign=sign), "Category")
+        available_cats = sorted(metric_time[metric_time["llm_category"].notna()]["llm_category"].unique())
+        # With one category (Income is all "Income") its chart would be a
+        # single line, and picking which category's subcategories to see no
+        # choice at all: the subcategory chart gets the full width instead.
+        single = monthly["Category"].nunique() <= 1
+        if single:
+            col2 = st.container()
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("All categories")
+                category_order = monthly.groupby("Category")["Amount"].sum().sort_values(ascending=False).index.tolist()
+                fig = px.line(monthly, x="Month", y="Amount", color="Category", markers=True,
+                              title=f"Monthly {metric} by Category",
+                              labels={"Amount": f"{metric} (£)"},
+                              category_orders={"Category": category_order})
+                _add_total_and_trend(fig, monthly)
+                # "Month" is a monthly bin ("2026-07"), not a specific day -- without
+                # forcing a category axis, Plotly auto-detects it as a date and
+                # snaps every point to the 1st, implying a precision the data
+                # doesn't have (it's a whole month's total, not a day-1 reading).
+                fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
+                                  xaxis_type="category", xaxis_categoryorder="category ascending")
+                st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_category_chart")
 
         with col2:
-            available_cats = sorted(metric_time[metric_time["llm_category"].notna()]["llm_category"].unique())
             if available_cats:
-                selected_cat = st.selectbox("View subcategories for", available_cats, key=f"{key_prefix}_sub_cat")
+                selected_cat = (available_cats[0] if single else
+                                st.selectbox("View subcategories for", available_cats, key=f"{key_prefix}_sub_cat"))
                 sub_data = metric_time[metric_time["llm_category"] == selected_cat]
-                monthly_sub = role_breakdown(sub_data, ROLE_METRICS[metric], "llm_subcategory", by_month=True, sign=sign)
+                monthly_sub = _every_month(role_breakdown(
+                    sub_data, ROLE_METRICS[metric], "llm_subcategory", by_month=True, sign=sign), "Subcategory")
                 if not monthly_sub.empty:
                     sub_order = monthly_sub.groupby("Subcategory")["Amount"].sum().sort_values(ascending=False).index.tolist()
                     fig_sub = px.line(monthly_sub, x="Month", y="Amount", color="Subcategory", markers=True,
@@ -758,14 +857,11 @@ with tab_time:
             "Saved": (monthly_totals_raw["Saved"].mean(), False),
             "Transferred / Excluded": (monthly_totals_raw["Transferred"].mean(), False),
         }
-        avg_cols = st.columns(7)
-        for col, (label, (val, is_pct)) in zip(avg_cols, avg_values.items()):
-            with col:
-                st.markdown(
-                    _card(f"Avg {label}", _fmt(val, is_pct), row_colors[label],
-                          tooltip=f"Average monthly {label.lower()} across the selected range."),
-                    unsafe_allow_html=True,
-                )
+        _card_rows([
+            (f"Avg {label}", _fmt(val, is_pct), row_colors[label],
+             f"Average monthly {label.lower()} across the selected range.", "")
+            for label, (val, is_pct) in avg_values.items()
+        ])
 
         st.divider()
         st.subheader("Savings & Investing Over Time")
@@ -778,18 +874,26 @@ with tab_time:
                              markers=True)
             fig_sr.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.4,
                              annotation_text="break even", annotation_position="bottom right")
-            fig_sr.update_traces(name="Savings Rate (%)", line_color="#2ecc71", marker_color="#2ecc71")
+            # showlegend: px.line leaves a lone line out of the legend, so
+            # without it this one was an unlabelled green line.
+            fig_sr.update_traces(name="Savings Rate (%)", line_color="#2ecc71", marker_color="#2ecc71",
+                                 showlegend=True, hovertemplate="%{y:.1f}%")
             fig_sr.add_trace(go.Scatter(
                 x=sr_chart["Month"], y=sr_chart["Investment Rate"], name="Investment Rate (%)",
-                mode="lines+markers", line=dict(color="#9b59b6"),
+                mode="lines+markers", line=dict(color="#9b59b6"), hovertemplate="%{y:.1f}%",
             ))
+            # Income minus Spend -- what the Overview calls Net, so it's called
+            # that here too (it isn't what went into savings pots; that's Saved).
             fig_sr.add_trace(go.Scatter(
-                x=sr_chart["Month"], y=sr_chart["Actual Savings"], name="Actual Savings (£)",
+                x=sr_chart["Month"], y=sr_chart["Actual Savings"], name="Net (£, right axis)",
                 mode="lines+markers", line=dict(color="#3498db"), yaxis="y2",
+                hovertemplate="£%{y:,.2f}",
             ))
             fig_sr.update_layout(
                 xaxis_tickangle=-45, margin=dict(t=20, b=0), yaxis_ticksuffix="%",
-                yaxis2=dict(title="Actual Savings (£)", overlaying="y", side="right"),
+                hovermode="x unified",
+                yaxis2=dict(title="Net (£)", overlaying="y", side="right",
+                            tickprefix="£", tickformat=",.0f", showgrid=False),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 xaxis_type="category", xaxis_categoryorder="category ascending",
             )
@@ -797,27 +901,30 @@ with tab_time:
         else:
             st.info("Need at least two months with income to chart savings.")
 
-        invested_chart = monthly_totals_raw[monthly_totals_raw["Invested"] > 0]
-        if len(invested_chart) > 1:
-            fig_inv = px.line(invested_chart, x="Month", y="Invested",
-                              labels={"Invested": "Invested (£)"}, markers=True)
-            fig_inv.update_traces(line_color="#9b59b6", marker_color="#9b59b6")
-            fig_inv.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
-                                  xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig_inv, width="stretch", key="invested_over_time_chart")
+        def _net_flow_chart(column: str, color: str, key: str):
+            """Each month's net into savings or investments, every month in
+            range: one that took money back out is a bar below zero, not a
+            month left off the chart. Its own chart rather than a fourth line
+            on the combined one above, which already has three on two axes."""
+            if len(monthly_totals_raw) < 2 or not monthly_totals_raw[column].any():
+                return
+            values = monthly_totals_raw[column]
+            fig = go.Figure(go.Bar(
+                x=monthly_totals_raw["Month"], y=values, name=column,
+                marker_color=[color if v >= 0 else "#e74c3c" for v in values],
+                hovertemplate="%{x}: £%{y:,.2f}<extra></extra>",
+            ))
+            fig.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
+            fig.update_layout(
+                title=f"{column} each month (net; below zero = taken back out)",
+                yaxis_title=f"{column} (£)", yaxis_tickprefix="£", xaxis_tickangle=-45,
+                margin=dict(t=40, b=0), height=320,
+                xaxis_type="category", xaxis_categoryorder="category ascending",
+            )
+            st.plotly_chart(fig, width="stretch", key=key)
 
-        # Its own standalone chart, same as Invested above, rather than a
-        # fourth line on the combined Savings & Investing chart -- that chart
-        # is already three lines across two axes, and a Saved Rate line there
-        # would make it harder to read, not more useful.
-        saved_chart = monthly_totals_raw[monthly_totals_raw["Saved"] > 0]
-        if len(saved_chart) > 1:
-            fig_saved = px.line(saved_chart, x="Month", y="Saved",
-                                labels={"Saved": "Saved (£)"}, markers=True)
-            fig_saved.update_traces(line_color="#2ab0a0", marker_color="#2ab0a0")
-            fig_saved.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=0),
-                                    xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig_saved, width="stretch", key="saved_over_time_chart")
+        _net_flow_chart("Invested", "#9b59b6", "invested_over_time_chart")
+        _net_flow_chart("Saved", "#2ab0a0", "saved_over_time_chart")
     else:
         st.info("No transactions in the selected range.")
 
@@ -846,24 +953,24 @@ with tab_time:
                     "Month": st.column_config.Column(
                         "Month", help="Calendar month, based on the selected date range."),
                     "Income": st.column_config.NumberColumn(
-                        "Income", format="£%.2f",
+                        "Income", format="£%,.2f",
                         help="Actual Income — the incoming (positive) side of every Income-role category."),
                     "Spend": st.column_config.NumberColumn(
-                        "Spend", format="£%.2f",
+                        "Spend", format="£%,.2f",
                         help="Actual Spend — the outgoing (negative) side of every Spend-role category."),
                     "Net": st.column_config.NumberColumn(
-                        "Net", format="£%.2f", help="Income minus Spend for the month."),
+                        "Net", format="£%,.2f", help="Income minus Spend for the month."),
                     "Savings Rate": st.column_config.NumberColumn(
                         "Savings Rate", format="%.1f%%",
                         help="Net as a percentage of Income. Blank when there was no income that month."),
                     "Invested": st.column_config.NumberColumn(
-                        "Invested", format="£%.2f",
+                        "Invested", format="£%,.2f",
                         help="Net money moved into investment categories (contributions minus withdrawals)."),
                     "Investment Rate": st.column_config.NumberColumn(
                         "Investment Rate", format="%.1f%%",
                         help="Invested as a percentage of Income. Blank when there was no income that month."),
                     "Saved": st.column_config.NumberColumn(
-                        "Saved", format="£%.2f",
+                        "Saved", format="£%,.2f",
                         help="Net money moved into savings categories (deposits minus withdrawals) -- "
                              "mechanically identical to Invested, kept separate so it isn't mixed with "
                              "genuine investing."),
@@ -871,7 +978,7 @@ with tab_time:
                         "Saved Rate", format="%.1f%%",
                         help="Saved as a percentage of Income. Blank when there was no income that month."),
                     "Transferred": st.column_config.NumberColumn(
-                        "Transferred", format="£%.2f",
+                        "Transferred", format="£%,.2f",
                         help="Money moved to transfer or excluded categories (outgoing side only)."),
                     "Income MoM": st.column_config.NumberColumn(
                         "Income MoM", format="%+.1f%%", help="Change in Income vs the previous month."),
@@ -884,9 +991,8 @@ with tab_time:
 # ── Tab 3: Transactions ────────────────────────────────────────────────────────
 
 with tab_txns:
-    st.subheader(f"{len(filtered)} transactions")
-
     if not filtered.empty:
+        st.subheader("Highlights")
         st.caption("Just for fun — not part of your financial totals elsewhere in the app.")
         fun_color = "rgba(127, 140, 141, 0.16)"
         # merchant_name alone misses every direct debit/bank transfer (rent,
@@ -912,27 +1018,28 @@ with tab_txns:
             ("Most Frequent Merchant",
              merchant_counts.index[0] if not merchant_counts.empty else "—",
              f"Appears {merchant_counts.iloc[0]} times." if not merchant_counts.empty else "No merchant data."),
-            ("Biggest Transaction", f"£{abs(biggest_row['amount']):.2f}",
+            ("Biggest Transaction", _fmt(abs(biggest_row["amount"])),
              f"{biggest_label} on {biggest_row['created_at'].date()}."),
-            ("Avg Transaction Size", f"£{filtered['amount'].abs().mean():.2f}",
+            ("Avg Transaction Size", _fmt(filtered['amount'].abs().mean()),
              "Mean absolute amount across every transaction in range."),
             ("Busiest Day", day_counts.index[0] if not day_counts.empty else "—",
              f"{day_counts.iloc[0]} transactions fall on a {day_counts.index[0]}." if not day_counts.empty else ""),
         ]
-        fun_cols = st.columns(6)
-        for col, (label, value, tooltip) in zip(fun_cols, fun_cards):
-            with col:
-                st.markdown(_card(label, value, fun_color, tooltip=tooltip), unsafe_allow_html=True)
+        _card_rows([(label, value, fun_color, tooltip, "") for label, value, tooltip in fun_cards], per_row=3)
 
         st.divider()
 
+    st.subheader(f"Edit transactions ({len(filtered)})")
     st.caption(
         "Pick Category/Subcategory from your existing taxonomy to fix a misclassification. "
         "To add a brand-new category or subcategory, use the Settings tab first."
     )
 
-    edit_df = filtered[["id", "created_at", "amount", "merchant_name", "description",
-                         "user_context", "llm_category", "llm_subcategory"]].copy()
+    edit_df = filtered[["created_at", "amount", "merchant_name", "description",
+                         "user_context", "llm_category", "llm_subcategory", "id"]].copy()
+    # Direct debits and transfers name a payee, not a merchant: shown here the
+    # same way as every other tab, rather than as a blank.
+    edit_df["merchant_name"] = merchant_display_name(filtered)
     edit_df["llm_category"] = edit_df["llm_category"].fillna("")
     edit_df["llm_subcategory"] = edit_df["llm_subcategory"].fillna("")
     edit_df["user_context"] = edit_df["user_context"].fillna("")
@@ -968,12 +1075,13 @@ with tab_txns:
     edited = st.data_editor(
         edit_df,
         column_config={
-            "id": st.column_config.Column("ID", disabled=True, width="small"),
+            "id": st.column_config.Column("ID", disabled=True, width="small",
+                                          help="Monzo's id, for the sidebar's Exclude by transaction ID."),
             "Date": st.column_config.DateColumn(
                 "Date", format="YYYY-MM-DD", width="small",
                 help="The time-of-day from the original transaction is kept as-is -- only the date changes."),
-            "Amount": st.column_config.NumberColumn("Amount", disabled=True, format="£%.2f", width="small"),
-            "Merchant": st.column_config.Column(disabled=True),
+            "Amount": st.column_config.NumberColumn("Amount", disabled=True, format="£%,.2f", width="small"),
+            "Merchant": st.column_config.Column("Merchant / payee", disabled=True),
             "Description": st.column_config.Column(disabled=True),
             "Context": st.column_config.TextColumn("Context", width="medium"),
             "Category": st.column_config.SelectboxColumn(
@@ -984,6 +1092,7 @@ with tab_txns:
         width="stretch",
         hide_index=True,
         num_rows="fixed",
+        height=min(35 * (len(edit_df) + 1) + 2, 640),
     )
 
     if st.button("Save changes", type="primary"):
@@ -1082,19 +1191,14 @@ with tab_drill:
         excluded_in_cat = cat_df.loc[cat_df["role"].isin(["transfer", "excluded"]) & (cat_df["amount"] > 0), "amount"].sum()
 
         stat_color = "rgba(127, 140, 141, 0.16)"
-        top_cols = st.columns(3)
-        with top_cols[0]:
-            st.markdown(_card("Transactions", str(len(cat_df)), stat_color,
-                               tooltip="Transactions in this category, in the selected range."),
-                        unsafe_allow_html=True)
-        with top_cols[1]:
-            st.markdown(_card("Subcategories", str(int(cat_df["llm_subcategory"].nunique())), stat_color,
-                               tooltip="Distinct subcategories used within this category."),
-                        unsafe_allow_html=True)
-        with top_cols[2]:
-            st.markdown(_card("Net", f"£{net_cat:.2f}", row_colors["Net"],
-                               tooltip="Actual Income minus Actual Spend for this category."),
-                        unsafe_allow_html=True)
+        _card_rows([
+            ("Transactions", str(len(cat_df)), stat_color,
+             "Transactions in this category, in the selected range.", ""),
+            ("Subcategories", str(int(cat_df["llm_subcategory"].nunique())), stat_color,
+             "Distinct subcategories used within this category.", ""),
+            ("Net", _fmt(net_cat), row_colors["Net"],
+             "Actual Income minus Actual Spend for this category.", ""),
+        ], per_row=3)
 
         # (display label, color key into row_colors, value, tooltip)
         excluded_label = "Transferred / Excluded (Outgoing)" if excluded_in_cat > 0 else "Transferred / Excluded"
@@ -1115,11 +1219,12 @@ with tab_drill:
                 "Money that came in through transfer or excluded categories here (e.g. a refund or an inbound "
                 "transfer) -- kept separate so it can't cancel out the outgoing figure."))
 
-        role_cols = st.columns(len(role_cards))
-        for col, (label, color_key, value, tooltip) in zip(role_cols, role_cards):
-            with col:
-                st.markdown(_card(label, f"£{value:.2f}", row_colors[color_key], tooltip=tooltip),
-                            unsafe_allow_html=True)
+        # Income and Spend always (a category is one or the other, and £0 says
+        # so); the rest only when this category actually has some, rather than
+        # a row of £0.00 cards for roles it doesn't use.
+        role_cards = [c for c in role_cards if c[0] in ("Income", "Spend") or c[2]]
+        _card_rows([(label, _fmt(value), row_colors[color_key], tooltip, "")
+                    for label, color_key, value, tooltip in role_cards])
 
         st.divider()
 
@@ -1148,19 +1253,25 @@ with tab_drill:
                     suffix = "" if len(signs) == 1 else (" (Incoming)" if sign == "positive" else " (Outgoing)")
                     chart_specs.append((role, sign, f"{label}{suffix}"))
 
-        if chart_specs:
-            chart_cols = st.columns(len(chart_specs))
-            for col, (role, sign, chart_label) in zip(chart_cols, chart_specs):
+        # At most two charts side by side, so a category with three or four
+        # roles doesn't squeeze each into a sliver.
+        for start in range(0, len(chart_specs), 2):
+            row = chart_specs[start:start + 2]
+            chart_cols = st.columns(2 if len(chart_specs) > 1 else 1)
+            for col, (role, sign, chart_label) in zip(chart_cols, row):
                 with col:
                     breakdown = role_breakdown(
                         cat_df, (role,), "llm_subcategory", sign=sign
                     ).sort_values("Amount", ascending=True)
                     fig = px.bar(breakdown, x="Amount", y="Subcategory", orientation="h",
                                  title=f"{chart_label} by Subcategory",
-                                 labels={"Amount": f"{chart_label} (£)"},
-                                 color="Amount", color_continuous_scale=role_colors[role])
+                                 labels={"Amount": f"{chart_label} (£)", "Subcategory": ""},
+                                 color="Amount", color_continuous_scale=role_colors[role],
+                                 range_color=_colour_range(breakdown["Amount"]))
+                    fig.update_traces(hovertemplate="%{y}: £%{x:,.2f}<extra></extra>")
                     fig.update_layout(showlegend=False, coloraxis_showscale=False,
-                                      height=max(250, len(breakdown) * 45),
+                                      height=max(250, len(breakdown) * 34 + 80),
+                                      xaxis_tickprefix="£", xaxis_tickformat=",.0f",
                                       margin=dict(l=0, r=0, t=40, b=0))
                     st.plotly_chart(fig, width="stretch", key=f"drill_{selected_cat}_{role}_{sign}_chart")
 
@@ -1200,14 +1311,19 @@ with tab_drill:
             )
 
             sub_summary = sub_summary.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            # Numbers stay numbers (so the columns sort properly), formatted
+            # in the table; a role a subcategory has none of shows blank.
+            summary_columns = {
+                "Avg Transaction": st.column_config.NumberColumn("Avg Transaction", format="£%,.2f"),
+                "Last Transaction": st.column_config.DateColumn("Last Transaction", format="YYYY-MM-DD"),
+                share_label: st.column_config.NumberColumn(share_label, format="%.1f%%"),
+            }
             for _, _, chart_label in chart_specs:
-                sub_summary[chart_label] = sub_summary[chart_label].map(lambda x: f"£{x:.2f}" if x > 0 else "—")
-            sub_summary["Avg Transaction"] = sub_summary["Avg Transaction"].map("£{:.2f}".format)
-            sub_summary["Last Transaction"] = sub_summary["Last Transaction"].dt.strftime("%Y-%m-%d")
-            sub_summary[share_label] = sub_summary[share_label].map(lambda x: f"{x:.1f}%")
+                sub_summary[chart_label] = sub_summary[chart_label].where(sub_summary[chart_label] > 0)
+                summary_columns[chart_label] = st.column_config.NumberColumn(chart_label, format="£%,.2f")
 
             st.subheader("Subcategory Summary")
-            st.dataframe(sub_summary, width="stretch", hide_index=True)
+            st.dataframe(sub_summary, width="stretch", hide_index=True, column_config=summary_columns)
 
         st.subheader("Transactions")
         display_cat = cat_df[["created_at", "amount", "merchant_name", "description",
@@ -1216,12 +1332,13 @@ with tab_drill:
         # populate counterparty_name instead -- without the fallback this
         # column reads empty for every bill paid that way.
         display_cat["merchant_name"] = merchant_display_name(cat_df)
-        display_cat.columns = ["Date", "Amount", "Merchant", "Description", "Context", "Subcategory"]
+        display_cat.columns = ["Date", "Amount", "Merchant / payee", "Description", "Context", "Subcategory"]
         st.dataframe(
             display_cat, width="stretch", hide_index=True,
+            height=min(35 * (len(display_cat) + 1) + 2, 640),
             column_config={
                 "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-                "Amount": st.column_config.NumberColumn("Amount", format="£%.2f"),
+                "Amount": st.column_config.NumberColumn("Amount", format="£%,.2f"),
             },
         )
 
@@ -1262,13 +1379,16 @@ with tab_merchants:
             .reset_index(drop=True)
         )
 
-        merch_ctrl1, merch_ctrl2 = st.columns([3, 1])
+        merch_ctrl1, merch_ctrl2, merch_ctrl3 = st.columns([3, 1, 1.4])
         with merch_ctrl1:
             merchant_search = st.text_input(
                 "Search merchants", placeholder="merchant name...", key="merchant_search"
             )
         with merch_ctrl2:
-            top_n_choice = st.selectbox("Top N", [10, 20, 50, "All"], index=1, key="merchant_top_n")
+            top_n_choice = st.selectbox("Show top", [10, 20, 50, "All"], index=1, key="merchant_top_n")
+        with merch_ctrl3:
+            rank_by = st.radio("Rank merchants by", ["Total Spend", "Frequency"],
+                                horizontal=True, key="merchant_rank_by")
 
         if merchant_search:
             by_merchant = by_merchant[
@@ -1278,8 +1398,6 @@ with tab_merchants:
         if by_merchant.empty:
             st.info("No merchants match that search.")
         else:
-            rank_by = st.radio("Rank merchants by", ["Total Spend", "Frequency"],
-                                horizontal=True, key="merchant_rank_by")
             rank_col = "total_spend" if rank_by == "Total Spend" else "transactions"
             by_merchant = by_merchant.sort_values(
                 [rank_col, "Merchant"], ascending=[False, True]
@@ -1287,23 +1405,17 @@ with tab_merchants:
 
             total_spend_all = by_merchant["total_spend"].sum()
             top_row = by_merchant.iloc[0]
-            stat_cols = st.columns(4)
-            with stat_cols[0]:
-                st.markdown(_card("Merchants", str(len(by_merchant)), stat_color,
-                                   tooltip="Distinct merchants matching the current search, in range."),
-                            unsafe_allow_html=True)
-            with stat_cols[1]:
-                st.markdown(_card("Total Spend", f"£{total_spend_all:.2f}", row_colors["Spend"],
-                                   tooltip="Actual Spend summed across all matching merchants."),
-                            unsafe_allow_html=True)
-            with stat_cols[2]:
-                st.markdown(_card("Avg per Merchant", f"£{(total_spend_all / len(by_merchant)):.2f}", stat_color,
-                                   tooltip="Total Spend divided by the number of matching merchants."),
-                            unsafe_allow_html=True)
-            with stat_cols[3]:
-                st.markdown(_card("Top Merchant", top_row["Merchant"], stat_color,
-                                   tooltip=f"£{top_row['total_spend']:.2f} across {int(top_row['transactions'])} transaction(s)."),
-                            unsafe_allow_html=True)
+            _card_rows([
+                ("Merchants", str(len(by_merchant)), stat_color,
+                 "Distinct merchants matching the current search, in range.", ""),
+                ("Total Spend", _fmt(total_spend_all), row_colors["Spend"],
+                 "Actual Spend summed across all matching merchants.", ""),
+                ("Avg per Merchant", _fmt(total_spend_all / len(by_merchant)), stat_color,
+                 "Total Spend divided by the number of matching merchants.", ""),
+                ("Top Merchant", top_row["Merchant"], stat_color,
+                 f"{top_row['Merchant']}: {_fmt(top_row['total_spend'])} across "
+                 f"{int(top_row['transactions'])} transaction(s).", ""),
+            ])
 
             top_n = len(by_merchant) if top_n_choice == "All" else min(top_n_choice, len(by_merchant))
             top_chart = by_merchant.head(top_n).sort_values(rank_col)
@@ -1313,12 +1425,18 @@ with tab_merchants:
             fig_m = px.bar(
                 top_chart, x=rank_col, y="Merchant", orientation="h",
                 title=chart_title,
-                labels={rank_col: axis_label},
+                labels={rank_col: axis_label, "Merchant": ""},
                 color=rank_col, color_continuous_scale=color_scale,
+                range_color=_colour_range(top_chart[rank_col]),
             )
+            if rank_col == "total_spend":
+                fig_m.update_traces(hovertemplate="%{y}: £%{x:,.2f}<extra></extra>")
+                fig_m.update_layout(xaxis_tickprefix="£", xaxis_tickformat=",.0f")
+            else:
+                fig_m.update_traces(hovertemplate="%{y}: %{x} transactions<extra></extra>")
             fig_m.update_layout(
                 showlegend=False, coloraxis_showscale=False,
-                height=max(400, top_n * 36),
+                height=max(400, top_n * 30 + 80),
                 margin=dict(l=0, r=0, t=40, b=0),
             )
             st.plotly_chart(fig_m, width="stretch", key="top_merchants_chart")
@@ -1332,9 +1450,10 @@ with tab_merchants:
             })
             st.dataframe(
                 merch_display, width="stretch", hide_index=True,
+                height=min(35 * (len(merch_display) + 1) + 2, 640),
                 column_config={
-                    "Total Spend": st.column_config.NumberColumn("Total Spend", format="£%.2f"),
-                    "Avg Transaction": st.column_config.NumberColumn("Avg Transaction", format="£%.2f"),
+                    "Total Spend": st.column_config.NumberColumn("Total Spend", format="£%,.2f"),
+                    "Avg Transaction": st.column_config.NumberColumn("Avg Transaction", format="£%,.2f"),
                     "Last Seen": st.column_config.DateColumn("Last Seen", format="YYYY-MM-DD"),
                 },
             )
@@ -1367,19 +1486,14 @@ with tab_subs:
     annual_cost = monthly_cost * 12
 
     kpi_color = "rgba(127, 140, 141, 0.16)"
-    kpi_cols = st.columns(3)
-    with kpi_cols[0]:
-        st.markdown(_card("Active Subscriptions", str(len(active_subs)), kpi_color,
-                           tooltip="Subscriptions not marked Inactive."),
-                    unsafe_allow_html=True)
-    with kpi_cols[1]:
-        st.markdown(_card("Est. Monthly Cost", f"£{monthly_cost:.2f}", row_colors["Spend"],
-                           tooltip="Sum of every active subscription's amount, normalized to a monthly rate."),
-                    unsafe_allow_html=True)
-    with kpi_cols[2]:
-        st.markdown(_card("Est. Annual Cost", f"£{annual_cost:.2f}", row_colors["Spend"],
-                           tooltip="Est. Monthly Cost x 12."),
-                    unsafe_allow_html=True)
+    _card_rows([
+        ("Active Subscriptions", str(len(active_subs)), kpi_color,
+         f"Subscriptions not marked Inactive ({len(subs) - len(active_subs)} inactive).", ""),
+        ("Est. Monthly Cost", _fmt(monthly_cost), row_colors["Spend"],
+         "Sum of every active subscription's amount, normalized to a monthly rate.", ""),
+        ("Est. Annual Cost", _fmt(annual_cost), row_colors["Spend"],
+         "Est. Monthly Cost x 12.", ""),
+    ], per_row=3)
 
     st.divider()
 
@@ -1410,29 +1524,38 @@ with tab_subs:
     if "edit_sub_id" not in st.session_state:
         st.session_state.edit_sub_id = None
 
+    _sub_widths = [3, 1.4, 1.2, 0.6, 1, 0.6]
+
+    def _sub_header(*labels):
+        cols = st.columns(_sub_widths if len(labels) == 6 else [3, 1.4, 1.2, 2.2])
+        for col, label in zip(cols, labels):
+            col.caption(label)
+
     if subs:
         st.subheader("Your Subscriptions")
-        for s in subs:
+        _sub_header("Name", "Amount", "Per month", "", "", "")
+        # Active first, so what you're paying for is at the top.
+        for s in sorted(subs, key=lambda s: (not s["active"], s["name"].lower())):
             mc = s["amount"] * FREQ_MONTHLY[s["frequency"]]
             confirm_key = f"confirm_del_sub_{s['id']}"
             if confirm_key not in st.session_state:
                 st.session_state[confirm_key] = False
 
-            col1, col2, col3, col4, col5, col6 = st.columns([3, 1, 1, 1, 1, 1])
-            col1.markdown(f"**{s['name']}**")
-            col2.markdown(f"£{s['amount']:.2f} / {s['frequency']}")
-            col3.markdown(f"~£{mc:.2f}/mo")
-            if col4.button("✏️", key=f"edit_{s['id']}", help="Edit"):
-                st.session_state.edit_sub_id = None if st.session_state.edit_sub_id == s["id"] else s["id"]
-            label = "Disable" if s["active"] else "Enable"
-            if col5.button(label, key=f"toggle_{s['id']}"):
-                toggle_subscription(s["id"])
-                st.cache_data.clear()
-                st.rerun()
-            if col6.button("✕", key=f"del_{s['id']}"):
-                st.session_state[confirm_key] = True
-            if not s["active"]:
-                st.caption("⏸ Inactive")
+            with st.container(border=True):
+                col1, col2, col3, col4, col5, col6 = st.columns(_sub_widths, vertical_alignment="center")
+                status = "" if s["active"] else ' <span style="opacity:0.55;font-size:0.8rem;">⏸ inactive</span>'
+                col1.markdown(f"**{html.escape(s['name'])}**{status}", unsafe_allow_html=True)
+                col2.markdown(f"{_fmt(float(s['amount']))} / {s['frequency']}")
+                col3.markdown(f"~{_fmt(float(mc))}")
+                if col4.button("✏️", key=f"edit_{s['id']}", help="Edit"):
+                    st.session_state.edit_sub_id = None if st.session_state.edit_sub_id == s["id"] else s["id"]
+                label = "Disable" if s["active"] else "Enable"
+                if col5.button(label, key=f"toggle_{s['id']}", use_container_width=True):
+                    toggle_subscription(s["id"])
+                    st.cache_data.clear()
+                    st.rerun()
+                if col6.button("✕", key=f"del_{s['id']}", help="Delete"):
+                    st.session_state[confirm_key] = True
 
             if st.session_state.edit_sub_id == s["id"]:
                 with st.form(f"edit_sub_form_{s['id']}"):
@@ -1474,15 +1597,22 @@ with tab_subs:
     # ── Detected candidates ────────────────────────────────────────────────────
     st.subheader("Suggested Subscriptions")
     st.caption("Detected from recurring transactions — click Add to confirm.")
-    candidates = detect_subscriptions(df, confirmed_names)
+    # A subscription you've named yourself ("WIFI Subscription") still covers
+    # its merchant ("EE LTD"), so that merchant isn't suggested again.
+    candidates = detect_subscriptions(
+        df, confirmed_names | {s["merchant_name"] for s in subs if s["merchant_name"]})
     if candidates:
+        _sub_header("Merchant", "Typical amount", "Per month", "")
         for c in candidates:
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-            col1.markdown(f"**{c['name']}**")
-            col1.caption(f"{c['occurrences']} transactions")
-            col2.markdown(f"£{c['amount']:.2f} / {c['frequency']}")
-            col3.markdown(f"~£{c['monthly_cost']:.2f}/mo")
-            if col4.button("+ Add", key=f"add_{c['name']}"):
+            with st.container(border=True):
+                col1, col2, col3, col4 = st.columns([3, 1.4, 1.2, 2.2], vertical_alignment="center")
+                col1.markdown(f"**{html.escape(c['name'])}** "
+                              f'<span style="opacity:0.55;font-size:0.8rem;">{c["occurrences"]} payments</span>',
+                              unsafe_allow_html=True)
+                col2.markdown(f"{_fmt(float(c['amount']))} / {c['frequency']}")
+                col3.markdown(f"~{_fmt(float(c['monthly_cost']))}")
+                add_clicked = col4.button("+ Add", key=f"add_{c['name']}")
+            if add_clicked:
                 upsert_subscription(c["name"], c["amount"], c["frequency"], c["name"])
                 st.cache_data.clear()
                 st.rerun()
@@ -1496,51 +1626,51 @@ with tab_settings:
     st.caption("Manage categories and set each one's Role, which controls what counts as Income, Spend, Investment, Transfer, or is Excluded on the Overview and in Telegram summaries.")
 
     INHERIT = "(inherit)"
-    role_by_parent_id = {p["id"]: p["role"] for p in get_parents()}
-    sub_role_info = {s["id"]: s for s in get_subcategories()}
+    # Two queries for the whole tab: every count below comes from these,
+    # rather than one query per category (each of which used to rebuild every
+    # transaction, so this tab alone took most of a minute on every rerun).
+    _all_parents = get_parents()
+    _all_subs = get_subcategories()
+    role_by_parent_id = {p["id"]: p["role"] for p in _all_parents}
+    sub_role_info = {s["id"]: s for s in _all_subs}
 
     # Session state for right-panel mode
     for _k in ("tax_edit_sub", "tax_view_sub", "tax_edit_parent", "tax_del_parent", "tax_wipe_parent", "tax_del_sub"):
         if _k not in st.session_state:
             st.session_state[_k] = None
 
-    # Load all parents (used by both columns)
-    tax_parents = _query("""
-        SELECT p.id, p.name,
-               COUNT(DISTINCT s.id) AS sub_count,
-               COUNT(DISTINCT t.id) AS txn_count
-        FROM parent_categories p
-        LEFT JOIN subcategories s ON s.parent_id = p.id AND s.archived_at IS NULL
-        LEFT JOIN transactions t ON t.parent_id = p.id
-        WHERE p.archived_at IS NULL
-        GROUP BY p.id, p.name
-        ORDER BY txn_count DESC, p.name
-    """)
+    # Every live parent with its counts (used by both columns), busiest first.
+    subs_by_parent_id: dict[int, list[dict]] = {}
+    for s in _all_subs:  # already busiest-first within each parent
+        subs_by_parent_id.setdefault(s["parent_id"], []).append(
+            {"id": s["id"], "name": s["name"], "txn_count": s["transaction_count"]})
+    tax_parents = [
+        {"id": p["id"], "name": p["name"], "txn_count": p["transaction_count"],
+         "sub_count": len(subs_by_parent_id.get(p["id"], []))}
+        for p in _all_parents
+    ]
     tax_parent_names = [p["name"] for p in tax_parents]
 
     settings_stat_color = "rgba(127, 140, 141, 0.16)"
-    total_txns = _query("SELECT COUNT(*) AS n FROM transactions")[0]["n"]
-    total_classified = _query("SELECT COUNT(*) AS n FROM transactions WHERE llm_category IS NOT NULL")[0]["n"]
+    # Skipped transactions are never classified, so they're counted apart:
+    # "Unclassified" is what's still waiting, the same as Overview's count.
+    _not_skipped = df[df["skipped"] != True] if not df.empty else df
+    total_txns = len(_not_skipped)
+    total_classified = int(_not_skipped["llm_category"].notna().sum()) if total_txns else 0
     total_subs_all = sum(p["sub_count"] for p in tax_parents)
     classified_pct = (total_classified / total_txns * 100) if total_txns else 0.0
 
-    stat_cols = st.columns(4)
-    with stat_cols[0]:
-        st.markdown(_card("Parent Categories", str(len(tax_parents)), settings_stat_color,
-                           tooltip="Total parent categories in your taxonomy."),
-                    unsafe_allow_html=True)
-    with stat_cols[1]:
-        st.markdown(_card("Subcategories", str(total_subs_all), settings_stat_color,
-                           tooltip="Total subcategories across all parent categories."),
-                    unsafe_allow_html=True)
-    with stat_cols[2]:
-        st.markdown(_card("Classified", f"{classified_pct:.0f}%", settings_stat_color,
-                           tooltip=f"{total_classified} of {total_txns} transactions have a category assigned."),
-                    unsafe_allow_html=True)
-    with stat_cols[3]:
-        st.markdown(_card("Unclassified", str(total_txns - total_classified), settings_stat_color,
-                           tooltip="Transactions with no category assigned yet."),
-                    unsafe_allow_html=True)
+    _card_rows([
+        ("Parent Categories", str(len(tax_parents)), settings_stat_color,
+         "Total parent categories in your taxonomy.", ""),
+        ("Subcategories", str(total_subs_all), settings_stat_color,
+         "Total subcategories across all parent categories.", ""),
+        # One decimal: 793 of 794 is 99.9%, not a "100%" beside "1 unclassified".
+        ("Classified", f"{classified_pct:.1f}%", settings_stat_color,
+         f"{total_classified} of {total_txns} transactions (not counting skipped ones) have a category.", ""),
+        ("Unclassified", str(total_txns - total_classified), settings_stat_color,
+         "Transactions not skipped and with no category yet.", ""),
+    ])
 
     st.divider()
 
@@ -1578,14 +1708,7 @@ with tab_settings:
             pid = parent["id"]
             pname = parent["name"]
 
-            subs_for_parent = _query("""
-                SELECT s.id, s.name, COUNT(t.id) AS txn_count
-                FROM subcategories s
-                LEFT JOIN transactions t ON t.subcategory_id = s.id
-                WHERE s.parent_id = %s AND s.archived_at IS NULL
-                GROUP BY s.id, s.name
-                ORDER BY txn_count DESC, s.name
-            """, [pid])
+            subs_for_parent = subs_by_parent_id.get(pid, [])
 
             active_sub_ids = [
                 s["id"] for s in subs_for_parent
@@ -1594,7 +1717,8 @@ with tab_settings:
             is_active_parent = pid in (st.session_state.tax_edit_parent, st.session_state.tax_del_parent, st.session_state.tax_wipe_parent)
 
             current_role = role_by_parent_id.get(pid, "spend")
-            label = f"**{pname}** — {parent['txn_count']} txns · {parent['sub_count']} subcats · Role: {current_role}"
+            label = (f"**{pname}** · {parent['txn_count']} transactions · "
+                     f"{parent['sub_count']} subcategories · counts as {current_role}")
             with st.expander(label, expanded=bool(active_sub_ids or is_active_parent)):
 
                 new_role = st.selectbox(
@@ -1637,7 +1761,7 @@ with tab_settings:
                     for sub in subs_for_parent:
                         sid = sub["id"]
                         is_sel = sid in (st.session_state.tax_edit_sub, st.session_state.tax_view_sub)
-                        sc1, sc_role, sc2, sc3, sc4 = st.columns([3, 2, 1, 1, 1])
+                        sc1, sc_role, sc2, sc3, sc4 = st.columns([3, 2, 1, 1, 1], vertical_alignment="center")
                         with sc1:
                             label_text = f"**{sub['name']}**" if is_sel else sub["name"]
                             st.markdown(f"{label_text} *({sub['txn_count']})*")
@@ -1770,17 +1894,9 @@ with tab_settings:
         # Delete subcategory confirmation
         elif st.session_state.tax_del_sub:
             sid = st.session_state.tax_del_sub
-            sub_rows = _query("""
-                SELECT s.id, s.name, p.name AS parent_name,
-                       COUNT(t.id) AS txn_count
-                FROM subcategories s
-                JOIN parent_categories p ON p.id = s.parent_id
-                LEFT JOIN transactions t ON t.subcategory_id = s.id
-                WHERE s.id = %s
-                GROUP BY s.id, s.name, p.name
-            """, [sid])
+            sub_rows = [s for s in _all_subs if s["id"] == sid]
             if sub_rows:
-                sub = sub_rows[0]
+                sub = {**sub_rows[0], "txn_count": sub_rows[0]["transaction_count"]}
                 st.subheader(f"Delete: {sub['name']}")
                 st.warning(
                     f"This will permanently delete **{sub['name']}** (under {sub['parent_name']}) "
@@ -1892,21 +2008,25 @@ with tab_settings:
 
                 if txns:
                     txns_df = pd.DataFrame(txns)
-                    txns_df["amount"] = txns_df["amount"].apply(lambda x: f"£{abs(float(x)):.2f}")
-                    txns_df["created_at"] = pd.to_datetime(txns_df["created_at"]).dt.strftime("%Y-%m-%d")
+                    txns_df["amount"] = txns_df["amount"].astype(float)
+                    txns_df["created_at"] = pd.to_datetime(txns_df["created_at"])
                     # merchant_name is blank for direct debits/bank transfers,
                     # which populate counterparty_name instead -- a subcategory
                     # dominated by bills would otherwise show an empty Merchant
                     # column for nearly every row here.
                     txns_df["merchant_name"] = merchant_display_name(txns_df)
                     txns_df = txns_df.rename(columns={
-                        "created_at": "Date", "merchant_name": "Merchant",
+                        "created_at": "Date", "merchant_name": "Merchant / payee",
                         "description": "Description", "amount": "Amount", "user_context": "Context",
                     })
                     st.dataframe(
-                        txns_df[["Date", "Merchant", "Description", "Amount", "Context"]],
+                        txns_df[["Date", "Merchant / payee", "Description", "Amount", "Context"]],
                         width="stretch",
                         hide_index=True,
+                        column_config={
+                            "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                            "Amount": st.column_config.NumberColumn("Amount", format="£%,.2f"),
+                        },
                     )
                     st.caption(f"{len(txns)} transaction(s)")
                 else:
