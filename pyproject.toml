@@ -38,6 +38,9 @@ pandas = ">=3.0.3,<4.0.0"
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"
 pytest-cov = ">=5,<8"
+# FastAPI's TestClient needs it. It used to arrive with the anthropic SDK,
+# which from 1.x depends on httpx2 instead.
+httpx = ">=0.28,<1.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

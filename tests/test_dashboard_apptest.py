@@ -116,7 +116,10 @@ def test_subscription_can_be_edited(db):
 
     # number_input[0] is the "Add Subscription" form's amount field (always
     # rendered); the edit form's amount field is the second one on the page.
-    at.tabs[5].number_input[1].set_value(12.99).run()
+    # The new amount and the Save click go in one run, as a browser sends
+    # them: a value typed into a form only counts once the form is submitted,
+    # so a run in between (which newer Streamlit honours) would drop it.
+    at.tabs[5].number_input[1].set_value(12.99)
     save_button = next(b for b in at.tabs[5].button if b.label == "Save")
     save_button.click().run()
 
