@@ -26,7 +26,7 @@ dependencies = [
 # its `worker` container: the Dockerfile installs `--only main,worker`.
 [tool.poetry.group.worker.dependencies]
 python-dotenv = ">=1.2.2,<2.0.0"
-anthropic = ">=0.104.1,<0.105.0"
+anthropic = ">=2.3.0,<2.4.0"
 
 # The Streamlit dashboard, on your own machine. Installed by a plain
 # `poetry install` like any other group, so local setup and CI are unchanged.
