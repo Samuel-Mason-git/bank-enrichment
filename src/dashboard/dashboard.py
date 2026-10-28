@@ -577,19 +577,21 @@ with tab_overview:
 
     def _breakdown_chart(col, key_prefix: str, title: str, metric: str, color_scale: str, sign: str):
         with col:
-            group_by = st.radio(
-                "Group by", ["Category", "Subcategory"],
-                key=f"{key_prefix}_group_by", horizontal=True,
-            )
-            group_col = "llm_subcategory" if group_by == "Subcategory" else "llm_category"
-            breakdown = role_breakdown(filtered, ROLE_METRICS[metric], group_col, sign=sign)
-            # One category on its own (Income is all "Income") is a single bar
-            # that says nothing -- its subcategories are what's worth seeing.
-            if group_by == "Category" and len(breakdown) == 1:
-                only = breakdown.iloc[0]["Category"]
-                group_by, group_col = "Subcategory", "llm_subcategory"
-                breakdown = role_breakdown(filtered, ROLE_METRICS[metric], group_col, sign=sign)
-                st.caption(f"All of it is {only}, so here it is by subcategory.")
+            # A choice of grouping only when there's a choice: with one
+            # category (Income is all "Income") grouping by category is a
+            # single bar, so it goes straight to the subcategories.
+            by_category = role_breakdown(filtered, ROLE_METRICS[metric], "llm_category", sign=sign)
+            if len(by_category) > 1:
+                group_by = st.radio(
+                    "Group by", ["Category", "Subcategory"],
+                    key=f"{key_prefix}_group_by", horizontal=True,
+                )
+            else:
+                group_by = "Subcategory"
+            if group_by == "Category":
+                breakdown = by_category
+            else:
+                breakdown = role_breakdown(filtered, ROLE_METRICS[metric], "llm_subcategory", sign=sign)
             breakdown = breakdown.sort_values("Amount", ascending=True)
             if not breakdown.empty:
                 fig = px.bar(breakdown, x="Amount", y=group_by, orientation="h",
@@ -746,29 +748,37 @@ with tab_time:
         if metric_time.empty:
             st.info(f"No {metric.lower()} in range.")
             return
-        col1, col2 = st.columns(2)
-        with col1:
-            st.caption("All categories")
-            monthly = _every_month(role_breakdown(
-                metric_time, ROLE_METRICS[metric], "llm_category", by_month=True, sign=sign), "Category")
-            category_order = monthly.groupby("Category")["Amount"].sum().sort_values(ascending=False).index.tolist()
-            fig = px.line(monthly, x="Month", y="Amount", color="Category", markers=True,
-                          title=f"Monthly {metric} by Category",
-                          labels={"Amount": f"{metric} (£)"},
-                          category_orders={"Category": category_order})
-            _add_total_and_trend(fig, monthly)
-            # "Month" is a monthly bin ("2026-07"), not a specific day -- without
-            # forcing a category axis, Plotly auto-detects it as a date and
-            # snaps every point to the 1st, implying a precision the data
-            # doesn't have (it's a whole month's total, not a day-1 reading).
-            fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
-                              xaxis_type="category", xaxis_categoryorder="category ascending")
-            st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_category_chart")
+        monthly = _every_month(role_breakdown(
+            metric_time, ROLE_METRICS[metric], "llm_category", by_month=True, sign=sign), "Category")
+        available_cats = sorted(metric_time[metric_time["llm_category"].notna()]["llm_category"].unique())
+        # With one category (Income is all "Income") its chart would be a
+        # single line, and picking which category's subcategories to see no
+        # choice at all: the subcategory chart gets the full width instead.
+        single = monthly["Category"].nunique() <= 1
+        if single:
+            col2 = st.container()
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("All categories")
+                category_order = monthly.groupby("Category")["Amount"].sum().sort_values(ascending=False).index.tolist()
+                fig = px.line(monthly, x="Month", y="Amount", color="Category", markers=True,
+                              title=f"Monthly {metric} by Category",
+                              labels={"Amount": f"{metric} (£)"},
+                              category_orders={"Category": category_order})
+                _add_total_and_trend(fig, monthly)
+                # "Month" is a monthly bin ("2026-07"), not a specific day -- without
+                # forcing a category axis, Plotly auto-detects it as a date and
+                # snaps every point to the 1st, implying a precision the data
+                # doesn't have (it's a whole month's total, not a day-1 reading).
+                fig.update_layout(xaxis_tickangle=-45, margin=dict(t=40), height=380,
+                                  xaxis_type="category", xaxis_categoryorder="category ascending")
+                st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_category_chart")
 
         with col2:
-            available_cats = sorted(metric_time[metric_time["llm_category"].notna()]["llm_category"].unique())
             if available_cats:
-                selected_cat = st.selectbox("View subcategories for", available_cats, key=f"{key_prefix}_sub_cat")
+                selected_cat = (available_cats[0] if single else
+                                st.selectbox("View subcategories for", available_cats, key=f"{key_prefix}_sub_cat"))
                 sub_data = metric_time[metric_time["llm_category"] == selected_cat]
                 monthly_sub = _every_month(role_breakdown(
                     sub_data, ROLE_METRICS[metric], "llm_subcategory", by_month=True, sign=sign), "Subcategory")
