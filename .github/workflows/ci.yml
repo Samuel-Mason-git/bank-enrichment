@@ -38,7 +38,7 @@ jobs:
       # what production runs. Read from pyproject's ">=3.11" this was always the
       # newest Python, and a brand-new one has no ready-built wheels for some
       # dependencies yet -- the install then tries to compile them, and fails.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
