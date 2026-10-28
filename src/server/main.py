@@ -750,12 +750,6 @@ async def recieve_telegram(request: Request):
                 return {"ok": True}
             bot.send_message(chat_id, f"✅ Saved as {category} → {subcategory_name}")
 
-        elif cq.data and cq.data.startswith("quickcat:"):
-            # A button from a card sent before the move. Its number pointed at a
-            # row of a table that no longer exists, so it can't be trusted to
-            # mean the category it showed.
-            bot.send_message(chat_id, "That button is from before an update. Tap ✏️ Enrich instead.")
-
         elif cq.data == "skip_cancel":
             if chat_id in _pending_skips:
                 _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
