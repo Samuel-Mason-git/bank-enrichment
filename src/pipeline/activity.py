@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import traceback
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -64,11 +65,32 @@ def start_run(con) -> int:
     ).fetchone()[0]
 
 
-def finish_run(con, run_id: int, status: str, summary: dict) -> None:
+def finish_run(con, run_id: int, status: str, summary: dict, steps: dict | None = None,
+               memory: dict | None = None) -> None:
     con.execute(
-        "UPDATE runs SET finished_at = now(), status = %s, summary = %s WHERE run_id = %s",
-        [status, json.dumps(summary), run_id],
+        "UPDATE runs SET finished_at = now(), status = %s, summary = %s, steps = %s, memory = %s WHERE run_id = %s",
+        [status, json.dumps(summary), json.dumps(steps or {}), json.dumps(memory or {}), run_id],
     )
+
+
+# The container's memory, from its cgroup (cgroup v2), as the pipelines
+# project reads it. memory.peak is since the container started (the worker
+# is long-lived), so memory.current at the end of a run is the per-run figure.
+CGROUP = Path("/sys/fs/cgroup")
+
+
+def memory() -> dict:
+    """{"current_mb", "peak_mb", "limit_mb"} as far as they can be read --
+    empty off Linux or without the files."""
+    found = {}
+    for key, name in (("current_mb", "memory.current"), ("peak_mb", "memory.peak"), ("limit_mb", "memory.max")):
+        try:
+            value = (CGROUP / name).read_text().strip()
+            if value != "max":
+                found[key] = round(int(value) / 1_048_576)
+        except (OSError, ValueError):
+            pass
+    return found
 
 
 def skipped_run(con) -> None:
@@ -92,6 +114,12 @@ def run_summary(con, run_id: int) -> dict:
         n = con.execute(f"SELECT COUNT(*) FROM {table} WHERE proposed_at >= %s", [started]).fetchone()[0]
         if n:
             summary[name] = n
+    calls, spent = con.execute(
+        "SELECT COUNT(*), COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE run_id = %s", [run_id]
+    ).fetchone()
+    if calls:
+        summary["llm_calls"] = calls
+        summary["llm_cost_usd"] = round(float(spent), 4)
     errors = con.execute(
         "SELECT COUNT(*) FROM log_events WHERE service = 'worker' AND level IN ('ERROR', 'CRITICAL') "
         "AND logged_at >= %s", [started],
@@ -104,3 +132,6 @@ def run_summary(con, run_id: int) -> dict:
 def clear_old(con) -> None:
     con.execute(f"DELETE FROM log_events WHERE logged_at < now() - INTERVAL '{KEEP_DAYS} days'")
     con.execute(f"DELETE FROM runs WHERE started_at < now() - INTERVAL '{KEEP_DAYS} days'")
+    # Calls to Claude are kept for good; only their text goes, after a year.
+    import llm_calls
+    llm_calls.clear_old_text(con)

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 import anthropic
 
 import alerts
+import llm_calls
 import category_proposals
 from database_functions import (
     get_con, get_parents, get_subcategories, get_subcategory_examples,
@@ -273,14 +274,22 @@ class PlacementReviewer:
 
     # -- review --
 
-    def _call(self, prompt: str) -> dict | None:
+    def _call(self, prompt: str, txn_id: str | None = None) -> dict | None:
         if self._out_of_credit:
             return None
         try:
-            response = self.client.messages.create(
+            response = llm_calls.create(
+                self.client, job="placement_judge", prompt_fn=build_prompt,
+                txn_ids=[txn_id] if txn_id else [],
                 model=self.model, max_tokens=MAX_TOKENS, messages=[{"role": "user", "content": prompt}]
             )
-            return parse_verdict(response.content[0].text)
+            try:
+                verdict = parse_verdict(response.content[0].text)
+            except ValueError:
+                llm_calls.parsed(False, 0, 1)
+                raise
+            llm_calls.parsed(True, 1, 1)
+            return verdict
         except anthropic.BadRequestError as e:
             if "credit balance" in str(e):
                 self._out_of_credit = True
@@ -318,7 +327,7 @@ class PlacementReviewer:
         # run concurrently. Everything above and below stays on this thread,
         # where the database connection is used.
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            verdicts = list(pool.map(self._call, prompts))
+            verdicts = list(pool.map(self._call, prompts, [txn["id"] for txn, _, _ in todo]))
 
         for (txn, category, subcategory), verdict in zip(todo, verdicts):
             if verdict is None:
