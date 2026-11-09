@@ -415,6 +415,158 @@ def update_transaction_details(transaction_id: str, created_at, user_context: st
     )
 
 
+# ── The queue and one payment (the dashboard's Queue and Payment pages) ──────
+#
+# Written the way the server writes them (server_db.record_context), so a skip
+# or an answer from the dashboard is the same as one from Telegram.
+
+# Where a payment is up to: no answer yet, answered but not yet classified,
+# held behind a new-category card waiting for your pick, classified, or skipped.
+STATUS_SQL = """CASE WHEN t.skipped THEN 'skipped'
+                     WHEN t.enriched_at IS NULL THEN 'pending'
+                     WHEN t.llm_subcategory IS NULL AND t.pending_category_proposal_id IS NOT NULL THEN 'held'
+                     WHEN t.llm_subcategory IS NULL THEN 'enriched'
+                     ELSE 'classified' END"""
+
+
+def set_context(transaction_id: str, context: str | None, *, skipped: bool = False) -> None:
+    """A payment's context given, changed, skipped or unskipped from the
+    dashboard: a new context event carrying any corrected date forward. A label
+    a rule set is cleared, since what you said now decides the category."""
+    con = get_con()
+    with con.transaction():
+        previous = con.execute(
+            """SELECT created_at_override FROM context_events
+               WHERE txn_id = %s AND source <> 'request' ORDER BY event_id DESC LIMIT 1""",
+            [transaction_id],
+        ).fetchone()
+        con.execute(
+            """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
+               VALUES (%s, %s, %s, %s, 'dashboard', %s)""",
+            [transaction_id, context, skipped, previous[0] if previous else None, _now()],
+        )
+        label_source = con.execute(
+            "SELECT source FROM label_events WHERE txn_id = %s ORDER BY event_id DESC LIMIT 1", [transaction_id]
+        ).fetchone()
+        if label_source and label_source[0] == "rule":
+            con.execute(
+                "INSERT INTO label_events (txn_id, source, set_at) VALUES (%s, 'manual', %s)",
+                [transaction_id, _now()],
+            )
+
+
+def skip_transaction(transaction_id: str) -> None:
+    set_context(transaction_id, "Skipped", skipped=True)
+
+
+def unskip_transaction(transaction_id: str) -> None:
+    """Counted again, with no context: the classifier picks it up on its next run."""
+    set_context(transaction_id, None, skipped=False)
+
+
+def delete_transaction(transaction_id: str) -> None:
+    """Gone for good, with its history -- for a test payment or a mistake, not
+    for something you'd rather not see (skip that instead)."""
+    con = get_con()
+    with con.transaction():
+        for table in ("label_events", "context_events", "judge_reviews", "transaction_updates"):
+            con.execute(f"DELETE FROM {table} WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM transactions_raw WHERE id = %s", [transaction_id])
+    log.info(f"Transaction deleted from the dashboard: {transaction_id}")
+
+
+def get_queue_transactions() -> list[dict]:
+    """Every payment with where it's up to and how often you were asked about
+    it, newest first. The Queue page shows the pending and enriched ones."""
+    return _rows(
+        f"""WITH asks AS (SELECT txn_id, COUNT(*) AS times_asked, MAX(set_at) AS last_asked
+                          FROM context_events WHERE source = 'request' GROUP BY txn_id)
+            SELECT t.id, t.created_at, t.received_at, t.amount, t.merchant_name, t.counterparty_name,
+                   t.description, t.user_context, t.skipped, t.llm_category, t.llm_subcategory,
+                   {STATUS_SQL} AS status,
+                   COALESCE(a.times_asked, 0) AS times_asked,
+                   a.last_asked AT TIME ZONE 'Europe/London' AS last_asked
+            FROM transactions t LEFT JOIN asks a ON a.txn_id = t.id
+            ORDER BY t.created_at DESC"""
+    )
+
+
+def get_payment(transaction_id: str) -> dict | None:
+    """One payment as the Payment page shows it: the transactions view's row,
+    its status, and how often you were asked about it."""
+    rows = _rows(
+        f"""SELECT t.*, {STATUS_SQL} AS status,
+                   (SELECT COUNT(*) FROM context_events e
+                    WHERE e.txn_id = t.id AND e.source = 'request') AS times_asked
+            FROM transactions t WHERE t.id = %s""",
+        [transaction_id],
+    )
+    return rows[0] if rows else None
+
+
+def get_payment_history(transaction_id: str) -> list[dict]:
+    """Everything that's happened to a payment, oldest first: it arriving,
+    Monzo updating it, each question, answer, skip and label, and the judge's
+    reviews. Times in London."""
+    return _rows(
+        """SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.extra FROM (
+               SELECT received_at AS at, 'arrived' AS kind, 'webhook' AS source,
+                      NULL::TEXT AS detail, NULL::TEXT AS extra
+               FROM transactions_raw WHERE id = %(id)s
+               UNION ALL
+               SELECT received_at, 'updated', source, NULL, NULL
+               FROM transaction_updates WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT set_at,
+                      CASE WHEN source = 'request' THEN 'asked'
+                           WHEN skipped THEN 'skipped'
+                           WHEN user_context IS NULL THEN 'context cleared'
+                           ELSE 'context' END,
+                      source, user_context,
+                      CASE WHEN created_at_override IS NOT NULL
+                           THEN 'date set to ' || to_char(created_at_override AT TIME ZONE 'Europe/London',
+                                                          'DD Mon YYYY HH24:MI') END
+               FROM context_events WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT l.set_at,
+                      CASE WHEN l.parent_id IS NULL THEN 'label cleared' ELSE 'labelled' END,
+                      l.source,
+                      CASE WHEN p.name IS NOT NULL THEN p.name || COALESCE(' › ' || s.name, '') END,
+                      concat_ws(' · ', l.model,
+                                CASE WHEN l.confidence IS NOT NULL
+                                     THEN round(l.confidence * 100)::TEXT || '%% sure' END)
+               FROM label_events l
+               LEFT JOIN parent_categories p ON p.id = l.parent_id
+               LEFT JOIN subcategories s ON s.id = l.subcategory_id
+               WHERE l.txn_id = %(id)s
+               UNION ALL
+               SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory, outcome
+               FROM judge_reviews WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT proposed_at, 'proposed', 'proposal',
+                      (SELECT string_agg((o->>'parent_name') || ' › ' || (o->>'subcategory_name'), ' / ')
+                       FROM jsonb_array_elements(options) o),
+                      status
+               FROM category_proposals WHERE txn_ids ? %(id)s
+           ) h
+           ORDER BY h.at""",
+        {"id": transaction_id},
+    )
+
+
+def get_lifetime_stats() -> dict:
+    """Totals since the start, as the server's old queue page showed them."""
+    return _rows(
+        """SELECT (SELECT COUNT(*) FROM transactions_raw) AS received,
+                  (SELECT COUNT(*) FROM context_events WHERE source = 'request') AS asked,
+                  (SELECT COUNT(DISTINCT txn_id) FROM context_events
+                   WHERE source NOT IN ('request', 'timeout') AND user_context IS NOT NULL) AS answered,
+                  (SELECT COUNT(*) FROM (SELECT DISTINCT ON (txn_id) subcategory_id FROM label_events
+                                         ORDER BY txn_id, event_id DESC) l
+                   WHERE l.subcategory_id IS NOT NULL) AS classified"""
+    )[0]
+
+
 def apply_quick_tap_classifications(review=None) -> int:
     """Classify transactions whose user_context exactly matches an existing
     'Category - Subcategory' pair (written by a Telegram quick-tap button),
