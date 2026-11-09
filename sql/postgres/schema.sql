@@ -234,6 +234,9 @@ ALTER TABLE rule_suggestions DROP CONSTRAINT IF EXISTS rule_suggestions_status_c
 ALTER TABLE rule_suggestions ADD CONSTRAINT rule_suggestions_status_check
     CHECK (status IN ('pending', 'approved', 'denied', 'declined'));
 ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]';
+-- Reminders for a card still unanswered (follow_up_tg.run_category_follow_ups).
+ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS follow_up_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE category_proposals ADD COLUMN IF NOT EXISTS last_nudged_at  TIMESTAMPTZ;
 
 -- Every later version of a transaction: the other webhooks Monzo sends for it
 -- (settlement, a merchant filled in, a final amount, a note), and what Monzo's

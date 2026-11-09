@@ -153,6 +153,44 @@ TAXONOMY_FOLLOW_UPS = [
 ]
 
 
+# A new-category card holds its payments back from the classifier until it's
+# answered, so it's chased sooner than a taxonomy card: a day after it went,
+# then once more three days later -- and then it stops asking and simply
+# waits (nothing is ever applied unanswered).
+CATEGORY_FOLLOW_UPS = [
+    (0, 86_400),       # a day after the card was sent
+    (1, 86_400 * 3),   # three days after that, the last reminder
+]
+
+
+def run_category_follow_ups(bot) -> None:
+    """Re-send new-category (and second-look) cards still waiting for a pick."""
+    con = get_con()
+    for follow_up_count, delay_seconds in CATEGORY_FOLLOW_UPS:
+        rows = con.execute(
+            """SELECT id, options, txn_ids, examples FROM category_proposals
+               WHERE status = 'pending' AND sent_at IS NOT NULL AND follow_up_count = %s
+                 AND COALESCE(last_nudged_at, sent_at) <= %s ORDER BY id""",
+            [follow_up_count, _cutoff(delay_seconds)]
+        ).fetchall()
+        if not rows:
+            continue
+        try:
+            chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
+            for proposal_id, options, txn_ids, examples in rows:
+                bot.send_category_proposal(chat_id, {
+                    "local_id": proposal_id, "options": options, "txn_count": len(txn_ids),
+                    "examples": examples, "follow_up": follow_up_count + 1,
+                    "last_reminder": follow_up_count + 1 == len(CATEGORY_FOLLOW_UPS),
+                })
+                con.execute(
+                    "UPDATE category_proposals SET follow_up_count = follow_up_count + 1, last_nudged_at = %s "
+                    "WHERE id = %s", [now(), proposal_id])
+            log.info(f"Category card follow-up {follow_up_count + 1} sent for {len(rows)} card(s)")
+        except Exception as e:
+            log.error(f"Category card follow-up {follow_up_count + 1} failed: {e}", exc_info=True)
+
+
 def run_taxonomy_follow_ups(bot) -> None:
     """Re-send the cards for proposals still awaiting a decision."""
     con = get_con()
@@ -220,7 +258,8 @@ def run_merchant_repair(bot) -> None:
 async def requester_loop(bot) -> None:
     while True:
         await asyncio.sleep(300)  # check every 5 minutes
-        for job in (run_new_cards, run_requester, run_taxonomy_follow_ups, run_merchant_repair):
+        for job in (run_new_cards, run_requester, run_category_follow_ups, run_taxonomy_follow_ups,
+                    run_merchant_repair):
             # In a thread: Telegram and the database can be slow, and retries
             # wait -- none of which may hold up a webhook arriving meanwhile.
             try:
