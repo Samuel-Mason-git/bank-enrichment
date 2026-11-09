@@ -8,6 +8,10 @@ from streamlit.testing.v1 import AppTest
 
 from tests.local_helpers import ensure_category, write_to_db as _write_to_db
 
+# Tab positions: Overview, Over Time, Transactions, Drill-Down, Merchants,
+# Subscriptions, Rules, Settings.
+SUBS, RULES, SETTINGS = 5, 6, 7
+
 _DASHBOARD_PATH = str(
     Path(__file__).parent.parent / "src" / "dashboard" / "dashboard.py"
 )
@@ -82,13 +86,13 @@ def test_subscription_delete_requires_confirmation(db):
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    subs_tab = at.tabs[5]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    subs_tab = at.tabs[SUBS]
     delete_button = next(b for b in subs_tab.button if b.label == "✕")
     delete_button.click().run()
 
     assert not at.exception
     assert database_functions.get_subscriptions(), "subscription should not be deleted yet"
-    assert any("Delete" in w.value for w in at.tabs[5].warning)
+    assert any("Delete" in w.value for w in at.tabs[SUBS].warning)
 
 
 def test_savings_rate_shows_dash_when_no_income(db):
@@ -110,7 +114,7 @@ def test_subscription_can_be_edited(db):
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    subs_tab = at.tabs[5]
+    subs_tab = at.tabs[SUBS]
     edit_button = next(b for b in subs_tab.button if b.label == "✏️")
     edit_button.click().run()
 
@@ -119,8 +123,8 @@ def test_subscription_can_be_edited(db):
     # The new amount and the Save click go in one run, as a browser sends
     # them: a value typed into a form only counts once the form is submitted,
     # so a run in between (which newer Streamlit honours) would drop it.
-    at.tabs[5].number_input[1].set_value(12.99)
-    save_button = next(b for b in at.tabs[5].button if b.label == "Save")
+    at.tabs[SUBS].number_input[1].set_value(12.99)
+    save_button = next(b for b in at.tabs[SUBS].button if b.label == "Save")
     save_button.click().run()
 
     assert not at.exception
@@ -133,7 +137,7 @@ def test_subscription_can_be_edited(db):
 def test_settings_tab_shows_default_category_roles(db):
     _seed(db)  # seeds the full default taxonomy
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    settings_tab = at.tabs[SETTINGS]
 
     parents = {p["name"]: p for p in database_functions.get_parents()}
     role_selectboxes = {sb.key: sb.value for sb in settings_tab.selectbox if sb.key.startswith("role_") and not sb.key.startswith("role_sub_")}
@@ -151,7 +155,7 @@ def test_settings_tab_role_edit_persists(db):
     could return in an unstable order across reruns."""
     _seed(db)
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]
+    settings_tab = at.tabs[SETTINGS]
 
     parents_before = {p["name"]: p for p in database_functions.get_parents()}
     bills_id = parents_before["Bills & Utilities"]["id"]
@@ -167,7 +171,7 @@ def test_settings_tab_role_edit_persists(db):
 def test_settings_tab_subcategory_override_persists(db):
     _seed(db)
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]
+    settings_tab = at.tabs[SETTINGS]
 
     subs_before = {s["name"]: s for s in database_functions.get_subcategories() if s["parent_name"] == "Income"}
     refunds_id = subs_before["Refunds"]["id"]
@@ -191,11 +195,11 @@ def test_settings_rename_subcategory_to_existing_name_shows_error_not_crash(db):
     groceries_id = subs["Groceries"]["id"]
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]
+    settings_tab = at.tabs[SETTINGS]
     edit_btn = next(b for b in settings_tab.button if b.key == f"es_{groceries_id}")
     edit_btn.click().run()
 
-    settings_tab2 = at.tabs[6]
+    settings_tab2 = at.tabs[SETTINGS]
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "Name")
     name_input.set_value("Restaurants")  # already exists under Food & Drink
     parent_select = next(sb for sb in settings_tab2.selectbox if sb.label == "Parent category")
@@ -204,7 +208,7 @@ def test_settings_rename_subcategory_to_existing_name_shows_error_not_crash(db):
     save_btn.click().run()
 
     assert not at.exception
-    settings_tab3 = at.tabs[6]
+    settings_tab3 = at.tabs[SETTINGS]
     assert any("already exists" in e.value for e in settings_tab3.error)
     subs_after = {s["id"]: s["name"] for s in database_functions.get_subcategories()}
     assert subs_after[groceries_id] == "Groceries", "the rename must not have gone through"
@@ -221,11 +225,11 @@ def test_settings_rename_parent_carries_over_custom_role(db):
     database_functions.set_parent_role(health_id, "excluded")
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]
+    settings_tab = at.tabs[SETTINGS]
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
 
-    settings_tab2 = at.tabs[6]
+    settings_tab2 = at.tabs[SETTINGS]
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "New name")
     name_input.set_value("Health & Wellness")
     save_btn = next(b for b in settings_tab2.button if b.label == "Save" and b.proto.type == "primary")
@@ -247,18 +251,18 @@ def test_settings_rename_parent_to_existing_name_shows_error_not_silent_merge(db
     health_id = parents["Health"]["id"]
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[6]
+    settings_tab = at.tabs[SETTINGS]
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
 
-    settings_tab2 = at.tabs[6]
+    settings_tab2 = at.tabs[SETTINGS]
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "New name")
     name_input.set_value("Income")  # already exists as a different parent
     save_btn = next(b for b in settings_tab2.button if b.label == "Save" and b.proto.type == "primary")
     save_btn.click().run()
 
     assert not at.exception
-    settings_tab3 = at.tabs[6]
+    settings_tab3 = at.tabs[SETTINGS]
     assert any("already exists" in e.value for e in settings_tab3.error)
     parents_after = {p["name"] for p in database_functions.get_parents()}
     assert "Health" in parents_after, "Health must still exist, unmerged"
@@ -330,7 +334,7 @@ def test_category_drilldown_shows_invested_not_spend_for_investments(db):
     )
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    drill_tab = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    drill_tab = at.tabs[3]
     cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
     cat_select.set_value("Investments").run()
 
@@ -396,7 +400,7 @@ def test_inbound_and_outbound_transfers_match_between_overview_and_drilldown(db)
 
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
 
-    drill_tab = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    drill_tab = at.tabs[3]
     cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
     cat_select.set_value("Transfers").run()
     drill_tab2 = at.tabs[3]
@@ -533,7 +537,7 @@ def test_manual_backup_button_writes_a_backup(db):
     at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
     assert database_functions.list_backups() == []
 
-    settings_tab = at.tabs[6]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+    settings_tab = at.tabs[SETTINGS]
     next(b for b in settings_tab.button if b.label == "Back up now").click().run()
 
     assert not at.exception
@@ -544,13 +548,13 @@ def test_manual_backup_button_writes_a_backup(db):
     # The listing must say what was actually saved, not just that a backup
     # happened -- the seed holds exactly one transaction.
     summary = next(
-        md.value for md in at.tabs[6].markdown if "Latest backup" in md.value
+        md.value for md in at.tabs[SETTINGS].markdown if "Latest backup" in md.value
     )
     assert "1 transactions" in summary
 
 
 def _settings_button(at, label: str):
-    return next(b for b in at.tabs[6].button if b.label == label)
+    return next(b for b in at.tabs[SETTINGS].button if b.label == label)
 
 
 def test_backup_delete_requires_confirmation(db):
@@ -565,7 +569,7 @@ def test_backup_delete_requires_confirmation(db):
 
     assert not at.exception
     assert len(database_functions.list_backups()) == 1, "must not delete on the first click"
-    assert any("cannot be recovered" in w.value for w in at.tabs[6].warning)
+    assert any("cannot be recovered" in w.value for w in at.tabs[SETTINGS].warning)
 
 
 def test_backup_delete_confirmed_removes_it(db):
@@ -586,7 +590,7 @@ def test_backup_delete_can_be_cancelled(db):
     before = database_functions.list_backups()
 
     _settings_button(at, "Delete backup").click().run()
-    next(b for b in at.tabs[6].button if b.key == "confirm_del_backup_no").click().run()
+    next(b for b in at.tabs[SETTINGS].button if b.key == "confirm_del_backup_no").click().run()
     # AppTest does not follow the st.rerun() the Cancel handler triggers -- the
     # captured tree is the one rendered up to that call, which still holds the
     # confirmation. One more run() gives the tree the browser would show.
@@ -594,7 +598,7 @@ def test_backup_delete_can_be_cancelled(db):
 
     assert not at.exception
     assert database_functions.list_backups() == before
-    assert not any("cannot be recovered" in w.value for w in at.tabs[6].warning)
+    assert not any("cannot be recovered" in w.value for w in at.tabs[SETTINGS].warning)
 
 
 def test_backup_delete_warns_when_it_is_the_only_one(db):
@@ -603,7 +607,7 @@ def test_backup_delete_warns_when_it_is_the_only_one(db):
     _settings_button(at, "Back up now").click().run()
     _settings_button(at, "Delete backup").click().run()
 
-    warning = next(w.value for w in at.tabs[6].warning if "cannot be recovered" in w.value)
+    warning = next(w.value for w in at.tabs[SETTINGS].warning if "cannot be recovered" in w.value)
     assert "only backup" in warning
 
 
@@ -750,7 +754,7 @@ class TestInvestedAndSavedStayNumericallySeparate:
     def test_category_drill_down_keeps_them_on_separate_cards(self, db):
         _seed_investment_and_saving(db)
         at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        drill = at.tabs[3]  # Overview, Time, Txns, Drill, Merchants, Subs, Settings
+        drill = at.tabs[3]
         drill.selectbox(key="drill_selected_category").set_value("Investments").run()
         assert _has_card(at.tabs[3], "Invested", "£250.00")
         assert not _has_card(at.tabs[3], "Saved", "£500.00"), \
@@ -879,3 +883,107 @@ class TestOverviewNetsSavingAndInvestmentButNotTransfers:
         assert _has_card(overview, "Transferred / Excluded (Incoming)", "£300.00")
         assert not _has_card(overview, "Transferred / Excluded", "£180.00"), \
             "unrelated inbound/outbound transfers must not net into a single figure"
+
+
+# ── Rules tab ─────────────────────────────────────────────────────────────────
+
+def _add_tesco_rule(**overrides) -> int:
+    rule = {"name": "Tesco", "match_field": "merchant_name", "match_type": "contains", "match_value": "tesco",
+            "auto_context": "Groceries", "auto_skip": False, "subcategory_id": None}
+    return database_functions.add_rule({**rule, **overrides})
+
+
+def test_rules_tab_previews_and_adds_a_rule(db):
+    _seed(db)
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.text_input(key="rule_name").set_value("Weekly shop")
+    at.text_input(key="rule_v1").set_value("tesco")
+    at.text_input(key="rule_ctx").set_value("Groceries")
+    at.run()
+
+    assert not at.exception
+    assert any("Would have caught 1" in md.value for md in at.tabs[RULES].markdown)
+    next(b for b in at.tabs[RULES].button if b.label == "Add rule").click().run()
+
+    assert not at.exception
+    rules = database_functions.get_rules()
+    assert [(r["name"], r["match_field"], r["match_type"], r["match_value"], r["auto_context"])
+            for r in rules] == [("Weekly shop", "merchant_name", "contains", "tesco", "Groceries")]
+    assert at.text_input(key="rule_name").value == "", "the form clears after adding"
+
+
+def test_rules_tab_wont_add_a_rule_that_does_nothing(db):
+    _seed(db)
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.text_input(key="rule_name").set_value("Tesco")
+    at.text_input(key="rule_v1").set_value("tesco")
+    at.run()
+
+    add = next(b for b in at.tabs[RULES].button if b.label == "Add rule")
+    assert add.disabled
+    assert any("do something" in c.value for c in at.tabs[RULES].caption)
+
+
+def test_rules_tab_edits_in_place(db):
+    _seed(db)
+    rule_id = _add_tesco_rule()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.button(key=f"rule_edit_{rule_id}").click().run()
+    assert at.text_input(key="rule_name").value == "Tesco"
+
+    at.text_input(key="rule_ctx").set_value("Food shop")
+    at.run()
+    next(b for b in at.tabs[RULES].button if b.label == "Save changes").click().run()
+
+    assert not at.exception
+    rules = database_functions.get_rules()
+    assert len(rules) == 1 and rules[0]["id"] == rule_id
+    assert rules[0]["auto_context"] == "Food shop"
+
+
+def test_rules_tab_pauses_and_confirms_delete(db):
+    _seed(db)
+    rule_id = _add_tesco_rule()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.button(key=f"rule_toggle_{rule_id}").click().run()
+    assert database_functions.get_rules()[0]["enabled"] is False
+
+    at.button(key=f"rule_del_{rule_id}").click().run()
+    assert database_functions.get_rules(), "not deleted before confirming"
+    at.button(key=f"rule_del_yes_{rule_id}").click().run()
+    assert not at.exception
+    assert database_functions.get_rules() == []
+
+
+def test_rules_tab_says_when_an_earlier_rule_wins(db):
+    _seed(db)
+    _add_tesco_rule(name="Earlier")
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.text_input(key="rule_name").set_value("Later")
+    at.text_input(key="rule_v1").set_value("tes")
+    at.checkbox(key="rule_skip").check()
+    at.run()
+
+    assert not at.exception
+    assert any("caught first by an earlier rule" in w.value for w in at.tabs[RULES].warning)
+
+
+def test_rules_tab_checks_a_payment(db):
+    _seed(db)
+    _add_tesco_rule()
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.selectbox(key="rule_check").set_value("tx_001").run()
+
+    assert not at.exception
+    assert any("Applies:" in md.value and "Tesco" in md.value for md in at.tabs[RULES].markdown)
+
+
+def test_rules_tab_fills_from_a_payment(db):
+    _seed(db)
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at.selectbox(key="rule_fill").set_value("tx_001").run()
+
+    assert not at.exception
+    assert at.selectbox(key="rule_f1").value == "merchant_name"
+    assert at.text_input(key="rule_v1").value == "Tesco"
+    assert at.text_input(key="rule_ctx").value == "weekly shop"

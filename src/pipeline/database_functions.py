@@ -751,6 +751,78 @@ def delete_subscription(sub_id: int) -> None:
     get_con().execute("DELETE FROM subscriptions WHERE id = %s", [sub_id])
 
 
+# ── Rules ─────────────────────────────────────────────────────────────────────
+#
+# The server checks every arriving payment against these (check_rules.py):
+# the first enabled rule by id that matches gives it context, skips it, or files
+# it straight into a category. The dashboard's Rules tab manages them.
+
+_RULE_COLUMNS = ("name", "match_field", "match_type", "match_value", "match_field_2", "match_type_2",
+                 "match_value_2", "auto_context", "auto_skip", "subcategory_id")
+
+
+def get_rules() -> list[dict]:
+    """Every rule, in the order they're tried, with its fixed category's names.
+    placement_live is False when that category has since been archived -- the
+    server then ignores the placement (check_rules.py)."""
+    return _rows(
+        """SELECT r.id, r.name, r.match_field, r.match_type, r.match_value,
+                  r.match_field_2, r.match_type_2, r.match_value_2,
+                  r.auto_context, r.auto_skip, r.enabled, r.subcategory_id,
+                  p.name AS category, s.name AS subcategory,
+                  (s.id IS NOT NULL AND s.archived_at IS NULL AND p.archived_at IS NULL) AS placement_live
+           FROM rules r
+           LEFT JOIN subcategories s ON s.id = r.subcategory_id
+           LEFT JOIN parent_categories p ON p.id = s.parent_id
+           ORDER BY r.id"""
+    )
+
+
+def _rule_params(rule: dict) -> dict:
+    params = {k: rule.get(k) for k in _RULE_COLUMNS}
+    params["auto_context"] = params["auto_context"] or ""
+    params["auto_skip"] = bool(params["auto_skip"])
+    return params
+
+
+def add_rule(rule: dict) -> int:
+    """A new rule, tried after every existing one (ids only grow)."""
+    return insert_with_next_id(
+        get_con(),
+        f"""INSERT INTO rules (id, {", ".join(_RULE_COLUMNS)})
+            VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules),
+                    {", ".join(f"%({c})s" for c in _RULE_COLUMNS)})
+            RETURNING id""",
+        _rule_params(rule), "rules",
+    )
+
+
+def update_rule(rule_id: int, rule: dict) -> None:
+    get_con().execute(
+        f"UPDATE rules SET {', '.join(f'{c} = %({c})s' for c in _RULE_COLUMNS)} WHERE id = %(id)s",
+        {**_rule_params(rule), "id": rule_id},
+    )
+
+
+def toggle_rule(rule_id: int) -> None:
+    get_con().execute("UPDATE rules SET enabled = NOT enabled WHERE id = %s", [rule_id])
+
+
+def delete_rule(rule_id: int) -> None:
+    get_con().execute("DELETE FROM rules WHERE id = %s", [rule_id])
+
+
+def get_rule_test_transactions() -> list[dict]:
+    """Every transaction, newest first, with the Monzo fields rules match on
+    (the stored payload's "data") and what it has now -- for testing rules
+    against everything that's ever come in."""
+    return _rows(
+        """SELECT id, created_at, amount, merchant_name, counterparty_name, description,
+                  raw_payload->'data' AS data, user_context, skipped, llm_category, llm_subcategory
+           FROM transactions ORDER BY created_at DESC"""
+    )
+
+
 # ── "Back up now" ─────────────────────────────────────────────────────────────
 #
 # Looking after the data is the database's job, not the app's (the data box
