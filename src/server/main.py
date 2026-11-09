@@ -423,10 +423,10 @@ async def recieve_monzo(request: Request):
         context = match.context or (f"{match.category} - {match.subcategory}" if match.category else None)
         try:
             record_context(con, transaction_id, context, skipped=match.skip, source="rule",
-                           clear_rule_label=False)
+                           clear_rule_label=False, rule_id=match.rule_id)
             if match.subcategory_id:
                 record_label(con, transaction_id, match.parent_id, match.subcategory_id,
-                             source="rule", model="rule")
+                             source="rule", model="rule", rule_id=match.rule_id)
             log.info(
                 f"Transaction auto-enriched by rule: {transaction_id} → context='{context}' skip={match.skip}"
                 + (f" placement='{match.category} / {match.subcategory}'" if match.category else "")

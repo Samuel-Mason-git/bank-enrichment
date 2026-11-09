@@ -18,6 +18,7 @@ import anthropic
 from dotenv import load_dotenv
 
 import alerts
+import llm_calls
 from database_functions import get_con, insert_with_next_id, now
 from llm_labelling import MODEL, _extract_json
 
@@ -129,11 +130,17 @@ def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> 
     prompt = _worth_a_rule_prompt(candidates)
     log.info(f"Checking whether {len(candidates)} rule candidate(s) are safe to automate")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="rule_suggestions", prompt_fn=_worth_a_rule_prompt,
             model=MODEL, max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
-        verdicts = _extract_json(response.content[0].text.strip())
+        try:
+            verdicts = _extract_json(response.content[0].text.strip())
+        except ValueError:
+            llm_calls.parsed(False, 0, len(candidates))
+            raise
+        llm_calls.parsed(True, len(verdicts), len(candidates))
     except Exception as e:
         log.error(f"Rule-worthiness check failed, treating no candidates as safe this run: {e}")
         alerts.llm_failure("Rule suggestion worthiness check", e)

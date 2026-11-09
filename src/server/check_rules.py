@@ -16,6 +16,9 @@ class RuleMatch(NamedTuple):
     subcategory: str | None = None
     subcategory_id: int | None = None
     parent_id: int | None = None
+    # The rule that matched, recorded with what it did (context_events and
+    # label_events.rule_id) so a payment can always say which rule touched it.
+    rule_id: int | None = None
 
     @property
     def matched(self) -> bool:
@@ -130,7 +133,8 @@ def check_rules(data) -> RuleMatch:
             continue
 
         if subcategory_id and parent_id:
-            return RuleMatch(auto_context or None, bool(auto_skip), category, subcategory, subcategory_id, parent_id)
-        return RuleMatch(auto_context or None, bool(auto_skip))
+            return RuleMatch(auto_context or None, bool(auto_skip), category, subcategory, subcategory_id, parent_id,
+                             rule_id=rule_id)
+        return RuleMatch(auto_context or None, bool(auto_skip), rule_id=rule_id)
 
     return NO_MATCH

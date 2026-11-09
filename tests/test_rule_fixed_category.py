@@ -52,7 +52,7 @@ class TestCheckRulesReturnsThePlacement:
     def test_a_rule_with_a_placement_returns_it(self, server_con):
         _taxonomy(server_con)
         add_rule(server_con, subcategory_id=1, **EE)
-        assert check_rules(MagicMock(merchant={"name": "EE"})) == RuleMatch(None, False, "Bills", "Phone", 1, 1)
+        assert check_rules(MagicMock(merchant={"name": "EE"})) == RuleMatch(None, False, "Bills", "Phone", 1, 1, rule_id=1)
 
     def test_a_placement_alone_counts_as_a_match(self, server_con):
         _taxonomy(server_con)
@@ -85,6 +85,15 @@ class TestWebhookFilesTheTransaction:
             ("Bills - Phone", "Bills", "Phone", "rule")
         assert status(server_con, "tx1") == "classified"
         bot.send_card.assert_not_called()
+
+    def test_which_rule_did_it_is_recorded(self, server_con):
+        _taxonomy(server_con)
+        add_rule(server_con, auto_context="Phone bill", subcategory_id=1, **EE)
+        _receive(server_con, _webhook(), MagicMock())
+        assert server_con.execute(
+            "SELECT rule_id FROM context_events WHERE txn_id = 'tx1' AND source = 'rule'").fetchone() == (1,)
+        assert server_con.execute(
+            "SELECT rule_id FROM label_events WHERE txn_id = 'tx1' AND source = 'rule'").fetchone() == (1,)
 
     def test_the_rules_own_context_wins_over_the_label(self, server_con):
         _taxonomy(server_con)
