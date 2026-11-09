@@ -20,7 +20,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -40,7 +42,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -63,7 +67,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -91,7 +97,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -1760,7 +1768,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -1780,7 +1790,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -1803,7 +1815,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -1831,7 +1845,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -1853,7 +1869,9 @@
     "examples": [
      "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
     ],
+    "follow_up_count": 0.0,
     "id": 5.0,
+    "last_nudged_at": null,
     "options": [
      {
       "judge": true,
@@ -1889,7 +1907,9 @@
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 6.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": false,
@@ -3683,7 +3703,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -3705,7 +3727,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -5350,7 +5374,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -5370,7 +5396,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -5393,7 +5421,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -5424,7 +5454,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -7071,7 +7103,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -7091,7 +7125,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -7114,7 +7150,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -7142,7 +7180,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -7164,7 +7204,9 @@
     "examples": [
      "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
     ],
+    "follow_up_count": 0.0,
     "id": 5.0,
+    "last_nudged_at": null,
     "options": [
      {
       "judge": true,
@@ -7200,7 +7242,9 @@
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 6.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": false,
@@ -9347,7 +9391,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -9367,7 +9413,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -9390,7 +9438,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -9418,7 +9468,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -11102,7 +11154,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -11124,7 +11178,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -12694,7 +12750,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -12714,7 +12772,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -12737,7 +12797,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -12765,7 +12827,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -12787,7 +12851,9 @@
     "examples": [
      "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
     ],
+    "follow_up_count": 0.0,
     "id": 5.0,
+    "last_nudged_at": null,
     "options": [
      {
       "judge": true,
@@ -12823,7 +12889,9 @@
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 6.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": false,
@@ -14979,7 +15047,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -14999,7 +15069,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -15022,7 +15094,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -15050,7 +15124,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -15072,7 +15148,9 @@
     "examples": [
      "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
     ],
+    "follow_up_count": 0.0,
     "id": 5.0,
+    "last_nudged_at": null,
     "options": [
      {
       "judge": true,
@@ -15108,7 +15186,9 @@
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 6.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": false,
@@ -17132,7 +17212,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -17152,7 +17234,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -17175,7 +17259,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -17203,7 +17289,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -18959,7 +19047,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 1.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -18979,7 +19069,9 @@
     "applied_at": null,
     "decided_at": null,
     "examples": [],
+    "follow_up_count": 0.0,
     "id": 2.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -19002,7 +19094,9 @@
      "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
     ],
+    "follow_up_count": 0.0,
     "id": 3.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -19030,7 +19124,9 @@
     "examples": [
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 4.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": true,
@@ -19052,7 +19148,9 @@
     "examples": [
      "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
     ],
+    "follow_up_count": 0.0,
     "id": 5.0,
+    "last_nudged_at": null,
     "options": [
      {
       "judge": true,
@@ -19088,7 +19186,9 @@
      "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
      "-£99.00 · 24 Oct · Mystery — \"Something odd\""
     ],
+    "follow_up_count": 0.0,
     "id": 6.0,
+    "last_nudged_at": null,
     "options": [
      {
       "parent_is_new": false,
@@ -22023,7 +22123,9 @@
    "applied_at": null,
    "decided_at": null,
    "examples": [],
+   "follow_up_count": 0.0,
    "id": 1.0,
+   "last_nudged_at": null,
    "options": [
     {
      "parent_is_new": true,
@@ -22043,7 +22145,9 @@
    "applied_at": null,
    "decided_at": null,
    "examples": [],
+   "follow_up_count": 0.0,
    "id": 2.0,
+   "last_nudged_at": null,
    "options": [
     {
      "parent_is_new": true,
@@ -22066,7 +22170,9 @@
     "-£45.00 · 22 Oct · Hub Dental — \"Check-up, moved\"",
     "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\""
    ],
+   "follow_up_count": 0.0,
    "id": 3.0,
+   "last_nudged_at": null,
    "options": [
     {
      "parent_is_new": true,
@@ -22094,7 +22200,9 @@
    "examples": [
     "-£99.00 · 24 Oct · Mystery — \"Something odd\""
    ],
+   "follow_up_count": 0.0,
    "id": 4.0,
+   "last_nudged_at": null,
    "options": [
     {
      "parent_is_new": true,
@@ -22116,7 +22224,9 @@
    "examples": [
     "-£282.00 · 15 Aug · Lettings Co — \"Holding deposit\""
    ],
+   "follow_up_count": 0.0,
    "id": 5.0,
+   "last_nudged_at": null,
    "options": [
     {
      "judge": true,
@@ -22152,7 +22262,9 @@
     "-£3,000.00 · 22 Oct · HMRC — \"Self assessment\"",
     "-£99.00 · 24 Oct · Mystery — \"Something odd\""
    ],
+   "follow_up_count": 0.0,
    "id": 6.0,
+   "last_nudged_at": null,
    "options": [
     {
      "parent_is_new": false,

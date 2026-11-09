@@ -213,6 +213,12 @@ class TelegramBot:
             lines = ["🔍 <b>Second look</b>", "", f"<b>{n}</b> transaction{plural} may be filed in the wrong place:"]
         else:
             lines = ["🗂 <b>New category needed</b>", "", f"Waiting to classify <b>{n}</b> transaction{plural}:"]
+        # A resent card (follow_up_tg.run_category_follow_ups): say so, and on the
+        # last one that it won't be asked again -- it just waits until answered.
+        if proposal.get("follow_up"):
+            reminder = ("⏰ <i>Last reminder: this one won't come up again, it just waits until you pick.</i>"
+                        if proposal.get("last_reminder") else "⏰ <i>Reminder: still waiting for you.</i>")
+            lines = [reminder, ""] + lines
         lines += [f"  • {e}" for e in examples[:4]]
         if second_look:
             # Say where it sits NOW. The "keep it" option names it, but only as one

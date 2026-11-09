@@ -2,7 +2,7 @@ import json
 import time
 from unittest.mock import MagicMock
 
-from follow_up_tg import run_new_cards, run_requester, run_taxonomy_follow_ups
+from follow_up_tg import run_category_follow_ups, run_new_cards, run_requester, run_taxonomy_follow_ups
 from tests.server_helpers import add_context, requests_sent, status, transaction
 
 
@@ -202,3 +202,60 @@ class TestTaxonomyFollowUps:
         assert server_con.execute("SELECT follow_up_count FROM taxonomy_proposals").fetchone()[0] == 1
         run_taxonomy_follow_ups(bot)
         assert bot.send_taxonomy_proposal.call_count == 1  # the next nudge isn't due for a week
+
+
+class TestCategoryCardFollowUps:
+    """A new-category card holds its payments until answered, so an unanswered
+    one is sent again a day later, once more three days after that, and then
+    left to wait -- never applied, never asked about again."""
+
+    def _card(self, con, sent_ago, follow_ups=0, nudged_ago=None, status="pending"):
+        con.execute(
+            """INSERT INTO category_proposals (id, options, txn_ids, examples, status, proposed_at, sent_at,
+                   follow_up_count, last_nudged_at)
+               VALUES (1, %s, '["tx_atm"]', '["ATM · −£20.00"]', %s, NOW(), %s, %s, %s)""",
+            [json.dumps([{"parent_name": "Transport", "subcategory_name": "Road & Parking Permits",
+                          "parent_is_new": False, "rationale": "A permit."}]),
+             status, _ago(sent_ago), follow_ups, _ago(nudged_ago) if nudged_ago else None])
+
+    def test_reminded_a_day_after_it_was_sent(self, server_con):
+        self._card(server_con, sent_ago=86_400 + 60)
+        bot = MagicMock()
+        run_category_follow_ups(bot)
+        card = bot.send_category_proposal.call_args.args[1]
+        assert (card["local_id"], card["follow_up"], card["last_reminder"], card["txn_count"]) == (1, 1, False, 1)
+        assert server_con.execute("SELECT follow_up_count FROM category_proposals").fetchone()[0] == 1
+
+    def test_not_before_a_day(self, server_con):
+        self._card(server_con, sent_ago=3_600)
+        bot = MagicMock()
+        run_category_follow_ups(bot)
+        bot.send_category_proposal.assert_not_called()
+
+    def test_the_second_is_the_last(self, server_con):
+        self._card(server_con, sent_ago=86_400 * 5, follow_ups=1, nudged_ago=86_400 * 3 + 60)
+        bot = MagicMock()
+        run_category_follow_ups(bot)
+        assert bot.send_category_proposal.call_args.args[1]["last_reminder"] is True
+        run_category_follow_ups(bot)
+        assert bot.send_category_proposal.call_count == 1, "two reminders, then it stops asking"
+
+    def test_an_answered_card_isnt_chased(self, server_con):
+        self._card(server_con, sent_ago=86_400 * 2, status="selected")
+        bot = MagicMock()
+        run_category_follow_ups(bot)
+        bot.send_category_proposal.assert_not_called()
+
+
+def test_a_reminder_card_says_so():
+    from telegram import TelegramBot
+    bot = TelegramBot.__new__(TelegramBot)
+    sent = []
+    bot._send_tracked = lambda payload: sent.append(payload["text"])
+    card = {"local_id": 1, "txn_count": 1, "examples": ["ATM"], "options": [
+        {"parent_name": "Transport", "subcategory_name": "Parking", "parent_is_new": False, "rationale": "x"}]}
+    bot.send_category_proposal(1, {**card, "follow_up": 1, "last_reminder": False})
+    bot.send_category_proposal(1, {**card, "follow_up": 2, "last_reminder": True})
+    bot.send_category_proposal(1, card)
+    assert sent[0].startswith("⏰ <i>Reminder") and sent[1].startswith("⏰ <i>Last reminder")
+    assert not sent[2].startswith("⏰")
