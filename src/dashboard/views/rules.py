@@ -246,8 +246,8 @@ with st.container(border=True):
     problems = rule_problems(candidate)
     b1, b2, b3 = st.columns([1, 1, 4], vertical_alignment="center")
     b1.button("Save changes" if editing else "Add rule", type="primary", disabled=bool(problems),
-              on_click=_rule_save, use_container_width=True)
-    b2.button("Cancel" if editing else "Clear", on_click=_rule_reset, use_container_width=True)
+              on_click=_rule_save, width="stretch")
+    b2.button("Cancel" if editing else "Clear", on_click=_rule_reset, width="stretch")
     if problems and (candidate["name"] or candidate["match_value"] or editing):
         b3.caption("To save: " + " ".join(problems))
 
@@ -309,12 +309,12 @@ for position, r in enumerate(rules, start=1):
             hit_text, last = f"would catch {len(matched)}", "paused"
         cols[3].markdown(f"{hit_text}<br><span style='font-size:0.8rem;opacity:0.6;'>{last}</span>",
                          unsafe_allow_html=True)
-        cols[4].button("Edit", key=f"rule_edit_{r['id']}", use_container_width=True, on_click=_rule_edit, args=(r,))
-        if cols[5].button("Matches", key=f"rule_view_{r['id']}", help="See every payment it matches", use_container_width=True):
+        cols[4].button("Edit", key=f"rule_edit_{r['id']}", width="stretch", on_click=_rule_edit, args=(r,))
+        if cols[5].button("Matches", key=f"rule_view_{r['id']}", help="See every payment it matches", width="stretch"):
             st.session_state.rule_view = None if st.session_state.rule_view == r["id"] else r["id"]
         cols[6].button("Pause" if r["enabled"] else "Resume", key=f"rule_toggle_{r['id']}",
-                       on_click=_rule_toggle, args=(r["id"],), use_container_width=True)
-        if cols[7].button("Delete", key=f"rule_del_{r['id']}", use_container_width=True):
+                       on_click=_rule_toggle, args=(r["id"],), width="stretch")
+        if cols[7].button("Delete", key=f"rule_del_{r['id']}", width="stretch"):
             st.session_state.rule_confirm_del = r["id"]
 
     if st.session_state.rule_confirm_del == r["id"]:

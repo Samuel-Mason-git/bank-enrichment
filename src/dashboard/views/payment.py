@@ -8,51 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from database_functions import get_payment, get_payment_history, get_queue_transactions
-from payment_actions import STATUS_LABELS, payee, payment_actions, payment_label
+from payment_actions import STATUS_LABELS, describe_event, payee, payment_actions, payment_label
 from ui import _fmt
 
 
 @st.cache_data(ttl=30, show_spinner="Loading payments...")
 def load_payments() -> list[dict]:
     return get_queue_transactions()
-
-
-CONTEXT_SOURCES = {
-    "telegram": "on Telegram", "rule": "by a rule", "dashboard": "in the dashboard",
-    "timeout": "when no answer came in time", "migration": "in the move from DuckDB",
-}
-LABEL_SOURCES = {
-    "llm": "the classifier", "rule": "a rule", "quick_tap": "a quick tap on Telegram", "manual": "you",
-    "judge": "the judge", "proposal": "a new-category proposal", "migration": "the move from DuckDB",
-}
-
-
-def _describe(h: dict) -> tuple[str, str]:
-    """(what happened, the detail) for one history row."""
-    kind, source, detail, extra = h["kind"], h["source"], h["detail"] or "", h["extra"] or ""
-    if kind == "arrived":
-        return "Arrived from Monzo", ""
-    if kind == "updated":
-        return ("Fetched again from Monzo's API" if source == "api" else "Monzo sent an update"), ""
-    if kind == "asked":
-        return "Asked you about it", ""
-    if kind == "skipped":
-        return f"Skipped {CONTEXT_SOURCES.get(source, source)}", extra
-    if kind == "context cleared":
-        return f"Context cleared {CONTEXT_SOURCES.get(source, source)}", extra
-    if kind == "context":
-        return f"Context given {CONTEXT_SOURCES.get(source, source)}", " · ".join(x for x in (detail, extra) if x)
-    if kind == "labelled":
-        return f"Categorised by {LABEL_SOURCES.get(source, source)}", " · ".join(x for x in (detail, extra) if x)
-    if kind == "label cleared":
-        return f"Category cleared by {LABEL_SOURCES.get(source, source)}", ""
-    if kind == "reviewed":
-        return "Reviewed by the judge", f"{detail} · {extra}"
-    if kind == "proposed":
-        state = {"pending": "waiting for your pick on Telegram", "selected": "picked, being applied",
-                 "applied": "applied", "denied": "none of these", "expired": "expired"}.get(extra, extra)
-        return "New categories suggested", f"{detail} · {state}"
-    return kind, detail
 
 
 def _sync_address() -> None:
@@ -134,7 +96,7 @@ else:
     history = get_payment_history(t["id"])
     rows = []
     for h in history:
-        what, detail = _describe(h)
+        what, detail = describe_event(h)
         rows.append({"When": h["at"], "What": what, "Detail": detail})
     st.dataframe(
         pd.DataFrame(rows), hide_index=True, width="stretch",

@@ -567,6 +567,102 @@ def get_lifetime_stats() -> dict:
     )[0]
 
 
+# ── Activity (the dashboard's Activity page) ─────────────────────────────────
+#
+# Days are London days. runs and log_events are written by activity.py; the
+# rest comes straight from the history tables.
+
+_LONDON_DAY = "({col} AT TIME ZONE 'Europe/London')::date = %(day)s"
+
+# Who a payment was to or from, read off its first webhook (no view: cheap).
+_PAYEE_SQL = """COALESCE(NULLIF(r.payload->'data'->'merchant'->>'name', ''),
+                         NULLIF(r.payload->'data'->'counterparty'->>'name', ''),
+                         r.payload->'data'->>'description', r.id)"""
+
+
+def get_runs(day) -> list[dict]:
+    return _rows(
+        f"""SELECT run_id, started_at AT TIME ZONE 'Europe/London' AS started_at,
+                   finished_at AT TIME ZONE 'Europe/London' AS finished_at,
+                   EXTRACT(EPOCH FROM finished_at - started_at)::FLOAT AS seconds, status, summary
+            FROM runs WHERE {_LONDON_DAY.format(col='started_at')} ORDER BY started_at""",
+        {"day": day},
+    )
+
+
+def first_recorded_run_day():
+    """The London day of the first run recorded in runs, or None: days before
+    it simply weren't recorded."""
+    row = get_con().execute(
+        "SELECT (MIN(started_at) AT TIME ZONE 'Europe/London')::date FROM runs"
+    ).fetchone()
+    return row[0] if row else None
+
+
+def get_log_events(day) -> list[dict]:
+    return _rows(
+        f"""SELECT logged_at AT TIME ZONE 'Europe/London' AS logged_at, service, level, logger, message, detail
+            FROM log_events WHERE {_LONDON_DAY.format(col='logged_at')} ORDER BY logged_at""",
+        {"day": day},
+    )
+
+
+def get_day_events(day) -> list[dict]:
+    """Everything that happened to any payment on one day, in order: arrivals,
+    questions, answers and skips, labels, judge reviews and new-category cards."""
+    return _rows(
+        f"""SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.txn_id,
+                   {_PAYEE_SQL} AS payee, (r.payload->'data'->>'amount')::NUMERIC / 100 AS amount
+            FROM (
+                SELECT received_at AS at, 'arrived' AS kind, 'webhook' AS source, NULL::TEXT AS detail, id AS txn_id
+                FROM transactions_raw WHERE {_LONDON_DAY.format(col='received_at')}
+                UNION ALL
+                SELECT set_at,
+                       CASE WHEN source = 'request' THEN 'asked' WHEN skipped THEN 'skipped'
+                            WHEN user_context IS NULL THEN 'context cleared' ELSE 'context' END,
+                       source, user_context, txn_id
+                FROM context_events WHERE {_LONDON_DAY.format(col='set_at')}
+                UNION ALL
+                SELECT l.set_at, CASE WHEN l.parent_id IS NULL THEN 'label cleared' ELSE 'labelled' END,
+                       l.source, CASE WHEN p.name IS NOT NULL THEN p.name || COALESCE(' › ' || s.name, '') END,
+                       l.txn_id
+                FROM label_events l
+                LEFT JOIN parent_categories p ON p.id = l.parent_id
+                LEFT JOIN subcategories s ON s.id = l.subcategory_id
+                WHERE {_LONDON_DAY.format(col='l.set_at')}
+                UNION ALL
+                SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory || ' · ' || outcome, txn_id
+                FROM judge_reviews WHERE {_LONDON_DAY.format(col='reviewed_at')}
+            ) h
+            JOIN transactions_raw r ON r.id = h.txn_id
+            ORDER BY h.at""",
+        {"day": day},
+    )
+
+
+def get_activity_by_day(days: int = 30) -> list[dict]:
+    """Per London day over the last `days`: runs (and how many had problems),
+    warnings and errors logged, and payments received -- for the Activity
+    page's overview strip."""
+    return _rows(
+        """WITH d AS (SELECT generate_series((now() AT TIME ZONE 'Europe/London')::date - (%(days)s - 1),
+                                             (now() AT TIME ZONE 'Europe/London')::date, '1 day')::date AS day)
+           SELECT d.day,
+                  (SELECT COUNT(*) FROM runs WHERE (started_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND status <> 'skipped') AS runs,
+                  (SELECT COUNT(*) FROM runs WHERE (started_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND status = 'problems') AS problem_runs,
+                  (SELECT COUNT(*) FROM log_events WHERE (logged_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND level IN ('ERROR', 'CRITICAL')) AS errors,
+                  (SELECT COUNT(*) FROM log_events WHERE (logged_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND level = 'WARNING') AS warnings,
+                  (SELECT COUNT(*) FROM transactions_raw WHERE (received_at AT TIME ZONE 'Europe/London')::date = d.day)
+                     AS payments
+           FROM d ORDER BY d.day""",
+        {"days": days},
+    )
+
+
 def apply_quick_tap_classifications(review=None) -> int:
     """Classify transactions whose user_context exactly matches an existing
     'Category - Subcategory' pair (written by a Telegram quick-tap button),

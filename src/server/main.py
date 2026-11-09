@@ -17,6 +17,7 @@ import secrets
 import time
 import json
 import os
+import sys
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -33,6 +34,11 @@ from monzo_oauth import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
+
+# The pipeline's activity log (warnings and errors into the database, for the
+# dashboard's Activity page). Last on the path, so nothing there shadows ours.
+sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
+import activity  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -166,6 +172,7 @@ async def _skip_timeout(chat_id: int, message_id: int):
 async def lifespan(app: FastAPI):
     global bot
     init_db()
+    activity.attach("server", get_con)
     log.info("Database initialised")
     try:
         bot = TelegramBot()

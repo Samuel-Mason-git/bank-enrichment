@@ -277,6 +277,7 @@ page = st.navigation([
     st.Page(_views / "queue.py", title="Queue"),
     st.Page(_views / "payment.py", title="Payment details"),
     st.Page(_views / "rules.py", title="Rules"),
+    st.Page(_views / "activity.py", title="Activity"),
     st.Page(_views / "settings.py", title="Settings"),
 ], position="top")
 

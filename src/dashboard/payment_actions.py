@@ -15,6 +15,46 @@ def payment_label(t: dict) -> str:
     return f"{t['created_at']:%d %b %Y} · {payee(t)} · {_fmt(float(t['amount']))}"
 
 
+CONTEXT_SOURCES = {
+    "telegram": "on Telegram", "rule": "by a rule", "dashboard": "in the dashboard",
+    "timeout": "when no answer came in time", "migration": "in the move from DuckDB",
+}
+LABEL_SOURCES = {
+    "llm": "the classifier", "rule": "a rule", "quick_tap": "a quick tap on Telegram", "manual": "you",
+    "judge": "the judge", "proposal": "a new-category proposal", "migration": "the move from DuckDB",
+}
+
+
+def describe_event(h: dict) -> tuple[str, str]:
+    """(what happened, the detail) for one row of a payment's history
+    (get_payment_history, get_day_events)."""
+    kind, source = h["kind"], h["source"]
+    detail, extra = h.get("detail") or "", h.get("extra") or ""
+    if kind == "arrived":
+        return "Arrived from Monzo", ""
+    if kind == "updated":
+        return ("Fetched again from Monzo's API" if source == "api" else "Monzo sent an update"), ""
+    if kind == "asked":
+        return "Asked you about it", ""
+    if kind == "skipped":
+        return f"Skipped {CONTEXT_SOURCES.get(source, source)}", extra
+    if kind == "context cleared":
+        return f"Context cleared {CONTEXT_SOURCES.get(source, source)}", extra
+    if kind == "context":
+        return f"Context given {CONTEXT_SOURCES.get(source, source)}", " · ".join(x for x in (detail, extra) if x)
+    if kind == "labelled":
+        return f"Categorised by {LABEL_SOURCES.get(source, source)}", " · ".join(x for x in (detail, extra) if x)
+    if kind == "label cleared":
+        return f"Category cleared by {LABEL_SOURCES.get(source, source)}", ""
+    if kind == "reviewed":
+        return "Reviewed by the judge", " · ".join(x for x in (detail, extra) if x)
+    if kind == "proposed":
+        state = {"pending": "waiting for your pick on Telegram", "selected": "picked, being applied",
+                 "applied": "applied", "denied": "none of these", "expired": "expired"}.get(extra, extra)
+        return "New categories suggested", f"{detail} · {state}"
+    return kind, detail
+
+
 STATUS_LABELS = {
     "pending": "Needs your answer",
     "enriched": "Waiting for the classifier",
@@ -70,26 +110,26 @@ def payment_actions(t: dict, prefix: str, after=None, after_delete=None) -> None
     c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
     c1.text_input("Context", key=ctx_key, placeholder="What was this?",
                   help="Saved as your answer, the same as replying on Telegram.")
-    c2.button("Save context", key=f"{prefix}_save_{tid}", type="primary", use_container_width=True,
+    c2.button("Save context", key=f"{prefix}_save_{tid}", type="primary", width="stretch",
               on_click=_save, args=(tid, ctx_key, after))
 
     b1, b2, _ = st.columns([1, 1, 3])
     if t["skipped"]:
-        b1.button("Unskip", key=f"{prefix}_unskip_{tid}", use_container_width=True,
+        b1.button("Unskip", key=f"{prefix}_unskip_{tid}", width="stretch",
                   on_click=_unskip, args=(tid, after), help="Count it again.")
     else:
-        b1.button("Skip", key=f"{prefix}_skip_{tid}", use_container_width=True,
+        b1.button("Skip", key=f"{prefix}_skip_{tid}", width="stretch",
                   on_click=_skip, args=(tid, after), help="Leave it out of everything, and stop asking.")
     confirm_key = f"{prefix}_confirm_del"
-    if b2.button("Delete", key=f"{prefix}_del_{tid}", use_container_width=True,
+    if b2.button("Delete", key=f"{prefix}_del_{tid}", width="stretch",
                  help="Gone for good, with its history. For test payments and mistakes."):
         st.session_state[confirm_key] = tid
 
     if st.session_state.get(confirm_key) == tid:
         d1, d2, d3 = st.columns([3, 1, 1])
         d1.warning("Delete this payment and its whole history? This can't be undone (skipping keeps it).")
-        d2.button("Delete", key=f"{prefix}_del_yes_{tid}", type="primary", use_container_width=True,
+        d2.button("Delete", key=f"{prefix}_del_yes_{tid}", type="primary", width="stretch",
                   on_click=_delete, args=(tid, prefix, after, after_delete))
-        if d3.button("Cancel", key=f"{prefix}_del_no_{tid}", use_container_width=True):
+        if d3.button("Cancel", key=f"{prefix}_del_no_{tid}", width="stretch"):
             st.session_state[confirm_key] = None
             st.rerun()
