@@ -186,8 +186,11 @@ def _show_call(call_id: int) -> None:
     if c["thinking"]:
         with st.expander("Thinking"):
             st.code(c["thinking"], language=None, wrap_lines=True)
-    with st.expander("Response", expanded=True):
-        st.code(c["response_text"] or "(none)", language=None, wrap_lines=True)
+    if c["response_text"]:
+        with st.expander("Response (kept because it couldn't be used)", expanded=True):
+            st.code(c["response_text"], language=None, wrap_lines=True)
+    elif c["parsed"]:
+        st.caption("What it answered is in each payment's history (Payment details), so its text isn't kept.")
     with st.expander("Settings and raw usage"):
         st.json({"params": c["params"], "usage": c["usage"], "response_id": c["response_id"],
                  "prompt_sha256": c["prompt_sha256"]})

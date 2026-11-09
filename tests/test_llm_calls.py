@@ -116,11 +116,18 @@ class TestRecording:
         assert r["prompt_version"].startswith("tests.test_llm_calls._a_prompt@")
         assert r["response_id"] == "msg_1" and r["duration_ms"] >= 0 and r["attempts"] == 1
 
-    def test_whether_the_reply_was_usable(self, db):
-        _call(db)
+    def test_a_usable_replys_text_isnt_kept(self, db):
+        _call(db, client=_client(_message(thinking="Hmm.")))
         llm_calls.parsed(True, 14, 15)
         r = _row(db)
         assert (r["parsed"], r["answered"], r["expected"]) == (True, 14, 15)
+        assert r["response_text"] is None and r["thinking"] is None
+
+    def test_an_unusable_replys_text_is_kept(self, db):
+        _call(db, client=_client(_message(text="Sorry, here's some prose instead of JSON")))
+        llm_calls.parsed(False, 0, 15)
+        r = _row(db)
+        assert r["parsed"] is False and r["response_text"] == "Sorry, here's some prose instead of JSON"
 
     def test_the_run_it_belonged_to(self, db):
         llm_calls.current_run_id = 42

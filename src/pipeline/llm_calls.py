@@ -1,9 +1,9 @@
 """Every call to Claude goes through create() here, which makes the call and
 records it in llm_calls: the prompt's version and the payments it covered
 (the prompt itself isn't kept -- its wording is stored once per version, in
-prompt_versions), the response and thinking, tokens, how long it took,
-retries, and what it cost at that day's prices. The dashboard's AI page reads
-it.
+prompt_versions), tokens, how long it took, retries, what it cost at that
+day's prices, and whether the reply was usable -- its text kept only when it
+wasn't. The dashboard's AI page reads it.
 
 Recording never gets in the way of a call: if the row can't be written, the
 call's result is still returned (and the failure logged).
@@ -245,8 +245,15 @@ def parsed(ok: bool, answered: int | None = None, expected: int | None = None) -
     if call_id is None:
         return
     try:
-        get_con().execute("UPDATE llm_calls SET parsed = %s, answered = %s, expected = %s WHERE call_id = %s",
-                          [ok, answered, expected, call_id])
+        # A usable reply's text isn't kept: what it said is in the history it
+        # wrote (label_events, judge_reviews, the proposals). Only a reply that
+        # couldn't be used keeps its text, to see what went wrong.
+        get_con().execute(
+            """UPDATE llm_calls SET parsed = %(ok)s, answered = %(answered)s, expected = %(expected)s,
+                   response_text = CASE WHEN %(ok)s THEN NULL ELSE response_text END,
+                   thinking = CASE WHEN %(ok)s THEN NULL ELSE thinking END
+               WHERE call_id = %(id)s""",
+            {"ok": ok, "answered": answered, "expected": expected, "id": call_id})
     except Exception as e:
         log.warning(f"Couldn't record whether call {call_id}'s reply was usable: {e}")
 
