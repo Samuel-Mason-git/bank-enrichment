@@ -164,7 +164,7 @@ def _seed_taxonomy() -> None:
             upsert_subcategory(sub_name, parent_id)
 
     # Refunds are money you already spent coming back, not new income — excluded
-    # from Income totals by default (overridable in the dashboard's Settings tab).
+    # from Income totals by default (overridable in the dashboard's Settings page).
     refunds = con.execute(
         """SELECT s.id, s.parent_id FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
@@ -548,7 +548,7 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     )
 
 
-# ── Editing the taxonomy (the dashboard's Settings tab) ───────────────────────
+# ── Editing the taxonomy (the dashboard's Settings page) ───────────────────────
 #
 # Labels point at ids, so renaming or moving a category is one row and every
 # transaction follows. A deleted category is archived rather than removed --
@@ -755,7 +755,7 @@ def delete_subscription(sub_id: int) -> None:
 #
 # The server checks every arriving payment against these (check_rules.py):
 # the first enabled rule by id that matches gives it context, skips it, or files
-# it straight into a category. The dashboard's Rules tab manages them.
+# it straight into a category. The dashboard's Rules page manages them.
 
 _RULE_COLUMNS = ("name", "match_field", "match_type", "match_value", "match_field_2", "match_type_2",
                  "match_value_2", "auto_context", "auto_skip", "subcategory_id")
@@ -827,7 +827,7 @@ def get_rule_test_transactions() -> list[dict]:
 #
 # Looking after the data is the database's job, not the app's (the data box
 # backs it up every night). This is only a manual "save a copy of everything
-# before I try something", from the Settings tab: every table as a Parquet
+# before I try something", from the Settings page: every table as a Parquet
 # file in a folder of its own, under BACKUP_DIR. It is never run automatically.
 
 BACKUPS_KEPT = 10
@@ -883,7 +883,7 @@ def backup_db(reason: str = "manual") -> Path:
 
 
 def _write_manifest(target: Path, reason: str) -> None:
-    """Record what the backup actually contains, so the Settings tab can say
+    """Record what the backup actually contains, so the Settings page can say
     'this one holds 1,240 transactions covering 2025-01 to 2026-08' without
     opening every file to count. A manifest that fails to write must not fail
     the backup -- the data is the thing that matters."""

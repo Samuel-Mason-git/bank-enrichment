@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-# src/server: matching is the server's own check_rules, so the Rules tab and the
+# src/server: matching is the server's own check_rules, so the Rules page and the
 # webhook can never disagree about what a rule catches.
 from check_rules import conditions_match, payload_field
 
@@ -33,7 +33,7 @@ def _split_backup_name(path: Path) -> tuple[str, str]:
 def backup_label(path: Path) -> str:
     """Human-readable time for a backup folder, falling back to the raw folder
     name if it doesn't parse -- a hand-made or renamed folder in backups/ should
-    still be listed rather than crashing the Settings tab."""
+    still be listed rather than crashing the Settings page."""
     stamp, _ = _split_backup_name(path)
     try:
         return datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M")
@@ -216,7 +216,7 @@ def should_deactivate_subscription(sub: dict, df: pd.DataFrame, cutoff: pd.Times
 # ── Rules ─────────────────────────────────────────────────────────────────────
 #
 # Matching itself is check_rules.conditions_match -- the very function the
-# server runs on each arriving payment -- so what the Rules tab says a rule
+# server runs on each arriving payment -- so what the Rules page says a rule
 # would catch is exactly what it does catch.
 
 

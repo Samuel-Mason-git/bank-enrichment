@@ -73,7 +73,7 @@ def conditions_match(get_field, match_field, match_type, match_value,
                      match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
     """Whether a rule's condition(s) hold, reading each field through
     get_field(name). The one judgement of a match: the live webhook and the
-    dashboard's Rules tab both call this. Raises on a broken rule (a bad regex,
+    dashboard's Rules page both call this. Raises on a broken rule (a bad regex,
     an unreadable range); the caller decides what that means."""
     value = get_field(match_field)
     if value is None or not _matches(value, match_type, match_value):

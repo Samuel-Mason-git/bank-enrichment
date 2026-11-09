@@ -154,7 +154,7 @@ real, final amount still arrives normally, as its own separate transaction.
 rules, both matching **Payment scheme** `exact` `uk_retail_pot`, with a second condition
 of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") and
 `amount_positive` on the other ("Moved out of savings pot"). Once a few transactions have
-gone through each, set that subcategory's Role to **Saving** in the Settings tab — see
+gone through each, set that subcategory's Role to **Saving** in the Settings page — see
 [Category Roles & Standard vs Actual](#category-roles--standard-vs-actual).
 
 ### Creating a Rule From an Existing Transaction
@@ -282,7 +282,7 @@ covering most common personal spending:
 | Career & Learning | Online Learning, Books, Certifications |
 | Transfers | Inbound Transfer, Outbound Transfer |
 
-This is a starting point, not a constraint. Everything can be changed from the **Settings tab** 
+This is a starting point, not a constraint. Everything can be changed from the **Settings page** 
 in the local dashboard — rename parents, add or delete subcategories, move subcategories 
 between parents, view which transactions sit under each label, and wipe labels per category 
 so the LLM re-classifies against your updated structure. Because context is stored separately 
@@ -290,13 +290,13 @@ from labels, restructuring the taxonomy and re-running classification never lose
 
 The default taxonomy is only seeded into a genuinely empty database — the very first time
 you run the pipeline or dashboard. Once any parent category exists, seeding is skipped
-entirely, so wiping the taxonomy from the Settings tab and building your own from scratch
+entirely, so wiping the taxonomy from the Settings page and building your own from scratch
 is safe: the defaults won't quietly get added back in alongside it on a later restart.
 
 ### Category Roles & Standard vs Actual
 
 Every category has a **Role** — Income, Spend, Investment, Saving, Transfer, or Excluded —
-set from the Settings tab, at the parent level (subcategories inherit it, or can override it
+set from the Settings page, at the parent level (subcategories inherit it, or can override it
 individually, e.g. a "Refunds" subcategory under "Income" is Excluded rather than Income).
 Roles drive what actually counts as income or spend throughout the dashboard, so a refund or
 an internal transfer between your own accounts doesn't inflate your real income or spend.
@@ -422,7 +422,7 @@ The database is backed up every night wherever it lives — for this setup, by t
 (see the data-vault repo) — and every change to a transaction is kept in its history anyway,
 so nothing here is needed to stay safe.
 
-**Back up now** in the Settings tab takes a copy of your own before you try something: every
+**Back up now** in the Settings page takes a copy of your own before you try something: every
 table saved as a Parquet file, in a folder named `<timestamp>_<reason>` under `BACKUP_DIR`
 (default `~/bank-enrichment-backups`). Nothing is ever backed up automatically. Read one back
 with DuckDB or pandas, e.g.
@@ -431,7 +431,7 @@ with DuckDB or pandas, e.g.
 SELECT * FROM '~/bank-enrichment-backups/20261025-220341_manual/transactions_raw.parquet';
 ```
 
-Each copy carries a `manifest.json` recording what it captured, so the Settings tab can tell you
+Each copy carries a `manifest.json` recording what it captured, so the Settings page can tell you
 what's in it: transaction count, how many were classified, taxonomy size, subscription count,
 the date range covered, and size on disk. The most recent 10 are kept and older ones pruned;
 any can also be deleted by hand from the same section (behind a confirmation).
@@ -475,8 +475,11 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── judge_backlog.py   # Manual: a second look at older history
 │   │   └── database_functions.py  # The database library, shared with the dashboard — includes a CLI (run the file directly) to print stats/transactions
 │   └── dashboard/             # The Streamlit dashboard, on your own machine
-│       ├── dashboard.py
-│       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
+│       ├── dashboard.py       # Entry point: loads the data, the sidebar's filters, the page navigation
+│       ├── views/             # One script per page: overview, over_time, transactions, drill_down, merchants, subscriptions, rules, settings
+│       ├── ui.py              # Shared drawing helpers: money formatting, metric cards
+│       ├── page_context.py    # Hands the sidebar's filtered data to the open page
+│       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/rule/chart helpers) — unit tested standalone
 ├── sql/
 │   └── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
 ├── config/

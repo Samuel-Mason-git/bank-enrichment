@@ -8,13 +8,19 @@ from streamlit.testing.v1 import AppTest
 
 from tests.local_helpers import ensure_category, write_to_db as _write_to_db
 
-# Tab positions: Overview, Over Time, Transactions, Drill-Down, Merchants,
-# Subscriptions, Rules, Settings.
-SUBS, RULES, SETTINGS = 5, 6, 7
-
 _DASHBOARD_PATH = str(
     Path(__file__).parent.parent / "src" / "dashboard" / "dashboard.py"
 )
+
+
+def _app(page: str = "overview") -> AppTest:
+    """The dashboard, run once, open on one page (a file in src/dashboard/views).
+    Only the open page runs, so a test reads that page's elements (and the
+    sidebar's) straight off the AppTest."""
+    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30)
+    if page != "overview":
+        at.switch_page(f"views/{page}.py")
+    return at.run()
 
 
 def write_to_db(rows):
@@ -66,7 +72,7 @@ def _seed(db):
 
 def test_dashboard_loads_without_error(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app()
     assert not at.exception
 
 
@@ -74,7 +80,7 @@ def test_search_with_regex_special_characters_does_not_crash(db):
     """Regression test for the ArrowInvalid crash: typing a search term with an
     unbalanced parenthesis used to bring down the whole dashboard."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app()
     at.sidebar.text_input[0].set_value("Tesco (UK").run()
     assert not at.exception
 
@@ -85,14 +91,14 @@ def test_subscription_delete_requires_confirmation(db):
     _seed(db)
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    subs_tab = at.tabs[SUBS]
+    at = _app("subscriptions")
+    subs_tab = at
     delete_button = next(b for b in subs_tab.button if b.label == "✕")
     delete_button.click().run()
 
     assert not at.exception
     assert database_functions.get_subscriptions(), "subscription should not be deleted yet"
-    assert any("Delete" in w.value for w in at.tabs[SUBS].warning)
+    assert any("Delete" in w.value for w in at.warning)
 
 
 def test_savings_rate_shows_dash_when_no_income(db):
@@ -101,8 +107,8 @@ def test_savings_rate_shows_dash_when_no_income(db):
     (undefined) — inconsistent with how the rest of the app handles undefined
     ratios (e.g. Category Drill-Down's 'Avg Spend' already used '—')."""
     _seed(db)  # spend-only seed data, no income transaction
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    overview_tab = at.tabs[0]
+    at = _app()
+    overview_tab = at
     assert _has_card(overview_tab, "Savings Rate", "—")
 
 
@@ -113,8 +119,8 @@ def test_subscription_can_be_edited(db):
     _seed(db)
     database_functions.upsert_subscription("Netflix", 9.99, "monthly", "Netflix")
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    subs_tab = at.tabs[SUBS]
+    at = _app("subscriptions")
+    subs_tab = at
     edit_button = next(b for b in subs_tab.button if b.label == "✏️")
     edit_button.click().run()
 
@@ -123,8 +129,8 @@ def test_subscription_can_be_edited(db):
     # The new amount and the Save click go in one run, as a browser sends
     # them: a value typed into a form only counts once the form is submitted,
     # so a run in between (which newer Streamlit honours) would drop it.
-    at.tabs[SUBS].number_input[1].set_value(12.99)
-    save_button = next(b for b in at.tabs[SUBS].button if b.label == "Save")
+    at.number_input[1].set_value(12.99)
+    save_button = next(b for b in at.button if b.label == "Save")
     save_button.click().run()
 
     assert not at.exception
@@ -136,8 +142,8 @@ def test_subscription_can_be_edited(db):
 
 def test_settings_tab_shows_default_category_roles(db):
     _seed(db)  # seeds the full default taxonomy
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
 
     parents = {p["name"]: p for p in database_functions.get_parents()}
     role_selectboxes = {sb.key: sb.value for sb in settings_tab.selectbox if sb.key.startswith("role_") and not sb.key.startswith("role_sub_")}
@@ -154,8 +160,8 @@ def test_settings_tab_role_edit_persists(db):
     DESC with no tiebreaker, so rows with equal counts (the common case)
     could return in an unstable order across reruns."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
 
     parents_before = {p["name"]: p for p in database_functions.get_parents()}
     bills_id = parents_before["Bills & Utilities"]["id"]
@@ -170,8 +176,8 @@ def test_settings_tab_role_edit_persists(db):
 
 def test_settings_tab_subcategory_override_persists(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
 
     subs_before = {s["name"]: s for s in database_functions.get_subcategories() if s["parent_name"] == "Income"}
     refunds_id = subs_before["Refunds"]["id"]
@@ -194,12 +200,12 @@ def test_settings_rename_subcategory_to_existing_name_shows_error_not_crash(db):
     subs = {s["name"]: s for s in database_functions.get_subcategories() if s["parent_name"] == "Food & Drink"}
     groceries_id = subs["Groceries"]["id"]
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
     edit_btn = next(b for b in settings_tab.button if b.key == f"es_{groceries_id}")
     edit_btn.click().run()
 
-    settings_tab2 = at.tabs[SETTINGS]
+    settings_tab2 = at
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "Name")
     name_input.set_value("Restaurants")  # already exists under Food & Drink
     parent_select = next(sb for sb in settings_tab2.selectbox if sb.label == "Parent category")
@@ -208,7 +214,7 @@ def test_settings_rename_subcategory_to_existing_name_shows_error_not_crash(db):
     save_btn.click().run()
 
     assert not at.exception
-    settings_tab3 = at.tabs[SETTINGS]
+    settings_tab3 = at
     assert any("already exists" in e.value for e in settings_tab3.error)
     subs_after = {s["id"]: s["name"] for s in database_functions.get_subcategories()}
     assert subs_after[groceries_id] == "Groceries", "the rename must not have gone through"
@@ -224,12 +230,12 @@ def test_settings_rename_parent_carries_over_custom_role(db):
     health_id = parents["Health"]["id"]
     database_functions.set_parent_role(health_id, "excluded")
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
 
-    settings_tab2 = at.tabs[SETTINGS]
+    settings_tab2 = at
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "New name")
     name_input.set_value("Health & Wellness")
     save_btn = next(b for b in settings_tab2.button if b.label == "Save" and b.proto.type == "primary")
@@ -250,19 +256,19 @@ def test_settings_rename_parent_to_existing_name_shows_error_not_silent_merge(db
     parents = {p["name"]: p for p in database_functions.get_parents()}
     health_id = parents["Health"]["id"]
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    settings_tab = at.tabs[SETTINGS]
+    at = _app("settings")
+    settings_tab = at
     rename_btn = next(b for b in settings_tab.button if b.key == f"ep_{health_id}")
     rename_btn.click().run()
 
-    settings_tab2 = at.tabs[SETTINGS]
+    settings_tab2 = at
     name_input = next(ti for ti in settings_tab2.text_input if ti.label == "New name")
     name_input.set_value("Income")  # already exists as a different parent
     save_btn = next(b for b in settings_tab2.button if b.label == "Save" and b.proto.type == "primary")
     save_btn.click().run()
 
     assert not at.exception
-    settings_tab3 = at.tabs[SETTINGS]
+    settings_tab3 = at
     assert any("already exists" in e.value for e in settings_tab3.error)
     parents_after = {p["name"] for p in database_functions.get_parents()}
     assert "Health" in parents_after, "Health must still exist, unmerged"
@@ -298,8 +304,8 @@ def test_overview_actual_income_excludes_refunds(db):
     update_classification("tx_refund", "Income", "Refunds", 1.0, "test")
     update_classification("tx_salary", "Income", "Salary", 1.0, "test")
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    overview_tab = at.tabs[0]  # "All time" is the default preset, covers both seeded dates
+    at = _app()
+    overview_tab = at  # "All time" is the default preset, covers both seeded dates
 
     assert _has_card(overview_tab, "Income", "£2,005.00")
     assert _has_card(overview_tab, "Income", "£2,000.00")
@@ -307,8 +313,8 @@ def test_overview_actual_income_excludes_refunds(db):
 
 def test_overview_chart_metric_selector_switches_without_crash(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    overview_tab = at.tabs[0]
+    at = _app()
+    overview_tab = at
     metric_select = next(sb for sb in overview_tab.selectbox if sb.key == "overview_outgoing_metric")
     metric_select.set_value("Invested").run()
     assert not at.exception
@@ -333,12 +339,12 @@ def test_category_drilldown_shows_invested_not_spend_for_investments(db):
         "tx_isa", "Investments", "Stocks & Shares ISA Contributions", 1.0, "test"
     )
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    drill_tab = at.tabs[3]
+    at = _app("drill_down")
+    drill_tab = at
     cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
     cat_select.set_value("Investments").run()
 
-    drill_tab2 = at.tabs[3]
+    drill_tab2 = at
     assert not at.exception
     assert _has_card(drill_tab2, "Invested", "£300.00")
     assert _has_card(drill_tab2, "Spend", "£0.00")
@@ -363,12 +369,12 @@ def test_top_merchants_search_filters_results(db):
          "received_at": "2026-01-11T10:00:00", "enriched_at": "2026-01-11T10:00:01"},
     ])
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    merchants_tab = at.tabs[4]
+    at = _app("merchants")
+    merchants_tab = at
     search_box = next(ti for ti in merchants_tab.text_input if ti.key == "merchant_search")
     search_box.set_value("Tesco").run()
 
-    merchants_tab2 = at.tabs[4]
+    merchants_tab2 = at
     assert not at.exception
     assert any("All Merchants (1)" in s.value for s in merchants_tab2.subheader)
 
@@ -398,17 +404,14 @@ def test_inbound_and_outbound_transfers_match_between_overview_and_drilldown(db)
     update_classification("tx_out", "Transfers", "Outbound Transfer", 1.0, "test")
     update_classification("tx_in", "Transfers", "Inbound Transfer", 1.0, "test")
 
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-
-    drill_tab = at.tabs[3]
-    cat_select = next(sb for sb in drill_tab.selectbox if sb.label == "Select parent category")
+    at = _app("drill_down")
+    cat_select = next(sb for sb in at.selectbox if sb.label == "Select parent category")
     cat_select.set_value("Transfers").run()
-    drill_tab2 = at.tabs[3]
     assert not at.exception
-    assert _has_card(drill_tab2, "Transferred / Excluded", "£674.00")
+    assert _has_card(at, "Transferred / Excluded", "£674.00")
 
-    overview_tab = at.tabs[0]
-    assert _has_card(overview_tab, "Transferred / Excluded", "£674.00")
+    at.switch_page("views/overview.py").run()
+    assert _has_card(at, "Transferred / Excluded", "£674.00")
 
 
 def _seed_two_merchants(db):
@@ -439,7 +442,7 @@ def _txn_count(at) -> str:
     """'N transactions' for the currently filtered set, read off the
     Transactions tab's 'Edit transactions (N)' heading -- the most direct read
     of what the filters actually did."""
-    heading = next(s.value for s in at.tabs[2].subheader if s.value.startswith("Edit transactions ("))
+    heading = next(s.value for s in at.subheader if s.value.startswith("Edit transactions ("))
     return f"{heading.removeprefix('Edit transactions (').removesuffix(')')} transactions"
 
 
@@ -447,7 +450,7 @@ def test_exclude_merchant_offers_counterparty_only_payees(db):
     """The exclude multiselect must list payees that only ever populate
     counterparty_name (direct debits), not just card merchants."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app()
     options = at.sidebar.multiselect(key="exclude_merchants").options
     assert "Tesco" in options
     assert "Landlord" in options
@@ -455,7 +458,7 @@ def test_exclude_merchant_offers_counterparty_only_payees(db):
 
 def test_exclude_merchant_removes_matching_transactions(db):
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("transactions")
     assert _txn_count(at) == "2 transactions"
 
     at.sidebar.multiselect(key="exclude_merchants").set_value(["Tesco"]).run()
@@ -467,7 +470,7 @@ def test_exclude_counterparty_only_payee_removes_its_transactions(db):
     """Regression guard for the merchant_name='' fallback: excluding a
     direct-debit payee must actually filter it out, not silently match nothing."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("transactions")
     at.sidebar.multiselect(key="exclude_merchants").set_value(["Landlord"]).run()
     assert not at.exception
     assert _txn_count(at) == "1 transactions"
@@ -479,7 +482,7 @@ def test_search_matches_counterparty_only_payees(db):
     debit's payee (a bill, rent, an HMRC-style payment) found nothing at all,
     even though the same term matches via database_functions.search()."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("transactions")
     assert _txn_count(at) == "2 transactions"
     at.sidebar.text_input[0].set_value("Landlord").run()
     assert not at.exception
@@ -495,8 +498,8 @@ def test_biggest_transaction_card_shows_counterparty_not_unknown(db):
     truthy in Python), the same trap that broke clearing a transaction's
     category in the Reclassify editor."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-    txns_tab = at.tabs[2]
+    at = _app("transactions")
+    txns_tab = at
     assert not at.exception
     assert _has_card(txns_tab, "Biggest Transaction", "Landlord")
     assert _has_card(txns_tab, "Unique Merchants", "2")
@@ -506,7 +509,7 @@ def test_exclude_by_id_accepts_newline_and_comma_separated_ids(db):
     """IDs get pasted in from a CSV or copied one-per-line off the table, so
     both separators (and stray whitespace) have to parse the same way."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("transactions")
 
     at.sidebar.text_area(key="exclude_ids").set_value("tx_tesco").run()
     assert not at.exception
@@ -524,7 +527,7 @@ def test_exclude_by_id_accepts_newline_and_comma_separated_ids(db):
 def test_unknown_exclude_id_leaves_data_untouched(db):
     """A typo'd or stale ID should be a no-op, never an exception."""
     _seed_two_merchants(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("transactions")
     at.sidebar.text_area(key="exclude_ids").set_value("tx_does_not_exist").run()
     assert not at.exception
     assert _txn_count(at) == "2 transactions"
@@ -534,10 +537,10 @@ def test_manual_backup_button_writes_a_backup(db):
     """End-to-end wiring check: the Settings tab's backup button must actually
     save a copy of every table."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("settings")
     assert database_functions.list_backups() == []
 
-    settings_tab = at.tabs[SETTINGS]
+    settings_tab = at
     next(b for b in settings_tab.button if b.label == "Back up now").click().run()
 
     assert not at.exception
@@ -548,20 +551,20 @@ def test_manual_backup_button_writes_a_backup(db):
     # The listing must say what was actually saved, not just that a backup
     # happened -- the seed holds exactly one transaction.
     summary = next(
-        md.value for md in at.tabs[SETTINGS].markdown if "Latest backup" in md.value
+        md.value for md in at.markdown if "Latest backup" in md.value
     )
     assert "1 transactions" in summary
 
 
 def _settings_button(at, label: str):
-    return next(b for b in at.tabs[SETTINGS].button if b.label == label)
+    return next(b for b in at.button if b.label == label)
 
 
 def test_backup_delete_requires_confirmation(db):
     """Deleting a backup throws away a safety net, so the first click must only
     ask -- matching how the rest of the app handles destructive actions."""
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("settings")
     _settings_button(at, "Back up now").click().run()
     assert len(database_functions.list_backups()) == 1
 
@@ -569,12 +572,12 @@ def test_backup_delete_requires_confirmation(db):
 
     assert not at.exception
     assert len(database_functions.list_backups()) == 1, "must not delete on the first click"
-    assert any("cannot be recovered" in w.value for w in at.tabs[SETTINGS].warning)
+    assert any("cannot be recovered" in w.value for w in at.warning)
 
 
 def test_backup_delete_confirmed_removes_it(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("settings")
     _settings_button(at, "Back up now").click().run()
     _settings_button(at, "Delete backup").click().run()
     _settings_button(at, "Yes, delete it").click().run()
@@ -585,12 +588,12 @@ def test_backup_delete_confirmed_removes_it(db):
 
 def test_backup_delete_can_be_cancelled(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("settings")
     _settings_button(at, "Back up now").click().run()
     before = database_functions.list_backups()
 
     _settings_button(at, "Delete backup").click().run()
-    next(b for b in at.tabs[SETTINGS].button if b.key == "confirm_del_backup_no").click().run()
+    next(b for b in at.button if b.key == "confirm_del_backup_no").click().run()
     # AppTest does not follow the st.rerun() the Cancel handler triggers -- the
     # captured tree is the one rendered up to that call, which still holds the
     # confirmation. One more run() gives the tree the browser would show.
@@ -598,16 +601,16 @@ def test_backup_delete_can_be_cancelled(db):
 
     assert not at.exception
     assert database_functions.list_backups() == before
-    assert not any("cannot be recovered" in w.value for w in at.tabs[SETTINGS].warning)
+    assert not any("cannot be recovered" in w.value for w in at.warning)
 
 
 def test_backup_delete_warns_when_it_is_the_only_one(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("settings")
     _settings_button(at, "Back up now").click().run()
     _settings_button(at, "Delete backup").click().run()
 
-    warning = next(w.value for w in at.tabs[SETTINGS].warning if "cannot be recovered" in w.value)
+    warning = next(w.value for w in at.warning if "cannot be recovered" in w.value)
     assert "only backup" in warning
 
 
@@ -638,7 +641,7 @@ class TestDateRangeFilter:
         Streamlit does after every widget interaction), then set the end box --
         never a single combined tuple."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+        at = _app("transactions")
         assert _txn_count(at) == "4 transactions"
 
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
@@ -652,7 +655,7 @@ class TestDateRangeFilter:
         independent boxes don't, so the app must sort them rather than let a
         reversed pick silently return nothing (or everything)."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+        at = _app("transactions")
 
         at.sidebar.date_input(key="date_from").set_value(date(2026, 8, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 2, 1)).run()
@@ -670,7 +673,7 @@ class TestDateRangeFilter:
         actually on record -- i.e. the start of every month, until that
         month's first transaction lands)."""
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+        at = _app("transactions")
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
         assert _txn_count(at) == "2 transactions"
@@ -685,7 +688,7 @@ class TestDateRangeFilter:
 
     def test_reset_button_reverts_manual_edits_to_the_current_preset(self, db):
         _seed_date_spread(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+        at = _app("transactions")
         at.sidebar.date_input(key="date_from").set_value(date(2026, 2, 1)).run()
         at.sidebar.date_input(key="date_to").set_value(date(2026, 8, 1)).run()
         assert _txn_count(at) == "2 transactions"
@@ -734,9 +737,9 @@ class TestInvestedAndSavedStayNumericallySeparate:
 
     def test_overview_cards_show_each_figure_separately_not_summed(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+        at = _app()
         assert not at.exception
-        overview = at.tabs[0]
+        overview = at
         assert _has_card(overview, "Invested", "£250.00")
         assert _has_card(overview, "Saved", "£500.00")
         assert not _has_card(overview, "Invested", "£750.00")
@@ -746,35 +749,35 @@ class TestInvestedAndSavedStayNumericallySeparate:
         """Both roles are excluded from Actual Spend/Income/Net entirely --
         neither a contribution nor a pot deposit is real spend."""
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        overview = at.tabs[0]
+        at = _app()
+        overview = at
         assert _has_card(overview, "Spend", "£0.00")
         assert _has_card(overview, "Net", "£0.00")
 
     def test_category_drill_down_keeps_them_on_separate_cards(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        drill = at.tabs[3]
+        at = _app("drill_down")
+        drill = at
         drill.selectbox(key="drill_selected_category").set_value("Investments").run()
-        assert _has_card(at.tabs[3], "Invested", "£250.00")
-        assert not _has_card(at.tabs[3], "Saved", "£500.00"), \
+        assert _has_card(at, "Invested", "£250.00")
+        assert not _has_card(at, "Saved", "£500.00"), \
             "the Investments drill-down must not show the Savings figure at all"
 
         drill.selectbox(key="drill_selected_category").set_value("Savings").run()
-        assert _has_card(at.tabs[3], "Saved", "£500.00")
-        assert not _has_card(at.tabs[3], "Invested", "£250.00"), \
+        assert _has_card(at, "Saved", "£500.00")
+        assert not _has_card(at, "Invested", "£250.00"), \
             "the Savings drill-down must not show the Investments figure at all"
 
     def test_the_outgoing_breakdown_dropdown_offers_saved_as_its_own_metric(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        options = at.tabs[0].selectbox(key="overview_outgoing_metric").options
+        at = _app()
+        options = at.selectbox(key="overview_outgoing_metric").options
         assert "Saved" in options and "Invested" in options
 
     def test_monthly_breakdown_table_has_both_as_separate_columns(self, db):
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        df = at.tabs[0].dataframe[0].value
+        at = _app()
+        df = at.dataframe[0].value
         assert "Invested" in df.columns and "Saved" in df.columns
         row = df.iloc[0]
         assert row["Invested"] == 250 and row["Saved"] == 500
@@ -785,8 +788,8 @@ class TestInvestedAndSavedStayNumericallySeparate:
         groupby, not the same masks) -- it must not silently disagree with
         the now-netted Saved card just above it on the same tab."""
         _seed_saving_deposit_and_withdrawal(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        df = at.tabs[0].dataframe[0].value
+        at = _app()
+        df = at.dataframe[0].value
         row = df.iloc[0]
         assert row["Saved"] == 300
 
@@ -796,8 +799,8 @@ class TestInvestedAndSavedStayNumericallySeparate:
         Standard row shows only Income/Spend/Net/Savings Rate -- it must not
         render a dead card stuck permanently on '—'."""
         _seed_investment_and_saving(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        overview = at.tabs[0]
+        at = _app()
+        overview = at
         assert not _has_card(overview, "Invested", "—")
         assert not _has_card(overview, "Saved", "—")
         assert not _has_card(overview, "Transferred / Excluded", "—")
@@ -869,16 +872,16 @@ class TestOverviewNetsSavingAndInvestmentButNotTransfers:
 
     def test_saved_nets_deposit_and_withdrawal_into_one_card(self, db):
         _seed_saving_deposit_and_withdrawal(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        overview = at.tabs[0]
+        at = _app()
+        overview = at
         assert _has_card(overview, "Saved", "£300.00")
         assert not _has_card(overview, "Saved (Outgoing)", "£500.00")
         assert not _has_card(overview, "Saved (Incoming)", "£200.00")
 
     def test_transferred_excluded_still_splits_into_outgoing_and_incoming(self, db):
         _seed_transfer_in_and_out(db)
-        at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
-        overview = at.tabs[0]
+        at = _app()
+        overview = at
         assert _has_card(overview, "Transferred / Excluded (Outgoing)", "£120.00")
         assert _has_card(overview, "Transferred / Excluded (Incoming)", "£300.00")
         assert not _has_card(overview, "Transferred / Excluded", "£180.00"), \
@@ -895,15 +898,15 @@ def _add_tesco_rule(**overrides) -> int:
 
 def test_rules_tab_previews_and_adds_a_rule(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.text_input(key="rule_name").set_value("Weekly shop")
     at.text_input(key="rule_v1").set_value("tesco")
     at.text_input(key="rule_ctx").set_value("Groceries")
     at.run()
 
     assert not at.exception
-    assert any("Would have caught 1" in md.value for md in at.tabs[RULES].markdown)
-    next(b for b in at.tabs[RULES].button if b.label == "Add rule").click().run()
+    assert any("Would have caught 1" in md.value for md in at.markdown)
+    next(b for b in at.button if b.label == "Add rule").click().run()
 
     assert not at.exception
     rules = database_functions.get_rules()
@@ -914,26 +917,26 @@ def test_rules_tab_previews_and_adds_a_rule(db):
 
 def test_rules_tab_wont_add_a_rule_that_does_nothing(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.text_input(key="rule_name").set_value("Tesco")
     at.text_input(key="rule_v1").set_value("tesco")
     at.run()
 
-    add = next(b for b in at.tabs[RULES].button if b.label == "Add rule")
+    add = next(b for b in at.button if b.label == "Add rule")
     assert add.disabled
-    assert any("do something" in c.value for c in at.tabs[RULES].caption)
+    assert any("do something" in c.value for c in at.caption)
 
 
 def test_rules_tab_edits_in_place(db):
     _seed(db)
     rule_id = _add_tesco_rule()
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.button(key=f"rule_edit_{rule_id}").click().run()
     assert at.text_input(key="rule_name").value == "Tesco"
 
     at.text_input(key="rule_ctx").set_value("Food shop")
     at.run()
-    next(b for b in at.tabs[RULES].button if b.label == "Save changes").click().run()
+    next(b for b in at.button if b.label == "Save changes").click().run()
 
     assert not at.exception
     rules = database_functions.get_rules()
@@ -944,7 +947,7 @@ def test_rules_tab_edits_in_place(db):
 def test_rules_tab_pauses_and_confirms_delete(db):
     _seed(db)
     rule_id = _add_tesco_rule()
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.button(key=f"rule_toggle_{rule_id}").click().run()
     assert database_functions.get_rules()[0]["enabled"] is False
 
@@ -958,29 +961,29 @@ def test_rules_tab_pauses_and_confirms_delete(db):
 def test_rules_tab_says_when_an_earlier_rule_wins(db):
     _seed(db)
     _add_tesco_rule(name="Earlier")
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.text_input(key="rule_name").set_value("Later")
     at.text_input(key="rule_v1").set_value("tes")
     at.checkbox(key="rule_skip").check()
     at.run()
 
     assert not at.exception
-    assert any("caught first by an earlier rule" in w.value for w in at.tabs[RULES].warning)
+    assert any("caught first by an earlier rule" in w.value for w in at.warning)
 
 
 def test_rules_tab_checks_a_payment(db):
     _seed(db)
     _add_tesco_rule()
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.selectbox(key="rule_check").set_value("tx_001").run()
 
     assert not at.exception
-    assert any("Applies:" in md.value and "Tesco" in md.value for md in at.tabs[RULES].markdown)
+    assert any("Applies:" in md.value and "Tesco" in md.value for md in at.markdown)
 
 
 def test_rules_tab_fills_from_a_payment(db):
     _seed(db)
-    at = AppTest.from_file(_DASHBOARD_PATH, default_timeout=30).run()
+    at = _app("rules")
     at.selectbox(key="rule_fill").set_value("tx_001").run()
 
     assert not at.exception
