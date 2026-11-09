@@ -106,7 +106,7 @@ class TestRecording:
         r = _row(db)
         assert (r["job"], r["provider"], r["model"], r["response_model"], r["status"]) == (
             "classify_parents", "anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", "ok")
-        assert r["request"] == {"messages": [{"role": "user", "content": "Classify these"}]}
+        assert len(r["prompt_sha256"]) == 64 and r["prompt_chars"] > len("Classify these")
         assert r["params"] == {"model": "claude-sonnet-4-6", "max_tokens": 4096}
         assert r["response_text"].startswith("[") and r["thinking"] == "Hmm, groceries."
         assert (r["input_tokens"], r["cache_read_tokens"], r["output_tokens"]) == (1000, 500, 200)
@@ -146,13 +146,19 @@ class TestRecording:
         monkeypatch.setattr(llm_calls, "get_con", lambda: (_ for _ in ()).throw(OSError("db gone")))
         assert _call(db).id == "msg_1"
 
-    def test_old_text_is_cleared_but_the_numbers_stay(self, db):
+    def test_the_prompts_wording_is_stored_once_per_version(self, db, monkeypatch):
+        monkeypatch.setattr(llm_calls, "_stored", set())
         _call(db)
-        db.execute("UPDATE llm_calls SET started_at = now() - INTERVAL '400 days'")
-        llm_calls.clear_old_text(db)
-        r = _row(db)
-        assert r["request"] is None and r["response_text"] is None and r["text_cleared_at"] is not None
-        assert r["output_tokens"] == 200 and r["cost_usd"] is not None
+        _call(db)
+        rows = db.execute("SELECT prompt_version, source FROM prompt_versions").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == _row(db)["prompt_version"] and "def _a_prompt" in rows[0][1]
+        assert "prompt_source" in llm_calls.get_call(_row(db)["call_id"])
+
+    def test_the_same_prompt_has_the_same_fingerprint(self, db):
+        _call(db)
+        _call(db)
+        assert len({r[0] for r in db.execute("SELECT prompt_sha256 FROM llm_calls").fetchall()}) == 1
 
 
 # ── Reading ───────────────────────────────────────────────────────────────────

@@ -1,7 +1,9 @@
 """Every call to Claude goes through create() here, which makes the call and
-records it in llm_calls: the request and response in full, thinking, tokens,
-how long it took, retries, what it cost at that day's prices, and which
-payments it was about. The dashboard's AI page reads it.
+records it in llm_calls: the prompt's version and the payments it covered
+(the prompt itself isn't kept -- its wording is stored once per version, in
+prompt_versions), the response and thinking, tokens, how long it took,
+retries, and what it cost at that day's prices. The dashboard's AI page reads
+it.
 
 Recording never gets in the way of a call: if the row can't be written, the
 call's result is still returned (and the failure logged).
@@ -73,22 +75,44 @@ def cost(prices: dict | None, tokens: dict) -> float | None:
 current_run_id: int | None = None   # set by process.main for the length of a run
 
 _last_call: contextvars.ContextVar[int | None] = contextvars.ContextVar("last_llm_call", default=None)
-_versions: dict = {}
+_versions: dict = {}   # prompt_fn -> (version, source)
+_stored: set = set()   # versions already in prompt_versions, this process
+
+
+def _version_and_source(prompt_fn) -> tuple[str, str | None]:
+    if prompt_fn not in _versions:
+        try:
+            source = inspect.getsource(prompt_fn)
+            digest = hashlib.sha256(source.encode()).hexdigest()[:10]
+        except (OSError, TypeError):
+            source, digest = None, "unknown"
+        _versions[prompt_fn] = (f"{prompt_fn.__module__}.{prompt_fn.__name__}@{digest}", source)
+    return _versions[prompt_fn]
 
 
 def prompt_version(prompt_fn) -> str | None:
     """'llm_labelling._pass1_prompt@3f9a1c2b0e': the function that builds the
     prompt and a fingerprint of its source, so any edit to its wording is a
     new version without anyone having to remember to bump one."""
-    if prompt_fn is None:
-        return None
-    if prompt_fn not in _versions:
-        try:
-            digest = hashlib.sha256(inspect.getsource(prompt_fn).encode()).hexdigest()[:10]
-        except (OSError, TypeError):
-            digest = "unknown"
-        _versions[prompt_fn] = f"{prompt_fn.__module__}.{prompt_fn.__name__}@{digest}"
-    return _versions[prompt_fn]
+    return _version_and_source(prompt_fn)[0] if prompt_fn is not None else None
+
+
+def _store_version(prompt_fn) -> None:
+    """The prompt's wording, once per version (prompt_versions)."""
+    version, source = _version_and_source(prompt_fn)
+    if version in _stored or source is None:
+        return
+    get_con().execute(
+        "INSERT INTO prompt_versions (prompt_version, source) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+        [version, source],
+    )
+    _stored.add(version)
+
+
+def _fingerprint(kwargs) -> tuple[str, int]:
+    """(sha256, characters) of the prompt as sent: system + messages."""
+    text = json.dumps(_jsonable({k: kwargs[k] for k in ("system", "messages") if k in kwargs}), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest(), len(text)
 
 
 # ── The call ──────────────────────────────────────────────────────────────────
@@ -166,11 +190,13 @@ def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, attempts, ret
     _last_call.set(None)
     try:
         params = {k: v for k, v in kwargs.items() if k not in ("messages", "system")}
-        request = {k: kwargs[k] for k in ("system", "messages") if k in kwargs}
+        if prompt_fn is not None:
+            _store_version(prompt_fn)
+        sha, chars = _fingerprint(kwargs)
         row = {
             "started_at": started, "duration_ms": duration_ms, "run_id": current_run_id, "job": job,
             "prompt_version": prompt_version(prompt_fn), "provider": "anthropic", "model": kwargs.get("model", "?"),
-            "params": json.dumps(_jsonable(params)), "request": json.dumps(_jsonable(request)),
+            "params": json.dumps(_jsonable(params)), "prompt_sha256": sha, "prompt_chars": chars,
             "txn_ids": json.dumps([str(t) for t in txn_ids]), "attempts": attempts,
             "retry_errors": json.dumps(retry_errors),
         }
@@ -225,14 +251,6 @@ def parsed(ok: bool, answered: int | None = None, expected: int | None = None) -
         log.warning(f"Couldn't record whether call {call_id}'s reply was usable: {e}")
 
 
-def clear_old_text(con, keep_days: int = 365) -> None:
-    """The request, response and thinking go after a year; the numbers stay."""
-    con.execute(
-        f"""UPDATE llm_calls SET request = NULL, response_text = NULL, thinking = NULL, text_cleared_at = now()
-            WHERE started_at < now() - INTERVAL '{int(keep_days)} days' AND text_cleared_at IS NULL"""
-    )
-
-
 # ── Reading (the dashboard's AI page) ─────────────────────────────────────────
 #
 # Times are London's. The call list leaves out the bulky text; get_call()
@@ -259,8 +277,10 @@ def get_calls(since=None, until=None) -> list[dict]:
 
 def get_call(call_id: int) -> dict | None:
     rows = _rows(
-        f"""SELECT {_CALL_COLUMNS}, params, request, response_text, thinking, usage, prices, retry_errors,
-                   response_id, text_cleared_at
+        f"""SELECT {_CALL_COLUMNS}, params, prompt_sha256, prompt_chars, response_text, thinking, usage, prices,
+                   retry_errors, response_id,
+                   (SELECT source FROM prompt_versions v WHERE v.prompt_version = llm_calls.prompt_version)
+                       AS prompt_source
             FROM llm_calls WHERE call_id = %s""",
         [call_id],
     )

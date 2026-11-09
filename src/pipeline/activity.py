@@ -132,6 +132,3 @@ def run_summary(con, run_id: int) -> dict:
 def clear_old(con) -> None:
     con.execute(f"DELETE FROM log_events WHERE logged_at < now() - INTERVAL '{KEEP_DAYS} days'")
     con.execute(f"DELETE FROM runs WHERE started_at < now() - INTERVAL '{KEEP_DAYS} days'")
-    # Calls to Claude are kept for good; only their text goes, after a year.
-    import llm_calls
-    llm_calls.clear_old_text(con)

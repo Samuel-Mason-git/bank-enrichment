@@ -16,6 +16,7 @@ TABLES = {
     "parent_categories", "subcategories", "category_roles",
     "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
     "judge_reviews", "subscriptions", "summaries", "runs", "log_events", "llm_calls", "settings_changes",
+    "prompt_versions",
 }
 VIEWS = {"transactions", "transaction_current", "transaction_roles", "needs_context", "needs_label",
          "quick_categories"}

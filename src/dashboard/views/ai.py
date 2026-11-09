@@ -1,12 +1,11 @@
 """AI usage: what the calls to Claude cost and did -- spend by day, job,
-model and prompt version, every call in full (request, response, thinking,
-tokens, cost at that day's prices), and how good the answers turned out to
+model and prompt version, every call (its prompt version and wording,
+response, thinking, tokens, cost at that day's prices), and how good the answers turned out to
 be: how often you corrected the classifier, what the judge caught, and how
 the cards Claude's suggestions became were answered.
 
 Spend comes from llm_calls, recorded from when this version was deployed;
 the quality figures use all of your history."""
-import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -178,27 +177,20 @@ def _show_call(call_id: int) -> None:
     if c["txn_ids"]:
         st.caption(f"About {len(c['txn_ids'])} payment(s): " + ", ".join(c["txn_ids"][:20])
                    + (" …" if len(c["txn_ids"]) > 20 else ""))
-    if c["text_cleared_at"]:
-        st.info("The text of this call was cleared after a year; the numbers are kept.")
-    else:
-        request = c["request"] or {}
-        if request.get("system"):
-            with st.expander("System prompt"):
-                st.code(request["system"] if isinstance(request["system"], str)
-                        else json.dumps(request["system"], indent=2), language=None, wrap_lines=True)
-        for i, m in enumerate(request.get("messages", []), 1):
-            content = m.get("content")
-            text = content if isinstance(content, str) else "\n\n".join(
-                b.get("text", json.dumps(b)) for b in content or [])
-            with st.expander(f"Request · message {i} ({m.get('role')}, {len(text):,} characters)"):
-                st.code(text, language=None, wrap_lines=True)
-        if c["thinking"]:
-            with st.expander("Thinking"):
-                st.code(c["thinking"], language=None, wrap_lines=True)
-        with st.expander("Response", expanded=True):
-            st.code(c["response_text"] or "(none)", language=None, wrap_lines=True)
+    if c["prompt_source"]:
+        with st.expander(f"The prompt's wording ({c['prompt_version']}, sent as {c['prompt_chars'] or 0:,} "
+                         "characters)"):
+            st.caption("The code that builds this prompt. The payments above and your taxonomy at the time were "
+                       "filled into it; the prompt as sent isn't kept, only its fingerprint.")
+            st.code(c["prompt_source"], language="python", wrap_lines=True)
+    if c["thinking"]:
+        with st.expander("Thinking"):
+            st.code(c["thinking"], language=None, wrap_lines=True)
+    with st.expander("Response", expanded=True):
+        st.code(c["response_text"] or "(none)", language=None, wrap_lines=True)
     with st.expander("Settings and raw usage"):
-        st.json({"params": c["params"], "usage": c["usage"], "response_id": c["response_id"]})
+        st.json({"params": c["params"], "usage": c["usage"], "response_id": c["response_id"],
+                 "prompt_sha256": c["prompt_sha256"]})
 
 
 opened = st.session_state.pop("ai_open_call", None)
