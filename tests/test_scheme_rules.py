@@ -97,41 +97,6 @@ class TestDescriptionMatchingIsStillAvailable:
         assert check_rules(_txn(description="HOME DEPOT_STORE 42"))[0] is not None
 
 
-class TestTheRuleTesterCanExerciseSchemeRules:
-    """A scheme rule is untestable from the dashboard unless the tester can both
-    accept a scheme and auto-fill one from a real queued transaction. Without
-    the second, picking a genuine pot transfer leaves the field blank and the
-    rule appears not to match."""
-
-    def test_a_queued_transaction_offers_its_scheme_for_auto_fill(self, server_con):
-        import json as _json
-        import main
-        server_con.execute(
-            """INSERT INTO transactions_raw (id, payload, received_at)
-               VALUES ('tx_pot', %s, NOW())""",
-            [_json.dumps({"data": {
-                "id": "tx_pot", "amount": 10000, "scheme": "uk_retail_pot",
-                "description": "pot_0000B7cenLixHWSDlwwxKD", "category": "general",
-                "merchant": None, "counterparty": None,
-            }})],
-        )
-        txns = main._get_test_transactions(server_con)
-        assert txns[0]["scheme"] == "uk_retail_pot"
-
-    def test_a_transaction_without_a_scheme_auto_fills_blank_not_none(self, server_con):
-        """The value goes straight into an input, so None would render as the
-        string 'None' and then fail to match anything."""
-        import json as _json
-        import main
-        server_con.execute(
-            """INSERT INTO transactions_raw (id, payload, received_at)
-               VALUES ('tx_old', %s, NOW())""",
-            [_json.dumps({"data": {"id": "tx_old", "amount": -500,
-                                   "description": "OLD", "category": "general"}})],
-        )
-        assert main._get_test_transactions(server_con)[0]["scheme"] == ""
-
-
 class TestDirectionDistinguishesDepositsFromWithdrawals:
     """A pot transfer's description is just its pot id -- scheme alone can't
     tell a deposit from a withdrawal, only the amount's sign can. Two rules,

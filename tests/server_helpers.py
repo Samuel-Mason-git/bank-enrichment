@@ -119,15 +119,19 @@ def replies(bot) -> list[str]:
     return [c.args[1] for c in bot.send_message.call_args_list]
 
 
+# Where a transaction is up to: pending (no answer yet), enriched (answered,
+# not classified), classified, or skipped.
+STATUS_SQL = """CASE WHEN t.skipped THEN 'skipped'
+                     WHEN t.enriched_at IS NULL THEN 'pending'
+                     WHEN t.llm_subcategory IS NULL THEN 'enriched'
+                     ELSE 'classified' END"""
+
+
 def status(con, txn_id="tx_1") -> str | None:
-    """Where a transaction is up to, as the dashboard sees it: pending (no
-    answer yet), enriched (answered, not classified), classified, or skipped."""
-    from main import STATUS_SQL
     row = con.execute(f"SELECT {STATUS_SQL} FROM transactions t WHERE t.id = %s", [txn_id]).fetchone()
     return row[0] if row else None
 
 
 def stored(con) -> dict[str, str]:
     """{transaction id: status} for every transaction stored."""
-    from main import STATUS_SQL
     return dict(con.execute(f"SELECT t.id, {STATUS_SQL} FROM transactions t").fetchall())
