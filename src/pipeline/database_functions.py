@@ -164,7 +164,7 @@ def _seed_taxonomy() -> None:
             upsert_subcategory(sub_name, parent_id)
 
     # Refunds are money you already spent coming back, not new income — excluded
-    # from Income totals by default (overridable in the dashboard's Settings tab).
+    # from Income totals by default (overridable in the dashboard's Settings page).
     refunds = con.execute(
         """SELECT s.id, s.parent_id FROM subcategories s
            JOIN parent_categories p ON p.id = s.parent_id
@@ -415,6 +415,254 @@ def update_transaction_details(transaction_id: str, created_at, user_context: st
     )
 
 
+# ── The queue and one payment (the dashboard's Queue and Payment pages) ──────
+#
+# Written the way the server writes them (server_db.record_context), so a skip
+# or an answer from the dashboard is the same as one from Telegram.
+
+# Where a payment is up to: no answer yet, answered but not yet classified,
+# held behind a new-category card waiting for your pick, classified, or skipped.
+STATUS_SQL = """CASE WHEN t.skipped THEN 'skipped'
+                     WHEN t.enriched_at IS NULL THEN 'pending'
+                     WHEN t.llm_subcategory IS NULL AND t.pending_category_proposal_id IS NOT NULL THEN 'held'
+                     WHEN t.llm_subcategory IS NULL THEN 'enriched'
+                     ELSE 'classified' END"""
+
+
+def set_context(transaction_id: str, context: str | None, *, skipped: bool = False) -> None:
+    """A payment's context given, changed, skipped or unskipped from the
+    dashboard: a new context event carrying any corrected date forward. A label
+    a rule set is cleared, since what you said now decides the category."""
+    con = get_con()
+    with con.transaction():
+        previous = con.execute(
+            """SELECT created_at_override FROM context_events
+               WHERE txn_id = %s AND source <> 'request' ORDER BY event_id DESC LIMIT 1""",
+            [transaction_id],
+        ).fetchone()
+        con.execute(
+            """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
+               VALUES (%s, %s, %s, %s, 'dashboard', %s)""",
+            [transaction_id, context, skipped, previous[0] if previous else None, _now()],
+        )
+        label_source = con.execute(
+            "SELECT source FROM label_events WHERE txn_id = %s ORDER BY event_id DESC LIMIT 1", [transaction_id]
+        ).fetchone()
+        if label_source and label_source[0] == "rule":
+            con.execute(
+                "INSERT INTO label_events (txn_id, source, set_at) VALUES (%s, 'manual', %s)",
+                [transaction_id, _now()],
+            )
+
+
+def skip_transaction(transaction_id: str) -> None:
+    set_context(transaction_id, "Skipped", skipped=True)
+
+
+def unskip_transaction(transaction_id: str) -> None:
+    """Counted again, with no context: the classifier picks it up on its next run."""
+    set_context(transaction_id, None, skipped=False)
+
+
+def delete_transaction(transaction_id: str) -> None:
+    """Gone for good, with its history -- for a test payment or a mistake, not
+    for something you'd rather not see (skip that instead)."""
+    con = get_con()
+    with con.transaction():
+        for table in ("label_events", "context_events", "judge_reviews", "transaction_updates"):
+            con.execute(f"DELETE FROM {table} WHERE txn_id = %s", [transaction_id])
+        con.execute("DELETE FROM transactions_raw WHERE id = %s", [transaction_id])
+    log.info(f"Transaction deleted from the dashboard: {transaction_id}")
+
+
+def get_queue_transactions() -> list[dict]:
+    """Every payment with where it's up to and how often you were asked about
+    it, newest first. The Queue page shows the pending and enriched ones."""
+    return _rows(
+        f"""WITH asks AS (SELECT txn_id, COUNT(*) AS times_asked, MAX(set_at) AS last_asked
+                          FROM context_events WHERE source = 'request' GROUP BY txn_id)
+            SELECT t.id, t.created_at, t.received_at, t.amount, t.merchant_name, t.counterparty_name,
+                   t.description, t.user_context, t.skipped, t.llm_category, t.llm_subcategory,
+                   {STATUS_SQL} AS status,
+                   COALESCE(a.times_asked, 0) AS times_asked,
+                   a.last_asked AT TIME ZONE 'Europe/London' AS last_asked
+            FROM transactions t LEFT JOIN asks a ON a.txn_id = t.id
+            ORDER BY t.created_at DESC"""
+    )
+
+
+def get_payment(transaction_id: str) -> dict | None:
+    """One payment as the Payment page shows it: the transactions view's row,
+    its status, and how often you were asked about it."""
+    rows = _rows(
+        f"""SELECT t.*, {STATUS_SQL} AS status,
+                   (SELECT COUNT(*) FROM context_events e
+                    WHERE e.txn_id = t.id AND e.source = 'request') AS times_asked
+            FROM transactions t WHERE t.id = %s""",
+        [transaction_id],
+    )
+    return rows[0] if rows else None
+
+
+def get_payment_history(transaction_id: str) -> list[dict]:
+    """Everything that's happened to a payment, oldest first: it arriving,
+    Monzo updating it, each question, answer, skip and label, and the judge's
+    reviews. Times in London."""
+    return _rows(
+        """SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.extra FROM (
+               SELECT received_at AS at, 'arrived' AS kind, 'webhook' AS source,
+                      NULL::TEXT AS detail, NULL::TEXT AS extra
+               FROM transactions_raw WHERE id = %(id)s
+               UNION ALL
+               SELECT received_at, 'updated', source, NULL, NULL
+               FROM transaction_updates WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT set_at,
+                      CASE WHEN source = 'request' THEN 'asked'
+                           WHEN skipped THEN 'skipped'
+                           WHEN user_context IS NULL THEN 'context cleared'
+                           ELSE 'context' END,
+                      source, user_context,
+                      CASE WHEN created_at_override IS NOT NULL
+                           THEN 'date set to ' || to_char(created_at_override AT TIME ZONE 'Europe/London',
+                                                          'DD Mon YYYY HH24:MI') END
+               FROM context_events WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT l.set_at,
+                      CASE WHEN l.parent_id IS NULL THEN 'label cleared' ELSE 'labelled' END,
+                      l.source,
+                      CASE WHEN p.name IS NOT NULL THEN p.name || COALESCE(' › ' || s.name, '') END,
+                      concat_ws(' · ', l.model,
+                                CASE WHEN l.confidence IS NOT NULL
+                                     THEN round(l.confidence * 100)::TEXT || '%% sure' END)
+               FROM label_events l
+               LEFT JOIN parent_categories p ON p.id = l.parent_id
+               LEFT JOIN subcategories s ON s.id = l.subcategory_id
+               WHERE l.txn_id = %(id)s
+               UNION ALL
+               SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory, outcome
+               FROM judge_reviews WHERE txn_id = %(id)s
+               UNION ALL
+               SELECT proposed_at, 'proposed', 'proposal',
+                      (SELECT string_agg((o->>'parent_name') || ' › ' || (o->>'subcategory_name'), ' / ')
+                       FROM jsonb_array_elements(options) o),
+                      status
+               FROM category_proposals WHERE txn_ids ? %(id)s
+           ) h
+           ORDER BY h.at""",
+        {"id": transaction_id},
+    )
+
+
+def get_lifetime_stats() -> dict:
+    """Totals since the start, as the server's old queue page showed them."""
+    return _rows(
+        """SELECT (SELECT COUNT(*) FROM transactions_raw) AS received,
+                  (SELECT COUNT(*) FROM context_events WHERE source = 'request') AS asked,
+                  (SELECT COUNT(DISTINCT txn_id) FROM context_events
+                   WHERE source NOT IN ('request', 'timeout') AND user_context IS NOT NULL) AS answered,
+                  (SELECT COUNT(*) FROM (SELECT DISTINCT ON (txn_id) subcategory_id FROM label_events
+                                         ORDER BY txn_id, event_id DESC) l
+                   WHERE l.subcategory_id IS NOT NULL) AS classified"""
+    )[0]
+
+
+# ── Activity (the dashboard's Activity page) ─────────────────────────────────
+#
+# Days are London days. runs and log_events are written by activity.py; the
+# rest comes straight from the history tables.
+
+_LONDON_DAY = "({col} AT TIME ZONE 'Europe/London')::date = %(day)s"
+
+# Who a payment was to or from, read off its first webhook (no view: cheap).
+_PAYEE_SQL = """COALESCE(NULLIF(r.payload->'data'->'merchant'->>'name', ''),
+                         NULLIF(r.payload->'data'->'counterparty'->>'name', ''),
+                         r.payload->'data'->>'description', r.id)"""
+
+
+def get_runs(day) -> list[dict]:
+    return _rows(
+        f"""SELECT run_id, started_at AT TIME ZONE 'Europe/London' AS started_at,
+                   finished_at AT TIME ZONE 'Europe/London' AS finished_at,
+                   EXTRACT(EPOCH FROM finished_at - started_at)::FLOAT AS seconds, status, summary
+            FROM runs WHERE {_LONDON_DAY.format(col='started_at')} ORDER BY started_at""",
+        {"day": day},
+    )
+
+
+def first_recorded_run_day():
+    """The London day of the first run recorded in runs, or None: days before
+    it simply weren't recorded."""
+    row = get_con().execute(
+        "SELECT (MIN(started_at) AT TIME ZONE 'Europe/London')::date FROM runs"
+    ).fetchone()
+    return row[0] if row else None
+
+
+def get_log_events(day) -> list[dict]:
+    return _rows(
+        f"""SELECT logged_at AT TIME ZONE 'Europe/London' AS logged_at, service, level, logger, message, detail
+            FROM log_events WHERE {_LONDON_DAY.format(col='logged_at')} ORDER BY logged_at""",
+        {"day": day},
+    )
+
+
+def get_day_events(day) -> list[dict]:
+    """Everything that happened to any payment on one day, in order: arrivals,
+    questions, answers and skips, labels, judge reviews and new-category cards."""
+    return _rows(
+        f"""SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.txn_id,
+                   {_PAYEE_SQL} AS payee, (r.payload->'data'->>'amount')::NUMERIC / 100 AS amount
+            FROM (
+                SELECT received_at AS at, 'arrived' AS kind, 'webhook' AS source, NULL::TEXT AS detail, id AS txn_id
+                FROM transactions_raw WHERE {_LONDON_DAY.format(col='received_at')}
+                UNION ALL
+                SELECT set_at,
+                       CASE WHEN source = 'request' THEN 'asked' WHEN skipped THEN 'skipped'
+                            WHEN user_context IS NULL THEN 'context cleared' ELSE 'context' END,
+                       source, user_context, txn_id
+                FROM context_events WHERE {_LONDON_DAY.format(col='set_at')}
+                UNION ALL
+                SELECT l.set_at, CASE WHEN l.parent_id IS NULL THEN 'label cleared' ELSE 'labelled' END,
+                       l.source, CASE WHEN p.name IS NOT NULL THEN p.name || COALESCE(' › ' || s.name, '') END,
+                       l.txn_id
+                FROM label_events l
+                LEFT JOIN parent_categories p ON p.id = l.parent_id
+                LEFT JOIN subcategories s ON s.id = l.subcategory_id
+                WHERE {_LONDON_DAY.format(col='l.set_at')}
+                UNION ALL
+                SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory || ' · ' || outcome, txn_id
+                FROM judge_reviews WHERE {_LONDON_DAY.format(col='reviewed_at')}
+            ) h
+            JOIN transactions_raw r ON r.id = h.txn_id
+            ORDER BY h.at""",
+        {"day": day},
+    )
+
+
+def get_activity_by_day(days: int = 30) -> list[dict]:
+    """Per London day over the last `days`: runs (and how many had problems),
+    warnings and errors logged, and payments received -- for the Activity
+    page's overview strip."""
+    return _rows(
+        """WITH d AS (SELECT generate_series((now() AT TIME ZONE 'Europe/London')::date - (%(days)s - 1),
+                                             (now() AT TIME ZONE 'Europe/London')::date, '1 day')::date AS day)
+           SELECT d.day,
+                  (SELECT COUNT(*) FROM runs WHERE (started_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND status <> 'skipped') AS runs,
+                  (SELECT COUNT(*) FROM runs WHERE (started_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND status = 'problems') AS problem_runs,
+                  (SELECT COUNT(*) FROM log_events WHERE (logged_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND level IN ('ERROR', 'CRITICAL')) AS errors,
+                  (SELECT COUNT(*) FROM log_events WHERE (logged_at AT TIME ZONE 'Europe/London')::date = d.day
+                     AND level = 'WARNING') AS warnings,
+                  (SELECT COUNT(*) FROM transactions_raw WHERE (received_at AT TIME ZONE 'Europe/London')::date = d.day)
+                     AS payments
+           FROM d ORDER BY d.day""",
+        {"days": days},
+    )
+
+
 def apply_quick_tap_classifications(review=None) -> int:
     """Classify transactions whose user_context exactly matches an existing
     'Category - Subcategory' pair (written by a Telegram quick-tap button),
@@ -548,7 +796,7 @@ def upsert_subcategory(name: str, parent_id: int) -> int:
     )
 
 
-# ── Editing the taxonomy (the dashboard's Settings tab) ───────────────────────
+# ── Editing the taxonomy (the dashboard's Settings page) ───────────────────────
 #
 # Labels point at ids, so renaming or moving a category is one row and every
 # transaction follows. A deleted category is archived rather than removed --
@@ -751,11 +999,83 @@ def delete_subscription(sub_id: int) -> None:
     get_con().execute("DELETE FROM subscriptions WHERE id = %s", [sub_id])
 
 
+# ── Rules ─────────────────────────────────────────────────────────────────────
+#
+# The server checks every arriving payment against these (check_rules.py):
+# the first enabled rule by id that matches gives it context, skips it, or files
+# it straight into a category. The dashboard's Rules page manages them.
+
+_RULE_COLUMNS = ("name", "match_field", "match_type", "match_value", "match_field_2", "match_type_2",
+                 "match_value_2", "auto_context", "auto_skip", "subcategory_id")
+
+
+def get_rules() -> list[dict]:
+    """Every rule, in the order they're tried, with its fixed category's names.
+    placement_live is False when that category has since been archived -- the
+    server then ignores the placement (check_rules.py)."""
+    return _rows(
+        """SELECT r.id, r.name, r.match_field, r.match_type, r.match_value,
+                  r.match_field_2, r.match_type_2, r.match_value_2,
+                  r.auto_context, r.auto_skip, r.enabled, r.subcategory_id,
+                  p.name AS category, s.name AS subcategory,
+                  (s.id IS NOT NULL AND s.archived_at IS NULL AND p.archived_at IS NULL) AS placement_live
+           FROM rules r
+           LEFT JOIN subcategories s ON s.id = r.subcategory_id
+           LEFT JOIN parent_categories p ON p.id = s.parent_id
+           ORDER BY r.id"""
+    )
+
+
+def _rule_params(rule: dict) -> dict:
+    params = {k: rule.get(k) for k in _RULE_COLUMNS}
+    params["auto_context"] = params["auto_context"] or ""
+    params["auto_skip"] = bool(params["auto_skip"])
+    return params
+
+
+def add_rule(rule: dict) -> int:
+    """A new rule, tried after every existing one (ids only grow)."""
+    return insert_with_next_id(
+        get_con(),
+        f"""INSERT INTO rules (id, {", ".join(_RULE_COLUMNS)})
+            VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules),
+                    {", ".join(f"%({c})s" for c in _RULE_COLUMNS)})
+            RETURNING id""",
+        _rule_params(rule), "rules",
+    )
+
+
+def update_rule(rule_id: int, rule: dict) -> None:
+    get_con().execute(
+        f"UPDATE rules SET {', '.join(f'{c} = %({c})s' for c in _RULE_COLUMNS)} WHERE id = %(id)s",
+        {**_rule_params(rule), "id": rule_id},
+    )
+
+
+def toggle_rule(rule_id: int) -> None:
+    get_con().execute("UPDATE rules SET enabled = NOT enabled WHERE id = %s", [rule_id])
+
+
+def delete_rule(rule_id: int) -> None:
+    get_con().execute("DELETE FROM rules WHERE id = %s", [rule_id])
+
+
+def get_rule_test_transactions() -> list[dict]:
+    """Every transaction, newest first, with the Monzo fields rules match on
+    (the stored payload's "data") and what it has now -- for testing rules
+    against everything that's ever come in."""
+    return _rows(
+        """SELECT id, created_at, amount, merchant_name, counterparty_name, description,
+                  raw_payload->'data' AS data, user_context, skipped, llm_category, llm_subcategory
+           FROM transactions ORDER BY created_at DESC"""
+    )
+
+
 # ── "Back up now" ─────────────────────────────────────────────────────────────
 #
 # Looking after the data is the database's job, not the app's (the data box
 # backs it up every night). This is only a manual "save a copy of everything
-# before I try something", from the Settings tab: every table as a Parquet
+# before I try something", from the Settings page: every table as a Parquet
 # file in a folder of its own, under BACKUP_DIR. It is never run automatically.
 
 BACKUPS_KEPT = 10
@@ -811,7 +1131,7 @@ def backup_db(reason: str = "manual") -> Path:
 
 
 def _write_manifest(target: Path, reason: str) -> None:
-    """Record what the backup actually contains, so the Settings tab can say
+    """Record what the backup actually contains, so the Settings page can say
     'this one holds 1,240 transactions covering 2025-01 to 2026-08' without
     opening every file to count. A manifest that fails to write must not fail
     the backup -- the data is the thing that matters."""

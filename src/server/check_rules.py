@@ -69,6 +69,36 @@ def _matches(field_value, match_type: str, match_value: str) -> bool:
     return False
 
 
+def conditions_match(get_field, match_field, match_type, match_value,
+                     match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
+    """Whether a rule's condition(s) hold, reading each field through
+    get_field(name). The one judgement of a match: the live webhook and the
+    dashboard's Rules page both call this. Raises on a broken rule (a bad regex,
+    an unreadable range); the caller decides what that means."""
+    value = get_field(match_field)
+    if value is None or not _matches(value, match_type, match_value):
+        return False
+    if match_field_2 and match_type_2 and match_value_2:
+        value = get_field(match_field_2)
+        if value is None or not _matches(value, match_type_2, match_value_2):
+            return False
+    return True
+
+
+def payload_field(data: dict, match_field: str):
+    """_extract_field for a stored Monzo payload's "data" dict, as the
+    dashboard reads it: the same fields, the same Nones."""
+    if match_field == "merchant_name":
+        return data["merchant"].get("name") if isinstance(data.get("merchant"), dict) else None
+    if match_field == "counterparty_name":
+        return data["counterparty"].get("name") if isinstance(data.get("counterparty"), dict) else None
+    if match_field == "amount":
+        return data.get("amount")
+    if match_field in ("description", "category", "scheme"):
+        return data.get(match_field)
+    return None
+
+
 def check_rules(data) -> RuleMatch:
     """The first enabled rule (lowest id) that matches. A fixed placement whose
     category has since been archived is ignored, leaving the transaction for the
@@ -91,14 +121,10 @@ def check_rules(data) -> RuleMatch:
          category, subcategory, subcategory_id, parent_id) = rule
 
         try:
-            field_value = _extract_field(data, match_field)
-            if field_value is None or not _matches(field_value, match_type, match_value):
+            if not conditions_match(lambda field: _extract_field(data, field),
+                                    match_field, match_type, match_value,
+                                    match_field_2, match_type_2, match_value_2):
                 continue
-
-            if match_field_2 and match_type_2 and match_value_2:
-                field_value_2 = _extract_field(data, match_field_2)
-                if field_value_2 is None or not _matches(field_value_2, match_type_2, match_value_2):
-                    continue
         except Exception as e:
             log.warning(f"Rule {rule_id} ('{name}') failed to evaluate and was skipped: {e}")
             continue

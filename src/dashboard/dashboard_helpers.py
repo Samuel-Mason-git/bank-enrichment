@@ -1,10 +1,15 @@
 """Pure, Streamlit-free logic used by dashboard.py — kept separate so it can
 be unit tested directly without spinning up a Streamlit app or a database."""
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+# src/server: matching is the server's own check_rules, so the Rules page and the
+# webhook can never disagree about what a rule catches.
+from check_rules import conditions_match, payload_field
 
 FREQ_MONTHLY ={"weekly": 52 / 12, "fortnightly": 26 / 12, "monthly": 1, "annual": 1 / 12}
 
@@ -28,7 +33,7 @@ def _split_backup_name(path: Path) -> tuple[str, str]:
 def backup_label(path: Path) -> str:
     """Human-readable time for a backup folder, falling back to the raw folder
     name if it doesn't parse -- a hand-made or renamed folder in backups/ should
-    still be listed rather than crashing the Settings tab."""
+    still be listed rather than crashing the Settings page."""
     stamp, _ = _split_backup_name(path)
     try:
         return datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M")
@@ -206,3 +211,134 @@ def should_deactivate_subscription(sub: dict, df: pd.DataFrame, cutoff: pd.Times
         (df["amount"] < 0)
     ]["created_at"].max()
     return pd.isna(last_txn) or last_txn < cutoff
+
+
+# ── Rules ─────────────────────────────────────────────────────────────────────
+#
+# Matching itself is check_rules.conditions_match -- the very function the
+# server runs on each arriving payment -- so what the Rules page says a rule
+# would catch is exactly what it does catch.
+
+
+RULE_FIELDS = {
+    "merchant_name": "Merchant",
+    "counterparty_name": "Payee",
+    "description": "Description",
+    "category": "Monzo category",
+    "scheme": "Payment scheme",
+    "amount": "Amount",
+}
+TEXT_MATCH_TYPES = {"contains": "contains", "exact": "is exactly", "regex": "matches regex"}
+AMOUNT_MATCH_TYPES = {
+    "amount_range": "is between (£)",
+    "amount_exact": "is exactly (£)",
+    "amount_negative": "is money out",
+    "amount_positive": "is money in",
+}
+# These look only at the sign. match_value is a required column, so they
+# store this placeholder rather than nothing (nothing means "no condition").
+DIRECTION_TYPES = ("amount_negative", "amount_positive")
+DIRECTION_VALUE = "any"
+
+
+def match_types_for(field: str) -> dict[str, str]:
+    return AMOUNT_MATCH_TYPES if field == "amount" else TEXT_MATCH_TYPES
+
+
+def describe_condition(field: str, match_type: str, value: str) -> str:
+    """'Merchant contains "tesco"', 'Amount is between £5–£20', 'Amount is money out'."""
+    name = RULE_FIELDS.get(field, field)
+    if match_type in DIRECTION_TYPES:
+        return f"{name} {AMOUNT_MATCH_TYPES[match_type]}"
+    if match_type == "amount_range":
+        low, _, high = str(value).partition("-")
+        return f"{name} is between £{low}–£{high}"
+    if match_type == "amount_exact":
+        return f"{name} is exactly £{value}"
+    return f'{name} {TEXT_MATCH_TYPES.get(match_type, match_type)} "{value}"'
+
+
+def describe_conditions(rule: dict) -> str:
+    text = describe_condition(rule["match_field"], rule["match_type"], rule["match_value"])
+    if rule.get("match_field_2") and rule.get("match_type_2") and rule.get("match_value_2"):
+        text += " and " + describe_condition(rule["match_field_2"], rule["match_type_2"], rule["match_value_2"])
+    return text
+
+
+def describe_action(rule: dict) -> str:
+    """What a match does: 'Skip · → Bills › Phone · context "Monthly phone"'."""
+    parts = []
+    if rule.get("auto_skip"):
+        parts.append("Skip")
+    if rule.get("category") and rule.get("subcategory"):
+        archived = "" if rule.get("placement_live", True) else " (archived, ignored)"
+        parts.append(f"→ {rule['category']} › {rule['subcategory']}{archived}")
+    if rule.get("auto_context"):
+        parts.append(f'context "{rule["auto_context"]}"')
+    return " · ".join(parts) or "Nothing"
+
+
+def _condition_problems(field, match_type, value, label: str) -> list[str]:
+    if match_type in DIRECTION_TYPES:
+        return []
+    value = (value or "").strip()
+    if not value:
+        return [f"{label} needs a value."]
+    if match_type == "amount_range":
+        low, sep, high = value.partition("-")
+        try:
+            if not sep or float(low) > float(high):
+                raise ValueError
+        except ValueError:
+            return [f"{label}: write a range as low-high in pounds, e.g. 5-20."]
+    if match_type == "amount_exact":
+        try:
+            float(value)
+        except ValueError:
+            return [f"{label}: write an amount in pounds, e.g. 9.99."]
+    if match_type == "regex":
+        try:
+            re.compile(value)
+        except re.error as e:
+            return [f"{label}: that regex doesn't work ({e})."]
+    return []
+
+
+def rule_problems(rule: dict) -> list[str]:
+    """Why a rule can't be saved yet -- empty when it can. It needs a name, a
+    usable first condition, a usable second one if there is one, and has to do
+    something: give context, skip, or file into a category."""
+    problems = []
+    if not (rule.get("name") or "").strip():
+        problems.append("Give it a name.")
+    problems += _condition_problems(rule["match_field"], rule["match_type"], rule["match_value"], "The condition")
+    if rule.get("match_field_2"):
+        problems += _condition_problems(rule["match_field_2"], rule["match_type_2"], rule["match_value_2"],
+                                        "The second condition")
+    if not ((rule.get("auto_context") or "").strip() or rule.get("auto_skip") or rule.get("subcategory_id")):
+        problems.append("It has to do something: add context, skip, or pick a category.")
+    return problems
+
+
+def rule_matches(rule: dict, data: dict) -> bool:
+    """Whether a rule's conditions hold for one stored Monzo payload. A broken
+    rule matches nothing, as on the server."""
+    try:
+        return conditions_match(
+            lambda field: payload_field(data or {}, field),
+            rule["match_field"], rule["match_type"], rule["match_value"],
+            rule.get("match_field_2"), rule.get("match_type_2"), rule.get("match_value_2"),
+        )
+    except Exception:
+        return False
+
+
+def first_rule_for(rules: list[dict], data: dict, before_id: int | None = None) -> dict | None:
+    """The rule the server would apply: the first enabled one, by id, that
+    matches -- only among those tried before before_id, if given."""
+    for rule in rules:
+        if before_id is not None and rule["id"] >= before_id:
+            break
+        if rule["enabled"] and rule_matches(rule, data):
+            return rule
+    return None

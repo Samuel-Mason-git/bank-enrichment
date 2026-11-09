@@ -1,22 +1,19 @@
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Depends, Request, status, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
-from urllib.parse import urlsplit
 import asyncio
 import uvicorn
 import html
 import logging
 import re
 import secrets
-import time
 import json
 import os
+import sys
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -33,6 +30,11 @@ from monzo_oauth import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
+
+# The pipeline's activity log (warnings and errors into the database, for the
+# dashboard's Activity page). Last on the path, so nothing there shadows ours.
+sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
+import activity  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -101,37 +103,20 @@ def _unset_webhook_secrets() -> list[str]:
                                      ("MONZO_WEBHOOK_SECRET", MONZO_WEBHOOK_SECRET)) if not value]
 
 
-def _is_same_site(request: Request) -> bool:
-    """Whether a browser request came from a page on this server.
-
-    The dashboard uses HTTP Basic auth, which browsers attach automatically --
-    even to a form another website submits -- so without this, any page you
-    visited while logged in could create, edit or delete rules. Browsers
-    always send Origin on a cross-site POST, so a mismatched (or "null")
-    Origin is rejected. A request with neither Origin nor Referer isn't a
-    browser being tricked into anything (curl, a script) and is let through."""
-    host = request.headers.get("host", "")
-    origin = request.headers.get("origin")
-    if origin is not None:
-        return urlsplit(origin).netloc == host
-    referer = request.headers.get("referer")
-    if referer is not None:
-        return urlsplit(referer).netloc == host
-    return True
-
+# The login in front of /oauth/start, so only you can link a Monzo account.
+# Named after the web dashboard it used to guard too (gone: the Streamlit
+# dashboard does all of that now); kept so existing .env files still work.
 DASHBOARD_USER = os.getenv("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 _sessions: dict = {}
 _pending_skips: dict = {}
 
 security = HTTPBasic()
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-templates.env.globals["static_version"] = str(int(time.time()))
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=503, detail="Dashboard credentials not configured")
+        raise HTTPException(status_code=503, detail="Login not configured (DASHBOARD_USER/DASHBOARD_PASSWORD)")
     correct_user = secrets.compare_digest(credentials.username, DASHBOARD_USER)
     correct_pass = secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
     if not (correct_user and correct_pass):
@@ -166,6 +151,7 @@ async def _skip_timeout(chat_id: int, message_id: int):
 async def lifespan(app: FastAPI):
     global bot
     init_db()
+    activity.attach("server", get_con)
     log.info("Database initialised")
     try:
         bot = TelegramBot()
@@ -202,7 +188,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 @app.get("/health")
@@ -217,14 +202,6 @@ def health():
     return {"ok": True}
 
 
-@app.middleware("http")
-async def reject_cross_site_dashboard_posts(request: Request, call_next):
-    if request.method == "POST" and request.url.path.startswith("/dashboard") and not _is_same_site(request):
-        log.warning(f"Blocked a cross-site POST to {request.url.path} (Origin: {request.headers.get('origin')!r})")
-        return PlainTextResponse("Cross-site request blocked.", status_code=403)
-    return await call_next(request)
-
-
 def _public_base_url(request: Request) -> str:
     """https://your-domain, as the outside world sees it. Behind Caddy the app
     itself only ever sees plain http, so the scheme Caddy forwarded wins."""
@@ -235,7 +212,7 @@ def _public_base_url(request: Request) -> str:
 @app.get("/oauth/start")
 async def oauth_start(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     """Begin (or redo) Monzo authorization: sends you to Monzo's login with a
-    fresh single-use state. Behind the dashboard login, so only you can
+    fresh single-use state. Behind the login (DASHBOARD_USER), so only you can
     start a flow whose result gets stored."""
     if not MONZO_CLIENT_ID:
         return HTMLResponse("<p>MONZO_CLIENT_ID isn't set on the server -- see SETUP.md.</p>", status_code=503)
@@ -244,7 +221,7 @@ async def oauth_start(request: Request, credentials: HTTPBasicCredentials = Depe
 
 @app.get("/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback(code: str = "", state: str = "", error: str = ""):
-    """Monzo's OAuth redirect lands here, so it can't sit behind the dashboard
+    """Monzo's OAuth redirect lands here, so it can't sit behind the
     login -- Monzo's redirect doesn't carry your credentials. What protects
     it instead is the state: only a flow started from /oauth/start (which IS
     behind the login) is ever completed. The exchange happens entirely
@@ -257,15 +234,6 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     if complete_authorization(code, state):
         return "<p>Monzo authorization complete. Tokens stored -- you can close this tab.</p>"
     return "<p>That authorization link has expired or wasn't started here. Start again from /oauth/start.</p>"
-
-
-@app.get("/dashboard/logout", response_class=HTMLResponse)
-async def logout(request: Request):
-    """HTTP Basic auth has no real server-side session to end, and forcing a
-    401 here would trap the browser in a prompt loop it can never satisfy
-    (this endpoint would keep rejecting every credential re-entered). Instead,
-    just explain the limitation plainly."""
-    return templates.TemplateResponse(request=request, name="logout.html")
 
 
 @app.exception_handler(RequestValidationError)
@@ -786,288 +754,6 @@ async def recieve_telegram(request: Request):
     return {"ok": True}
 
 
-# Where a transaction is up to, worked out from its events: no answer yet,
-# answered but not yet classified, classified, or skipped.
-STATUS_SQL = """CASE WHEN t.skipped THEN 'skipped'
-                     WHEN t.enriched_at IS NULL THEN 'pending'
-                     WHEN t.llm_subcategory IS NULL THEN 'enriched'
-                     ELSE 'classified' END"""
-
-
-def _amount_str(amount_pence: int) -> str:
-    return f"-£{abs(amount_pence) / 100:.2f}" if amount_pence < 0 else f"+£{amount_pence / 100:.2f}"
-
-
-@app.get("/dashboard/transaction/{transaction_id}", response_class=HTMLResponse)
-async def transaction_detail(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    row = get_con().execute(
-        f"""SELECT t.id, t.raw_payload, t.received_at, {STATUS_SQL}, t.user_context, t.enriched_at, t.skipped
-            FROM transactions t WHERE t.id = %s""",
-        [transaction_id]
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-
-    payload = row[1]
-    data = payload.get("data", {})
-    amount_pence = data.get("amount", 0)
-    return templates.TemplateResponse(
-        request=request,
-        name="transaction.html",
-        context={
-            "transaction_id": row[0],
-            "received_at": row[2],
-            "status": row[3],
-            "user_context": row[4],
-            "enriched_at": row[5],
-            "skipped": row[6],
-            "amount": _amount_str(amount_pence),
-            "is_debit": amount_pence < 0,
-            "description": data.get("description", ""),
-            "category": data.get("category", ""),
-            "currency": data.get("currency", ""),
-            "created": data.get("created", ""),
-            "settled": data.get("settled") or None,
-            "is_load": data.get("is_load"),
-            "merchant": data.get("merchant"),
-            "counterparty": data.get("counterparty"),
-            "raw": json.dumps(payload, indent=2),
-        }
-    )
-
-
-def _exists(con, transaction_id: str) -> bool:
-    return con.execute("SELECT 1 FROM transactions_raw WHERE id = %s", [transaction_id]).fetchone() is not None
-
-
-@app.post("/dashboard/transaction/{transaction_id}/skip", response_class=HTMLResponse)
-async def skip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    if not _exists(con, transaction_id):
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    record_context(con, transaction_id, "Skipped", skipped=True, source="dashboard")
-    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/unskip", response_class=HTMLResponse)
-async def unskip_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    """Count it again, with no context: the classifier picks it up on the next
-    run. Add context first (or after) if it needs explaining."""
-    con = get_con()
-    if not _exists(con, transaction_id):
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    record_context(con, transaction_id, None, skipped=False, source="dashboard")
-    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/enrich-dashboard", response_class=HTMLResponse)
-async def enrich_transaction_dashboard(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    form = await request.form()
-    context = (form.get("context") or "").strip()
-    if not context:
-        return RedirectResponse(url="/dashboard", status_code=303)
-    con = get_con()
-    if not _exists(con, transaction_id):
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    record_context(con, transaction_id, context, source="dashboard")
-    return RedirectResponse(url="/dashboard", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/edit-context", response_class=HTMLResponse)
-async def edit_transaction_context(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    form = await request.form()
-    context = (form.get("context") or "").strip()
-    con = get_con()
-    if context and _exists(con, transaction_id):
-        record_context(con, transaction_id, context, source="dashboard")
-    return RedirectResponse(url=f"/dashboard/transaction/{transaction_id}", status_code=303)
-
-
-@app.post("/dashboard/transaction/{transaction_id}/delete", response_class=HTMLResponse)
-async def delete_transaction(transaction_id: str, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    """Gone for good, with its history -- for a test payment or a mistake,
-    not for something you'd rather not see (skip that instead)."""
-    con = get_con()
-    with con.transaction():
-        con.execute("DELETE FROM label_events WHERE txn_id = %s", [transaction_id])
-        con.execute("DELETE FROM context_events WHERE txn_id = %s", [transaction_id])
-        con.execute("DELETE FROM judge_reviews WHERE txn_id = %s", [transaction_id])
-        con.execute("DELETE FROM transaction_updates WHERE txn_id = %s", [transaction_id])
-        con.execute("DELETE FROM transactions_raw WHERE id = %s", [transaction_id])
-    log.info(f"Transaction deleted from the dashboard: {transaction_id}")
-    return RedirectResponse(url="/dashboard", status_code=303)
-
-
-@app.post("/dashboard/rules/test", response_class=HTMLResponse)
-async def test_rules(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    form = await request.form()
-    con = get_con()
-    context = {"rules": _get_rules(con), "transactions": _get_test_transactions(con),
-               "taxonomy": _get_taxonomy(con), "active_nav": "rules"}
-
-    # "Test this rule" on the Add Rule form: run the not-yet-saved rule against
-    # recent transactions, so you see which real ones it would catch -- not
-    # whether it matches a single transaction you already picked it from.
-    candidate_field = (form.get("candidate_match_field") or "").strip()
-    if candidate_field:
-        candidate = {
-            "match_field": candidate_field,
-            "match_type": (form.get("candidate_match_type") or "").strip(),
-            "match_value": (form.get("candidate_match_value") or "").strip(),
-            "match_field_2": (form.get("candidate_match_field_2") or "").strip() or None,
-            "match_type_2": (form.get("candidate_match_type_2") or "").strip() or None,
-            "match_value_2": (form.get("candidate_match_value_2") or "").strip() or None,
-        }
-        recent = _get_test_transactions(con, limit=None)
-        matches = [t for t in recent if _evaluate_rule(t, **candidate)]
-        context["candidate_results"] = {
-            "rule": {**candidate,
-                     "name": (form.get("candidate_name") or "").strip(),
-                     "auto_context": (form.get("candidate_auto_context") or "").strip(),
-                     "auto_skip": (form.get("candidate_auto_skip") or "") == "on",
-                     "category": (form.get("candidate_category") or "").strip(),
-                     "subcategory": (form.get("candidate_subcategory") or "").strip()},
-            "queue_size": len(recent),
-            "matches": matches,
-        }
-        return templates.TemplateResponse(request=request, name="rules.html", context=context)
-
-    # "▶ Test": which saved rules match one transaction's fields.
-    test_data = {
-        "merchant_name": (form.get("merchant_name") or "").strip(),
-        "description": (form.get("description") or "").strip(),
-        "counterparty_name": (form.get("counterparty_name") or "").strip(),
-        "category": (form.get("category") or "").strip(),
-        "scheme": (form.get("scheme") or "").strip(),
-        "amount": (form.get("amount") or "0").strip(),
-    }
-    try:
-        amount_pence = int(round(float(test_data["amount"]) * 100))
-    except ValueError:
-        amount_pence = 0
-    fields = {**test_data, "amount_pence": amount_pence}
-
-    results = []
-    for rule in _get_rules(con):
-        matched = bool(rule["enabled"]) and _evaluate_rule(
-            fields, rule["match_field"], rule["match_type"], rule["match_value"],
-            rule["match_field_2"], rule["match_type_2"], rule["match_value_2"],
-        )
-        results.append({
-            "id": rule["id"], "name": rule["name"], "enabled": rule["enabled"],
-            "matched": matched, "auto_context": rule["auto_context"], "auto_skip": bool(rule["auto_skip"]),
-            "category": rule["category"], "subcategory": rule["subcategory"],
-        })
-
-    context.update({"test_results": results, "test_data": test_data})
-    return templates.TemplateResponse(request=request, name="rules.html", context=context)
-
-
-def _rule_form(con, form) -> dict | None:
-    """The rule a form describes, or None if it isn't a usable one: it needs a
-    name and a first condition, and has to do something -- give context, skip,
-    or file into a category."""
-    rule = {
-        "name": (form.get("name") or "").strip(),
-        "match_field": (form.get("match_field") or "").strip(),
-        "match_type": (form.get("match_type") or "").strip(),
-        "match_value": (form.get("match_value") or "").strip(),
-        "auto_context": (form.get("auto_context") or "").strip(),
-        "match_field_2": (form.get("match_field_2") or "").strip() or None,
-        "match_type_2": (form.get("match_type_2") or "").strip() or None,
-        "match_value_2": (form.get("match_value_2") or "").strip() or None,
-        "auto_skip": form.get("auto_skip") == "on",
-        "subcategory_id": _rule_placement(con, form),
-    }
-    if not (rule["name"] and rule["match_field"] and rule["match_type"] and rule["match_value"]):
-        return None
-    if not (rule["auto_context"] or rule["auto_skip"] or rule["subcategory_id"]):
-        return None
-    return rule
-
-
-@app.post("/dashboard/rules/{rule_id}/edit", response_class=HTMLResponse)
-async def edit_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    rule = _rule_form(con, await request.form())
-    if rule:
-        con.execute(
-            """UPDATE rules SET name = %(name)s, match_field = %(match_field)s, match_type = %(match_type)s,
-                   match_value = %(match_value)s, auto_context = %(auto_context)s,
-                   match_field_2 = %(match_field_2)s, match_type_2 = %(match_type_2)s,
-                   match_value_2 = %(match_value_2)s, auto_skip = %(auto_skip)s,
-                   subcategory_id = %(subcategory_id)s
-               WHERE id = %(id)s""",
-            {**rule, "id": rule_id}
-        )
-    return RedirectResponse(url="/dashboard/rules", status_code=303)
-
-
-@app.post("/dashboard/rules/{rule_id}/delete", response_class=HTMLResponse)
-async def delete_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    get_con().execute("DELETE FROM rules WHERE id = %s", [rule_id])
-    return RedirectResponse(url="/dashboard/rules", status_code=303)
-
-
-@app.post("/dashboard/rules/add", response_class=HTMLResponse)
-async def add_rule(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    rule = _rule_form(con, await request.form())
-    if rule:
-        insert_with_next_id(
-            con,
-            """INSERT INTO rules (id, name, match_field, match_type, match_value, auto_context,
-                                  match_field_2, match_type_2, match_value_2, auto_skip, subcategory_id)
-               VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM rules), %(name)s, %(match_field)s, %(match_type)s, %(match_value)s, %(auto_context)s,
-                       %(match_field_2)s, %(match_type_2)s, %(match_value_2)s, %(auto_skip)s, %(subcategory_id)s)
-               RETURNING id""",
-            rule, "rules",
-        )
-    return RedirectResponse(url="/dashboard/rules", status_code=303)
-
-
-def _rule_placement(con, form) -> int | None:
-    """The fixed placement a rule form picked, as a subcategory id, or None.
-    Only a complete pair of a live category counts -- a category picked
-    without a subcategory would file transactions under a parent with nothing
-    beneath it, so a half-filled pair is treated as no placement at all."""
-    category = (form.get("category") or "").strip()
-    subcategory_name = (form.get("subcategory") or "").strip()
-    if category and subcategory_name:
-        return subcategory_id(con, category, subcategory_name)
-    return None
-
-
-def _get_taxonomy(con) -> dict[str, list[str]]:
-    """{category: [subcategory, ...]} of live categories, for the Rules page's
-    placement dropdowns."""
-    taxonomy: dict[str, list[str]] = {}
-    for category, subcategory_name in con.execute(
-        """SELECT p.name, s.name FROM subcategories s JOIN parent_categories p ON p.id = s.parent_id
-           WHERE s.archived_at IS NULL AND p.archived_at IS NULL ORDER BY p.name, s.name"""
-    ).fetchall():
-        taxonomy.setdefault(category, []).append(subcategory_name)
-    return taxonomy
-
-
-def _get_rules(con):
-    rows = con.execute(
-        """SELECT r.id, r.name, r.match_field, r.match_type, r.match_value, r.auto_context, r.enabled,
-                  r.match_field_2, r.match_type_2, r.match_value_2, r.auto_skip, p.name, s.name
-           FROM rules r
-           LEFT JOIN subcategories s ON s.id = r.subcategory_id
-           LEFT JOIN parent_categories p ON p.id = s.parent_id
-           ORDER BY r.id"""
-    ).fetchall()
-    return [
-        {"id": r[0], "name": r[1], "match_field": r[2], "match_type": r[3],
-         "match_value": r[4], "auto_context": r[5], "enabled": r[6],
-         "match_field_2": r[7], "match_type_2": r[8], "match_value_2": r[9], "auto_skip": r[10],
-         "category": r[11], "subcategory": r[12]}
-        for r in rows
-    ]
-
-
 def _display(data: dict, fallback: str) -> str:
     merchant = (data.get("merchant") or {}).get("name") or ""
     counterparty = (data.get("counterparty") or {}).get("name") or ""
@@ -1086,225 +772,6 @@ def _txn_short_label(con, transaction_id: str) -> str:
     amount_pence = data.get("amount", 0)
     sign = "-" if amount_pence < 0 else "+"
     return f"{_display(data, transaction_id)} · {sign}£{abs(amount_pence) / 100:.2f}"
-
-
-def _get_test_transactions(con, limit: int | None = 100):
-    """Recent transactions as the rule tester sees them: the newest `limit`, or
-    the last 30 days for testing a rule that hasn't been saved yet."""
-    sql = f"""SELECT t.id, t.raw_payload, t.received_at, t.user_context, {STATUS_SQL}
-              FROM transactions t"""
-    if limit:
-        rows = con.execute(sql + " ORDER BY t.received_at DESC LIMIT %s", [int(limit)]).fetchall()
-    else:
-        rows = con.execute(
-            sql + " WHERE t.received_at >= (now() AT TIME ZONE 'Europe/London') - INTERVAL '30 days'"
-                  " ORDER BY t.received_at DESC"
-        ).fetchall()
-    txns = []
-    for row in rows:
-        data = row[1].get("data", {})
-        amount_pence = data.get("amount", 0)
-        sign = "-" if amount_pence < 0 else "+"
-        txns.append({
-            "id": row[0],
-            "label": f"{_display(data, row[0])} · {sign}£{abs(amount_pence) / 100:.2f} · {str(row[2])[:10]}",
-            "merchant_name": (data.get("merchant") or {}).get("name") or "",
-            "description": data.get("description") or "",
-            "counterparty_name": (data.get("counterparty") or {}).get("name") or "",
-            "category": data.get("category") or "",
-            "scheme": data.get("scheme") or "",
-            # Signed, not abs() -- a candidate amount_negative/amount_positive
-            # rule can only be tested meaningfully against the real direction
-            # the money moved.
-            "amount": round(amount_pence / 100, 2),
-            "amount_pence": amount_pence,
-            "user_context": row[3] or "",
-            "status": row[4],
-        })
-    return txns
-
-
-def _evaluate_rule(fields: dict, match_field, match_type, match_value,
-                   match_field_2=None, match_type_2=None, match_value_2=None) -> bool:
-    """Whether a rule's condition(s) match one transaction's fields -- the
-    same keys _get_test_transactions produces, with amount in signed pence.
-    Shared by the saved-rule tester and the preview for a new rule, so both
-    judge a match exactly the same way."""
-    from check_rules import _matches
-
-    def get_field(field):
-        if field == "amount":
-            return fields.get("amount_pence")
-        return fields.get(field) or None
-
-    try:
-        if not (match_field and match_type and match_value):
-            return False
-        v1 = get_field(match_field)
-        if v1 is None or not _matches(v1, match_type, match_value):
-            return False
-        if match_field_2 and match_type_2 and match_value_2:
-            v2 = get_field(match_field_2)
-            if v2 is None or not _matches(v2, match_type_2, match_value_2):
-                return False
-        return True
-    except Exception:
-        return False
-
-
-@app.get("/dashboard/rules", response_class=HTMLResponse)
-async def rules_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    con = get_con()
-    return templates.TemplateResponse(
-        request=request,
-        name="rules.html",
-        context={"rules": _get_rules(con), "transactions": _get_test_transactions(con),
-                 "taxonomy": _get_taxonomy(con), "active_nav": "rules"}
-    )
-
-
-@app.post("/dashboard/rules/{rule_id}/toggle", response_class=HTMLResponse)
-async def toggle_rule(rule_id: int, request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
-    get_con().execute("UPDATE rules SET enabled = NOT enabled WHERE id = %s", [rule_id])
-    return RedirectResponse(url="/dashboard/rules", status_code=303)
-
-
-DB_PAGE_SIZE = 50
-
-@app.get("/dashboard/db", response_class=HTMLResponse)
-async def db_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials),
-                  raw_page: int = Query(1, ge=1)):
-    con = get_con()
-
-    def table(name, sql, columns, params=(), total=None, page=1, page_param=None):
-        rows = con.execute(sql, params).fetchall()
-        total = len(rows) if total is None else total
-        return {"name": name, "columns": columns, "rows": rows, "total": total, "page": page,
-                "total_pages": max(1, -(-total // DB_PAGE_SIZE)) if page_param else 1, "page_param": page_param}
-
-    raw_total = con.execute("SELECT COUNT(*) FROM transactions_raw").fetchone()[0]
-    tables = [
-        table("transactions_raw", "SELECT id, received_at, payload FROM transactions_raw "
-              "ORDER BY received_at DESC LIMIT %s OFFSET %s", ["id", "received_at", "payload"],
-              [DB_PAGE_SIZE, (raw_page - 1) * DB_PAGE_SIZE], total=raw_total, page=raw_page, page_param="raw_page"),
-        table("context_events (latest 50)",
-              "SELECT event_id, txn_id, user_context, skipped, created_at_override, source, set_at "
-              "FROM context_events ORDER BY event_id DESC LIMIT 50",
-              ["event_id", "txn_id", "user_context", "skipped", "created_at_override", "source", "set_at"]),
-        table("label_events (latest 50)",
-              "SELECT e.event_id, e.txn_id, p.name, s.name, e.source, e.model, e.confidence, e.set_at "
-              "FROM label_events e LEFT JOIN parent_categories p ON p.id = e.parent_id "
-              "LEFT JOIN subcategories s ON s.id = e.subcategory_id ORDER BY e.event_id DESC LIMIT 50",
-              ["event_id", "txn_id", "category", "subcategory", "source", "model", "confidence", "set_at"]),
-        table("rules",
-              "SELECT r.id, r.name, r.match_field, r.match_type, r.match_value, r.auto_context, r.enabled, "
-              "r.match_field_2, r.match_type_2, r.match_value_2, r.auto_skip, p.name, s.name FROM rules r "
-              "LEFT JOIN subcategories s ON s.id = r.subcategory_id "
-              "LEFT JOIN parent_categories p ON p.id = s.parent_id ORDER BY r.id",
-              ["id", "name", "match_field", "match_type", "match_value", "auto_context", "enabled",
-               "match_field_2", "match_type_2", "match_value_2", "auto_skip", "category", "subcategory"]),
-        table("quick_categories",
-              "SELECT merchant_name, subcategory_id, category, subcategory, rank FROM quick_categories "
-              "ORDER BY merchant_name NULLS FIRST, rank",
-              ["merchant_name", "subcategory_id", "category", "subcategory", "rank"]),
-    ]
-    return templates.TemplateResponse(request=request, name="db.html",
-                                      context={"tables": tables, "active_nav": "db"})
-
-
-PAGE_SIZE = 20
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(
-    request: Request,
-    credentials: HTTPBasicCredentials = Depends(verify_credentials),
-    page: int = Query(1, ge=1),
-    status_filter: str = Query("", alias="status"),
-    search: str = Query(""),
-):
-    con = get_con()
-    totals = con.execute(
-        """SELECT (SELECT COUNT(*) FROM transactions_raw),
-                  (SELECT COALESCE(SUM(ABS((payload->'data'->>'amount')::BIGINT)), 0) FROM transactions_raw),
-                  (SELECT COUNT(*) FROM context_events WHERE source = 'request'),
-                  (SELECT COUNT(*) FROM transactions WHERE enriched_at IS NOT NULL),
-                  (SELECT COUNT(*) FROM transactions WHERE llm_subcategory IS NOT NULL)"""
-    ).fetchone()
-    # "The queue" is what still needs something: an answer, or a category.
-    queue_stats = con.execute(
-        f"""SELECT status, COUNT(*) FROM (SELECT {STATUS_SQL} AS status FROM transactions t) s
-            WHERE status IN ('pending', 'enriched') GROUP BY status ORDER BY status"""
-    ).fetchall()
-
-    if status_filter in ("pending", "enriched", "skipped", "classified"):
-        where_clauses, params = ["status = %s"], [status_filter]
-    else:
-        where_clauses, params = ["status IN ('pending', 'enriched')"], []
-    if search:
-        where_clauses.append("(id ILIKE %s OR raw_payload::TEXT ILIKE %s)")
-        params.extend([f"%{search}%", f"%{search}%"])
-    listing = f"""SELECT * FROM (
-                      SELECT t.id, t.received_at, {STATUS_SQL} AS status, t.raw_payload, t.skipped,
-                             (SELECT COUNT(*) FROM context_events e
-                              WHERE e.txn_id = t.id AND e.source = 'request') AS request_count
-                      FROM transactions t) s
-                  WHERE {" AND ".join(where_clauses)}"""
-    total_queue = con.execute(f"SELECT COUNT(*) FROM ({listing}) q", params).fetchone()[0]
-    rows = con.execute(
-        listing + " ORDER BY received_at DESC LIMIT %s OFFSET %s", params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]
-    ).fetchall()
-
-    queue = []
-    for txn_id, received_at, status_value, raw, skipped, request_count in rows:
-        data = raw.get("data", {})
-        amount_pence = data.get("amount", 0)
-        queue.append({
-            "id": txn_id,
-            "received_at": received_at,
-            "status": status_value,
-            "request_count": request_count or 0,
-            "amount": _amount_str(amount_pence),
-            "is_debit": amount_pence < 0,
-            "skipped": bool(skipped),
-            "description": data.get("description", ""),
-            "merchant": (data.get("merchant") or {}).get("name", "") or (data.get("counterparty") or {}).get("name", ""),
-        })
-
-    total_received, total_amount_pence, requests_sent, total_enriched, total_classified = totals
-    return templates.TemplateResponse(
-        request=request,
-        name="dashboard.html",
-        context={
-            "total_received": total_received,
-            "total_amount": f"£{abs(total_amount_pence) / 100:,.2f}",
-            "requests_sent": requests_sent,
-            "total_enriched": total_enriched,
-            "total_processed": total_classified,
-            "queue_stats": queue_stats,
-            "queue": queue,
-            "page": page,
-            "total_pages": max(1, -(-total_queue // PAGE_SIZE)),
-            "total_queue": total_queue,
-            "status_filter": status_filter,
-            "search": search,
-            "active_nav": "dashboard",
-        }
-    )
-
-
-@app.get("/dashboard/logs", response_class=HTMLResponse)
-async def logs_view(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials), lines: int = Query(200, ge=10, le=2000)):
-    try:
-        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-        log_lines = all_lines[-lines:]
-    except FileNotFoundError:
-        log_lines = ["Log file not found."]
-    return templates.TemplateResponse(
-        request=request,
-        name="logs.html",
-        context={"log_lines": log_lines, "lines": lines, "active_nav": "logs"}
-    )
 
 
 if __name__ == "__main__":

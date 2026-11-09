@@ -10,6 +10,7 @@ import logging
 import time
 from logging.handlers import RotatingFileHandler
 
+import activity
 from database_functions import init_db, get_con, apply_quick_tap_classifications, log_path
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
@@ -47,9 +48,23 @@ def _release_run_lock() -> None:
     get_con().execute("SELECT pg_advisory_unlock(hashtext(%s))", [RUN_LOCK])
 
 
+_db_log: activity.DatabaseLogHandler | None = None
+
+
+def _quietly(what: str, fn, *args):
+    """Activity bookkeeping: worth having, never worth failing a run over."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        log.warning(f"Couldn't record the run's {what}: {e}")
+        return None
+
+
 def main() -> int:
     """One run: RAN, or NO_DATABASE / ALREADY_RUNNING if it couldn't start. A
-    step that fails is logged and the rest still run."""
+    step that fails is logged and the rest still run. Each run, and every
+    warning or error, is recorded for the dashboard's Activity page."""
+    global _db_log
     run_start = time.time()
     log.info("--- Process run started ---")
 
@@ -60,14 +75,27 @@ def main() -> int:
     except Exception as e:
         log.error(f"Couldn't connect to the database (is the VPN up?): {e}", exc_info=True)
         return NO_DATABASE
+    if _db_log is None:
+        _db_log = activity.attach("worker", get_con)
 
     if not _take_run_lock():
         log.warning("Another run is already in progress -- not starting a second one")
+        _quietly("skip", activity.skipped_run, get_con())
         return ALREADY_RUNNING
+    run_id = _quietly("start", activity.start_run, get_con())
+    crashed = False
     try:
         _steps()
+    except BaseException:
+        crashed = True
+        raise
     finally:
         _release_run_lock()
+        if run_id is not None:
+            summary = _quietly("summary", activity.run_summary, get_con(), run_id) or {}
+            status = "problems" if crashed or summary.get("errors") else "ok"
+            _quietly("end", activity.finish_run, get_con(), run_id, status, summary)
+            _quietly("clear-out", activity.clear_old, get_con())
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
     return RAN
 

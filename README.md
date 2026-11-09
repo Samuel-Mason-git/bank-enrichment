@@ -51,46 +51,31 @@ context sentences tell it exactly what each transaction was.
 10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
 11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
 
-## Server Dashboard
+## The Dashboard
 
-The server exposes a password-protected dashboard at `https://your-name.duckdns.org/dashboard`.
+Everything you see and manage is in the Streamlit dashboard on your own machine
+(Part 2 of [SETUP.md](SETUP.md)); the server has no web pages of its own. Its pages:
 
-**Lifetime Stats** — counted from the transactions themselves:
-- Total transactions received and total monetary value
-- Telegram requests sent, and how many were enriched and classified
+- **Overview**, **Over Time**, **Transactions**, **Category Drill-Down**, **Top Merchants**,
+  **Subscriptions**: your money, by period, category and merchant. Edit any transaction's
+  context, category or date in the Transactions table.
+- **Queue**: what's still waiting (your answer, the classifier, or a new-category card you
+  haven't picked from), how long, and how often you were asked. Answer, skip or delete from there.
+- **Payment details**: one payment in full: every field Monzo sent, what it has now, and its
+  whole history (each question, answer, label and review, by whom). Answer, skip, unskip or delete it.
+- **Rules**: add, edit, pause and delete auto-enrichment rules, with a live preview of what a
+  rule would have caught across every payment so far (see [Rules](#rules)).
+- **Activity**: any day's hourly runs (and any missed), every warning and error from the server
+  and the worker, and everything that happened to your payments.
+- **Settings**: categories, their roles, and backups.
 
-**Current Queue** — where each transaction is up to:
-- Status breakdown (pending / enriched / classified / skipped) with counts
-- Paginated transaction list with amount and status
-- Enrich any pending transaction directly from the dashboard via a modal
-- Skip, unskip or delete transactions inline
-
-Each transaction links to a detail page showing the full payload,
-merchant/counterparty info, enrichment context, and controls to enrich,
-skip, unskip, or delete.
-
-A **Rules view** at `/dashboard/rules` lets you define auto-enrichment rules. 
-When a transaction matches a rule, it is enriched automatically and no Telegram 
-notification is sent — useful for recurring transactions like rent, gym memberships, 
-or regular transfers where you already know the context.
-
-A **Database view** at `/dashboard/db` lets you inspect the raw tables directly
-without needing to connect to the database.
-
-A **Logout** button sits in the header. HTTP Basic Auth has no real server-side 
-session for it to end, so it links to a page explaining this plainly rather than 
-attempting a fake login challenge — closing the browser tab is the only way to 
-actually clear cached credentials.
-
-**Who can reach what.** The dashboard needs your login. The two webhooks can't use
-one — Telegram and Monzo have to be able to call them — so each checks a shared secret instead: Telegram
-sends `TELEGRAM_WEBHOOK_SECRET` in a header, and Monzo's registered webhook URL carries
-`MONZO_WEBHOOK_SECRET` (redacted from the request logs). On top of that, the bot only
-acts on updates from your own `TELEGRAM_CHAT_ID`, so someone who finds it can't use it.
-Because browsers attach a saved Basic-auth login to *any* form submission, even one
-another website triggers, dashboard changes are refused unless they come from the
-dashboard's own pages. Monzo authorization starts from `/oauth/start` behind your login,
-and the callback only completes an authorization the server issued itself.
+**Who can reach what.** The server is reachable only at its two webhooks, the Monzo login and
+`/health`. The webhooks can't use a login — Telegram and Monzo have to be able to call them — so
+each checks a shared secret instead: Telegram sends `TELEGRAM_WEBHOOK_SECRET` in a header, and
+Monzo's registered webhook URL carries `MONZO_WEBHOOK_SECRET` (redacted from the request logs). On
+top of that, the bot only acts on updates from your own `TELEGRAM_CHAT_ID`, so someone who finds it
+can't use it. Monzo authorization starts from `/oauth/start`, behind the login in `DASHBOARD_USER`
+and `DASHBOARD_PASSWORD`, and the callback only completes an authorization the server issued itself.
 
 Every transaction is kept. A webhook for a transaction already stored is ignored — some
 merchants (e.g. Aldi, Lidl) only fire when the transaction settles, days after the purchase,
@@ -115,7 +100,9 @@ Each rule specifies:
 | Auto Skip | If checked, the transaction is marked as skipped automatically — no Telegram notification, no manual enrichment needed |
 | Second condition | Optional — a second match field/type/value that must also pass (AND logic) |
 
-Rules can be enabled or disabled at any time from the dashboard without deleting them.
+Rules live on the dashboard's **Rules** page, which previews what a rule would have caught
+across every payment so far (and which an earlier rule would take first: the first match wins),
+and can pause any rule without deleting it.
 Amount ranges and exact amounts are specified in pounds and matched against the absolute
 transaction value, regardless of direction — `amount_negative`/`amount_positive` exist
 specifically for when direction itself is what you need to match on (see the Savings
@@ -154,7 +141,7 @@ real, final amount still arrives normally, as its own separate transaction.
 rules, both matching **Payment scheme** `exact` `uk_retail_pot`, with a second condition
 of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") and
 `amount_positive` on the other ("Moved out of savings pot"). Once a few transactions have
-gone through each, set that subcategory's Role to **Saving** in the Settings tab — see
+gone through each, set that subcategory's Role to **Saving** in the Settings page — see
 [Category Roles & Standard vs Actual](#category-roles--standard-vs-actual).
 
 ### Creating a Rule From an Existing Transaction
@@ -282,7 +269,7 @@ covering most common personal spending:
 | Career & Learning | Online Learning, Books, Certifications |
 | Transfers | Inbound Transfer, Outbound Transfer |
 
-This is a starting point, not a constraint. Everything can be changed from the **Settings tab** 
+This is a starting point, not a constraint. Everything can be changed from the **Settings page** 
 in the local dashboard — rename parents, add or delete subcategories, move subcategories 
 between parents, view which transactions sit under each label, and wipe labels per category 
 so the LLM re-classifies against your updated structure. Because context is stored separately 
@@ -290,13 +277,13 @@ from labels, restructuring the taxonomy and re-running classification never lose
 
 The default taxonomy is only seeded into a genuinely empty database — the very first time
 you run the pipeline or dashboard. Once any parent category exists, seeding is skipped
-entirely, so wiping the taxonomy from the Settings tab and building your own from scratch
+entirely, so wiping the taxonomy from the Settings page and building your own from scratch
 is safe: the defaults won't quietly get added back in alongside it on a later restart.
 
 ### Category Roles & Standard vs Actual
 
 Every category has a **Role** — Income, Spend, Investment, Saving, Transfer, or Excluded —
-set from the Settings tab, at the parent level (subcategories inherit it, or can override it
+set from the Settings page, at the parent level (subcategories inherit it, or can override it
 individually, e.g. a "Refunds" subcategory under "Income" is Excluded rather than Income).
 Roles drive what actually counts as income or spend throughout the dashboard, so a refund or
 an internal transfer between your own accounts doesn't inflate your real income or spend.
@@ -422,7 +409,7 @@ The database is backed up every night wherever it lives — for this setup, by t
 (see the data-vault repo) — and every change to a transaction is kept in its history anyway,
 so nothing here is needed to stay safe.
 
-**Back up now** in the Settings tab takes a copy of your own before you try something: every
+**Back up now** in the Settings page takes a copy of your own before you try something: every
 table saved as a Parquet file, in a folder named `<timestamp>_<reason>` under `BACKUP_DIR`
 (default `~/bank-enrichment-backups`). Nothing is ever backed up automatically. Read one back
 with DuckDB or pandas, e.g.
@@ -431,7 +418,7 @@ with DuckDB or pandas, e.g.
 SELECT * FROM '~/bank-enrichment-backups/20261025-220341_manual/transactions_raw.parquet';
 ```
 
-Each copy carries a `manifest.json` recording what it captured, so the Settings tab can tell you
+Each copy carries a `manifest.json` recording what it captured, so the Settings page can tell you
 what's in it: transaction count, how many were classified, taxonomy size, subscription count,
 the date range covered, and size on disk. The most recent 10 are kept and older ones pruned;
 any can also be deleted by hand from the same section (behind a confirmation).
@@ -475,8 +462,11 @@ at any point using a new taxonomy and it will classify correctly every time.
 │   │   ├── judge_backlog.py   # Manual: a second look at older history
 │   │   └── database_functions.py  # The database library, shared with the dashboard — includes a CLI (run the file directly) to print stats/transactions
 │   └── dashboard/             # The Streamlit dashboard, on your own machine
-│       ├── dashboard.py
-│       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/chart helpers) — unit tested standalone
+│       ├── dashboard.py       # Entry point: loads the data, the sidebar's filters, the page navigation
+│       ├── views/             # One script per page: overview, over_time, transactions, drill_down, merchants, subscriptions, rules, settings
+│       ├── ui.py              # Shared drawing helpers: money formatting, metric cards
+│       ├── page_context.py    # Hands the sidebar's filtered data to the open page
+│       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/rule/chart helpers) — unit tested standalone
 ├── sql/
 │   └── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
 ├── config/

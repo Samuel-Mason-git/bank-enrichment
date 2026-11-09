@@ -1,12 +1,9 @@
 """Rules that file a match straight into a fixed category, skipping the
-classifier -- server side: matching, the webhook, a context you give
-overriding it, the rule form and the Rules page's dropdowns, and approved
-suggestions."""
+classifier -- server side: matching, the webhook, and approved suggestions.
+(The Rules page that manages them is the dashboard's: test_rules_helpers.)"""
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
-from starlette.requests import Request
+from unittest.mock import MagicMock, patch
 
 import main
 from check_rules import RuleMatch, check_rules
@@ -45,11 +42,6 @@ def _receive(server_con, req, bot):
          patch.object(main, "bot", bot), \
          patch.object(main, "get_quick_categories", return_value=[]):
         return _run(main.recieve_monzo(req))
-
-
-def _form_req(data: dict):
-    req = MagicMock()
-    req.form = AsyncMock(return_value=data)
     return req
 
 
@@ -105,73 +97,6 @@ class TestWebhookFilesTheTransaction:
         _receive(server_con, _webhook(), MagicMock())
         assert label_sources(server_con, "tx1") == []
         assert status(server_con, "tx1") == "enriched"
-
-
-class TestYourContextOverridesTheRule:
-    """A rule files from the transaction's details alone; once you say what it
-    was, the classifier should look again with that."""
-
-    def test_editing_the_context_clears_the_rules_label(self, server_con):
-        _taxonomy(server_con)
-        add_rule(server_con, subcategory_id=1, **EE)
-        _receive(server_con, _webhook(), MagicMock())
-        with patch.object(main, "get_con", return_value=server_con):
-            _run(main.edit_transaction_context("tx1", _form_req({"context": "Actually a gift"}), MagicMock()))
-        t = transaction(server_con, "tx1")
-        assert (t["user_context"], t["llm_category"]) == ("Actually a gift", None)
-        assert status(server_con, "tx1") == "enriched"
-
-
-class TestRuleForm:
-    def _add(self, con, **fields):
-        form = {"name": "EE", "match_field": "merchant_name", "match_type": "exact", "match_value": "EE", **fields}
-        with patch.object(main, "get_con", return_value=con):
-            _run(main.add_rule(_form_req(form), MagicMock()))
-        return con.execute("SELECT auto_context, subcategory_id FROM rules").fetchall()
-
-    def test_a_placement_alone_is_enough_to_save_a_rule(self, server_con):
-        _taxonomy(server_con)
-        assert self._add(server_con, category="Bills", subcategory="Phone") == [("", 1)]
-
-    def test_half_a_placement_and_nothing_else_is_rejected(self, server_con):
-        _taxonomy(server_con)
-        assert self._add(server_con, category="Bills") == []
-
-    def test_half_a_placement_with_a_context_saves_without_the_half(self, server_con):
-        _taxonomy(server_con)
-        assert self._add(server_con, auto_context="Phone", category="Bills") == [("Phone", None)]
-
-    def test_a_placement_that_doesnt_exist_isnt_saved_as_one(self, server_con):
-        _taxonomy(server_con)
-        assert self._add(server_con, auto_context="Phone", category="Bills", subcategory="Nope") == [("Phone", None)]
-
-    def test_editing_sets_and_clears_the_placement(self, server_con):
-        _taxonomy(server_con)
-        add_rule(server_con, auto_context="Phone", **EE)
-        form = {"name": "EE", "match_field": "merchant_name", "match_type": "exact", "match_value": "EE",
-                "auto_context": "Phone", "category": "Bills", "subcategory": "Phone"}
-        with patch.object(main, "get_con", return_value=server_con):
-            _run(main.edit_rule(1, _form_req(form), MagicMock()))
-            assert server_con.execute("SELECT subcategory_id FROM rules").fetchone() == (1,)
-            form.update(category="", subcategory="")
-            _run(main.edit_rule(1, _form_req(form), MagicMock()))
-        assert server_con.execute("SELECT subcategory_id FROM rules").fetchone() == (None,)
-
-
-class TestRulesPageDropdowns:
-    def test_group_live_subcategories_under_their_category(self, server_con):
-        _taxonomy(server_con)
-        server_con.execute("UPDATE subcategories SET archived_at = '2026-10-01' WHERE id = 2")
-        assert main._get_taxonomy(server_con) == {"Bills": ["Phone"], "Food & Drink": ["Groceries"]}
-
-    def test_rules_page_offers_them(self, server_con):
-        _taxonomy(server_con)
-        request = Request({"type": "http", "method": "GET", "path": "/dashboard/rules",
-                           "headers": [], "query_string": b"", "app": main.app})
-        with patch.object(main, "get_con", return_value=server_con):
-            resp = _run(main.rules_view(request, MagicMock()))
-        assert resp.context["taxonomy"]["Bills"] == ["Broadband", "Phone"]
-        assert '<option value="Bills">Bills</option>' in resp.body.decode()
 
 
 class TestApprovedSuggestionFixesThePlacement:

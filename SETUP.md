@@ -71,8 +71,8 @@ Then open `config/.env` and fill in all values:
 
 | Key | Used by | Description |
 |---|---|---|
-| `DASHBOARD_USER` | Server | Username for the dashboard login |
-| `DASHBOARD_PASSWORD` | Server | Password for the dashboard login |
+| `DASHBOARD_USER` | Server | Username for the login in front of `/oauth/start` (linking your Monzo account) |
+| `DASHBOARD_PASSWORD` | Server | Password for that login |
 | `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login, which data-vault's `new_project.sh` prints and saves on the data box. `DB_HOST` is the data box's private address, which the server reaches inside the cloud network and your local machine through the VPN |
@@ -208,19 +208,15 @@ MONZO_CLIENT_SECRET=your_client_secret
 docker compose up -d
 ```
 
-6. Open `https://your-name.duckdns.org/oauth/start` in your browser and log in with your dashboard credentials. It sends you to Monzo's login with a single-use link that expires after 10 minutes — the server only accepts the authorization that comes back from a link it issued itself, so nobody else can complete one on your behalf.
+6. Open `https://your-name.duckdns.org/oauth/start` in your browser and log in with your `DASHBOARD_USER` and `DASHBOARD_PASSWORD`. It sends you to Monzo's login with a single-use link that expires after 10 minutes — the server only accepts the authorization that comes back from a link it issued itself, so nobody else can complete one on your behalf.
 
 Log in and approve with your PIN/Face ID. You'll land on a page saying "Monzo authorization complete" — the server exchanges the code for an access/refresh token pair itself and stores it in `data/monzo_oauth.json` (gitignored). From there, a background job refreshes it automatically every 4 hours, comfortably inside Monzo's token lifetime, and alerts you on Telegram if a refresh ever fails.
 
 Whether a silent refresh alone is enough to keep `merchant` populated (as opposed to also requiring you to physically reopen the Monzo app sometimes) isn't documented by Monzo — treat this as something to keep an eye on rather than a guaranteed permanent fix.
 
-### 11. Access the Dashboard
+### 11. The follow-ups
 
-Open `https://your-name.duckdns.org/dashboard` in your browser. Log in with the `DASHBOARD_USER` and `DASHBOARD_PASSWORD` you set in `config/.env`.
-
-- **Lifetime Stats** — counted from the transactions (total received, total amount, requests sent, enriched, classified)
-- **Current Queue** — paginated list of transactions with where each is up to, and inline controls to enrich, skip, unskip or delete. Each row links to a detail page with the full payload and all actions.
-- **Database view** at `/dashboard/db` — the latest raw transactions and context/label events
+There are no web pages on the server: you see and manage everything from the Streamlit dashboard (Part 2). The server only takes the webhooks, the Monzo login and `/health`.
 
 A follow-up notification system automatically re-sends Telegram reminders at 1 hour, 1 day, 2 days, and 1 week after the initial notification. If there is still no response after a week, the transaction is auto-skipped. A card that couldn't be sent (Telegram down, say) is sent again 10 minutes later; every send to Telegram is itself tried up to three times first.
 
@@ -300,7 +296,7 @@ This single command does everything in sequence:
 Proposals and suggestions are written to the database; the server sends their Telegram cards
 within five minutes.
 
-The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings tab in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
+The default taxonomy covers common personal spending categories and is a starting point — you can rename, restructure, or replace it entirely from the Settings page in the dashboard. See [Customising Your Taxonomy](#customising-your-taxonomy) below.
 
 Only one run can happen at a time: one started while the worker is running (or the other way round) says so and
 stops, rather than classifying the same transactions twice.
@@ -376,7 +372,7 @@ Use the sidebar to filter by date range (quick presets or custom), category, sub
 
 ### Customising Your Taxonomy
 
-The default taxonomy is seeded automatically on first run, but you own it entirely from there. From the **Settings tab**:
+The default taxonomy is seeded automatically on first run, but you own it entirely from there. From the **Settings page**:
 
 - **Rename** a parent or subcategory — all transaction labels update immediately, and a custom Role you've set is kept
 - **Move** a subcategory to a different parent
@@ -386,7 +382,7 @@ The default taxonomy is seeded automatically on first run, but you own it entire
 - **View transactions** per subcategory — see exactly what's in each bucket and bulk-reassign if needed
 
 If you want to start fresh with a completely different taxonomy, use the Danger Zone at the
-bottom of the Settings tab to wipe the entire taxonomy structure, then build your own from
+bottom of the Settings page to wipe the entire taxonomy structure, then build your own from
 scratch. The default taxonomy is only ever seeded when there are no categories at all, so it
 won't get added back in alongside whatever you build. Your context sentences are never
 touched — only the labels change.
@@ -398,7 +394,7 @@ Print all transactions and stats to the terminal:
 poetry run python src/pipeline/database_functions.py
 ```
 
-Wiping labels or the entire taxonomy is done from the **Settings tab** in the dashboard 
+Wiping labels or the entire taxonomy is done from the **Settings page** in the dashboard 
 rather than a standalone script — see [Customising Your Taxonomy](#customising-your-taxonomy) 
 above. Those are destructive, hard-to-undo operations, so they live behind the dashboard's 
 confirmation guardrails rather than a bare CLI script.

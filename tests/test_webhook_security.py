@@ -141,43 +141,6 @@ def _rule_count(con):
     return con.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
 
 
-class TestDashboardCrossSitePosts:
-    """The attack: a page you visit while logged in auto-submits a form to
-    your dashboard -- the browser attaches your Basic-auth login for it."""
-
-    def _post(self, client, **headers):
-        return client.post("/dashboard/rules/add", data=_RULE_FORM, auth=("admin", "pw"),
-                           headers=headers, follow_redirects=False)
-
-    def test_a_form_from_another_site_is_blocked(self, client, server_con):
-        assert self._post(client, Origin="https://evil.example").status_code == 403
-        assert _rule_count(server_con) == 0
-
-    def test_a_null_origin_is_blocked(self, client, server_con):
-        """Sandboxed iframes and data: URLs send Origin: null."""
-        assert self._post(client, Origin="null").status_code == 403
-        assert _rule_count(server_con) == 0
-
-    def test_a_cross_site_referer_is_blocked_when_there_is_no_origin(self, client, server_con):
-        assert self._post(client, Referer="https://evil.example/page").status_code == 403
-        assert _rule_count(server_con) == 0
-
-    def test_your_own_dashboard_still_works(self, client, server_con):
-        assert self._post(client, Origin="http://testserver").status_code == 303
-        assert _rule_count(server_con) == 1
-
-    def test_a_non_browser_client_still_works(self, client, server_con):
-        assert self._post(client).status_code == 303
-        assert _rule_count(server_con) == 1
-
-    def test_the_check_runs_before_auth(self, client, server_con):
-        """Blocked even with valid credentials -- the credentials are exactly
-        what a cross-site form gets for free."""
-        resp = client.post("/dashboard/rules/1/delete", auth=("admin", "pw"),
-                           headers={"Origin": "https://evil.example"}, follow_redirects=False)
-        assert resp.status_code == 403
-
-
 class TestWebhookTokenRedaction:
     def _record(self, path):
         return logging.LogRecord(
