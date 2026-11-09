@@ -559,10 +559,10 @@ def get_payment_history(transaction_id: str) -> list[dict]:
                FROM category_proposals WHERE txn_ids ? %(id)s
                UNION ALL
                SELECT started_at, 'llm call', job,
-                      concat_ws(' · ', response_model, (input_tokens + cache_read_tokens + cache_write_5m_tokens
+                      concat_ws(' · ', COALESCE(response_model, model), (input_tokens + cache_read_tokens + cache_write_5m_tokens
                                 + cache_write_1h_tokens)::TEXT || ' in / ' || output_tokens::TEXT || ' out'),
                       concat_ws(' · ', CASE WHEN cost_usd IS NOT NULL THEN '$' || round(cost_usd, 4)::TEXT END,
-                                CASE WHEN status = 'error' THEN 'failed' END,
+                                CASE WHEN error IS NOT NULL THEN 'failed' END,
                                 CASE WHEN parsed = false THEN 'reply unusable' END),
                       call_id
                FROM llm_calls WHERE txn_ids ? %(id)s

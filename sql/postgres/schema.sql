@@ -309,11 +309,11 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     -- prices, keyed by model name) doesn't assume it stays that way.
     provider              VARCHAR     NOT NULL DEFAULT 'anthropic',
     model                 VARCHAR     NOT NULL,    -- as asked for
-    response_model        VARCHAR,                 -- as answered (differs after a fallback)
-    params                JSONB       NOT NULL DEFAULT '{}',   -- max_tokens, thinking, ...
-    -- The prompt as sent isn't kept, only a fingerprint (identical prompts
-    -- match) and its size.
-    prompt_sha256         VARCHAR,
+    response_model        VARCHAR,                 -- only if a different one answered (a fallback)
+    params                JSONB       NOT NULL DEFAULT '{}',   -- max_tokens, thinking, ... (not the model)
+    -- The prompt as sent isn't kept, only a fingerprint (the start of its
+    -- sha256: identical prompts match) and its size.
+    prompt_sha256         VARCHAR(16),
     prompt_chars          INTEGER,
     -- Kept only for a reply that couldn't be used: a usable one's answer is in
     -- the history it wrote (label_events, judge_reviews, the proposals).
@@ -325,21 +325,17 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     cache_write_1h_tokens INTEGER,
     cache_read_tokens     INTEGER,
     output_tokens         INTEGER,                 -- thinking included
-    usage                 JSONB,                   -- the API's usage object, whole
-    cost_usd              NUMERIC(12, 6),          -- at the prices below; NULL for an unpriced model
-    prices                JSONB,                   -- $/MTok used for cost_usd, and since when
+    -- At that day's prices (llm_calls.PRICES, dated); NULL for an unpriced model.
+    cost_usd              NUMERIC(12, 6),
     txn_ids               JSONB       NOT NULL DEFAULT '[]',   -- the payments it was about
-    status                VARCHAR     NOT NULL CHECK (status IN ('ok', 'error')),
-    error                 TEXT,
-    attempts              SMALLINT    NOT NULL DEFAULT 1,
-    retry_errors          JSONB       NOT NULL DEFAULT '[]',   -- why each earlier attempt failed
+    error                 TEXT,                    -- NULL: it worked
+    retry_errors          JSONB,                   -- why each earlier attempt failed; NULL if none
     -- Whether the reply could be used: parsed at all, and how many of the
     -- items asked about it answered for.
     parsed                BOOLEAN,
     answered              INTEGER,
     expected              INTEGER,
-    request_id            VARCHAR,                 -- Anthropic's, for asking them about a call
-    response_id           VARCHAR
+    request_id            VARCHAR                  -- Anthropic's, for asking them about a call
 );
 CREATE INDEX IF NOT EXISTS llm_calls_by_time ON llm_calls (started_at);
 CREATE INDEX IF NOT EXISTS llm_calls_by_txn ON llm_calls USING GIN (txn_ids);
@@ -365,16 +361,26 @@ CREATE TABLE IF NOT EXISTS settings_changes (
 );
 CREATE INDEX IF NOT EXISTS settings_changes_by_time ON settings_changes (changed_at);
 
+-- An add keeps the whole new row and a delete the whole old one; an edit only
+-- the fields that changed, before and after, plus the ones that say which row
+-- it was (id, name, and the category links).
 CREATE OR REPLACE FUNCTION record_settings_change() RETURNS trigger AS $$
+DECLARE
+    old_row JSONB := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
+    new_row JSONB := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
+    names   TEXT[] := ARRAY['id', 'name', 'parent_id', 'subcategory_id'];
 BEGIN
-    IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
-        RETURN NEW;  -- nothing actually changed
+    IF TG_OP = 'UPDATE' THEN
+        IF old_row = new_row THEN
+            RETURN NEW;  -- nothing actually changed
+        END IF;
+        SELECT jsonb_object_agg(key, value) INTO old_row FROM jsonb_each(to_jsonb(OLD))
+         WHERE value IS DISTINCT FROM to_jsonb(NEW) -> key OR key = ANY(names);
+        SELECT jsonb_object_agg(key, value) INTO new_row FROM jsonb_each(to_jsonb(NEW))
+         WHERE value IS DISTINCT FROM to_jsonb(OLD) -> key OR key = ANY(names);
     END IF;
     INSERT INTO settings_changes (table_name, action, before, after, source)
-    VALUES (TG_TABLE_NAME, TG_OP,
-            CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END,
-            CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END,
-            NULLIF(current_setting('application_name', true), ''));
+    VALUES (TG_TABLE_NAME, TG_OP, old_row, new_row, NULLIF(current_setting('application_name', true), ''));
     RETURN COALESCE(NEW, OLD);
 END;
 $$ LANGUAGE plpgsql;

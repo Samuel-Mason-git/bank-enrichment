@@ -112,7 +112,7 @@ def _store_version(prompt_fn) -> None:
 def _fingerprint(kwargs) -> tuple[str, int]:
     """(sha256, characters) of the prompt as sent: system + messages."""
     text = json.dumps(_jsonable({k: kwargs[k] for k in ("system", "messages") if k in kwargs}), sort_keys=True)
-    return hashlib.sha256(text.encode()).hexdigest(), len(text)
+    return hashlib.sha256(text.encode()).hexdigest()[:16], len(text)
 
 
 # ── The call ──────────────────────────────────────────────────────────────────
@@ -180,16 +180,17 @@ def create(client, *, job: str, prompt_fn=None, txn_ids=(), **kwargs):
             error = e
             break
     duration_ms = int((time.monotonic() - t0) * 1000)
-    _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, attempt, retry_errors, response, error)
+    _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, retry_errors, response, error)
     if error is not None:
         raise error
     return response
 
 
-def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, attempts, retry_errors, response, error):
+def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, retry_errors, response, error):
     _last_call.set(None)
     try:
-        params = {k: v for k, v in kwargs.items() if k not in ("messages", "system")}
+        # The model has a column of its own; params holds only the other settings.
+        params = {k: v for k, v in kwargs.items() if k not in ("messages", "system", "model")}
         if prompt_fn is not None:
             _store_version(prompt_fn)
         sha, chars = _fingerprint(kwargs)
@@ -197,20 +198,20 @@ def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, attempts, ret
             "started_at": started, "duration_ms": duration_ms, "run_id": current_run_id, "job": job,
             "prompt_version": prompt_version(prompt_fn), "provider": "anthropic", "model": kwargs.get("model", "?"),
             "params": json.dumps(_jsonable(params)), "prompt_sha256": sha, "prompt_chars": chars,
-            "txn_ids": json.dumps([str(t) for t in txn_ids]), "attempts": attempts,
-            "retry_errors": json.dumps(retry_errors),
+            "txn_ids": json.dumps([str(t) for t in txn_ids]),
+            "retry_errors": json.dumps(retry_errors) if retry_errors else None,
         }
         if error is not None:
-            row.update(status="error", error=f"{type(error).__name__}: {error}"[:4000])
+            row.update(error=f"{type(error).__name__}: {error}"[:4000])
         else:
-            usage = getattr(response, "usage", None)
-            tokens = _tokens(usage)
+            tokens = _tokens(getattr(response, "usage", None))
             answered_by = _str(getattr(response, "model", None)) or row["model"]
             prices = prices_for(answered_by, started.date())
             blocks = getattr(response, "content", None)
             blocks = blocks if isinstance(blocks, list) else []
             row.update(
-                status="ok", response_model=answered_by,
+                # Only when a different model answered (a fallback).
+                response_model=answered_by if answered_by != row["model"] else None,
                 response_text="".join(_str(getattr(b, "text", None)) or "" for b in blocks
                                       if getattr(b, "type", None) == "text"),
                 thinking="".join(_str(getattr(b, "thinking", None)) or "" for b in blocks
@@ -219,10 +220,8 @@ def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, attempts, ret
                 input_tokens=tokens["input"], cache_write_5m_tokens=tokens["cache_write_5m"],
                 cache_write_1h_tokens=tokens["cache_write_1h"], cache_read_tokens=tokens["cache_read"],
                 output_tokens=tokens["output"],
-                usage=json.dumps(_jsonable(usage) if usage is not None else {}),
-                cost_usd=cost(prices, tokens), prices=json.dumps(prices) if prices else None,
+                cost_usd=cost(prices, tokens),
                 request_id=_str(getattr(response, "_request_id", None)),
-                response_id=_str(getattr(response, "id", None)),
             )
             if prices is None:
                 log.warning(f"No price for {answered_by}: its calls are recorded without a cost "
@@ -264,10 +263,13 @@ def parsed(ok: bool, answered: int | None = None, expected: int | None = None) -
 # fetches one call whole.
 
 
+# What's not stored but follows from what is: the model that answered (the
+# one asked unless a fallback answered), ok/error, and how many attempts.
 _CALL_COLUMNS = """call_id, started_at AT TIME ZONE 'Europe/London' AS started_at, duration_ms, run_id, job,
-                   provider,
-                   prompt_version, model, response_model, stop_reason, input_tokens, cache_write_5m_tokens,
-                   cache_write_1h_tokens, cache_read_tokens, output_tokens, cost_usd, status, error, attempts,
+                   provider, prompt_version, model, COALESCE(response_model, model) AS response_model,
+                   stop_reason, input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cache_read_tokens,
+                   output_tokens, cost_usd, CASE WHEN error IS NULL THEN 'ok' ELSE 'error' END AS status, error,
+                   COALESCE(jsonb_array_length(retry_errors), 0) + 1 AS attempts,
                    parsed, answered, expected, txn_ids, request_id"""
 
 
@@ -284,8 +286,8 @@ def get_calls(since=None, until=None) -> list[dict]:
 
 def get_call(call_id: int) -> dict | None:
     rows = _rows(
-        f"""SELECT {_CALL_COLUMNS}, params, prompt_sha256, prompt_chars, response_text, thinking, usage, prices,
-                   retry_errors, response_id,
+        f"""SELECT {_CALL_COLUMNS}, params, prompt_sha256, prompt_chars, response_text, thinking,
+                   retry_errors,
                    (SELECT source FROM prompt_versions v WHERE v.prompt_version = llm_calls.prompt_version)
                        AS prompt_source
             FROM llm_calls WHERE call_id = %s""",

@@ -16,6 +16,7 @@ import streamlit as st
 
 from llm_calls import (
     card_outcomes, classifier_corrections, get_call, get_calls, judge_catches, judge_outcomes, label_sources,
+    prices_for,
 )
 from payment_actions import JOB_LABELS, LABEL_SOURCES
 from ui import _card_rows
@@ -29,6 +30,14 @@ def _usd(v) -> str:
         return "—"
     v = float(v)
     return f"${v:,.2f}" if abs(v) >= 1 else f"${v:,.4f}"
+
+
+def _price_text(prices: dict | None) -> str:
+    """The price list a call was costed at (llm_calls.PRICES, by its day)."""
+    if not prices:
+        return "No price on record for this model"
+    rates = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in prices.items() if k not in ("long", "long_over", "since"))
+    return f"{rates} (since {prices['since']})"
 
 
 def _pct(part, whole) -> str:
@@ -163,9 +172,7 @@ def _show_call(call_id: int) -> None:
         "Stopped because": c["stop_reason"],
         "Reply usable": {True: f"Yes ({c['answered']} of {c['expected']} answered)" if c["expected"] else "Yes",
                          False: "No", None: "Not checked"}[c["parsed"]],
-        "Prices ($/MTok)": (", ".join(f"{k} {v}" for k, v in (c["prices"] or {}).items()
-                                      if k not in ("long", "since")) + f" (since {c['prices']['since']})"
-                            if c["prices"] else "No price on record for this model"),
+        "Prices ($/MTok)": _price_text(prices_for(c["response_model"], c["started_at"].date())),
         "Prompt version": c["prompt_version"],
         "Run": c["run_id"],
         "Anthropic request id": c["request_id"],
@@ -191,9 +198,8 @@ def _show_call(call_id: int) -> None:
             st.code(c["response_text"], language=None, wrap_lines=True)
     elif c["parsed"]:
         st.caption("What it answered is in each payment's history (Payment details), so its text isn't kept.")
-    with st.expander("Settings and raw usage"):
-        st.json({"params": c["params"], "usage": c["usage"], "response_id": c["response_id"],
-                 "prompt_sha256": c["prompt_sha256"]})
+    with st.expander("Settings"):
+        st.json({"params": c["params"], "prompt_sha256": c["prompt_sha256"]})
 
 
 opened = st.session_state.pop("ai_open_call", None)

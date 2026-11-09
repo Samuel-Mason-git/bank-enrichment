@@ -104,17 +104,23 @@ class TestRecording:
         response = _call(db, client=_client(_message(thinking="Hmm, groceries.", cache_read=500)))
         assert response.content[-1].text.startswith("[")
         r = _row(db)
-        assert (r["job"], r["provider"], r["model"], r["response_model"], r["status"]) == (
-            "classify_parents", "anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", "ok")
-        assert len(r["prompt_sha256"]) == 64 and r["prompt_chars"] > len("Classify these")
-        assert r["params"] == {"model": "claude-sonnet-4-6", "max_tokens": 4096}
+        assert (r["job"], r["provider"], r["model"], r["error"]) == (
+            "classify_parents", "anthropic", "claude-sonnet-4-6", None)
+        assert r["response_model"] is None, "only stored when a different model answered"
+        assert len(r["prompt_sha256"]) == 16 and r["prompt_chars"] > len("Classify these")
+        assert r["params"] == {"max_tokens": 4096}, "the model has its own column"
         assert r["response_text"].startswith("[") and r["thinking"] == "Hmm, groceries."
         assert (r["input_tokens"], r["cache_read_tokens"], r["output_tokens"]) == (1000, 500, 200)
         assert float(r["cost_usd"]) == pytest.approx((1000 * 3 + 500 * 0.30 + 200 * 15) / 1_000_000)
-        assert r["prices"]["input"] == 3 and r["prices"]["since"]
-        assert r["txn_ids"] == ["tx_1", "tx_2"]
+        assert r["txn_ids"] == ["tx_1", "tx_2"] and r["retry_errors"] is None
         assert r["prompt_version"].startswith("tests.test_llm_calls._a_prompt@")
-        assert r["response_id"] == "msg_1" and r["duration_ms"] >= 0 and r["attempts"] == 1
+        assert r["duration_ms"] >= 0
+        call = llm_calls.get_call(r["call_id"])  # what isn't stored, worked out when read
+        assert (call["status"], call["attempts"], call["response_model"]) == ("ok", 1, "claude-sonnet-4-6")
+
+    def test_a_fallback_model_is_recorded(self, db):
+        _call(db, client=_client(_message(model="claude-opus-5-5")))
+        assert _row(db)["response_model"] == "claude-opus-5-5"
 
     def test_a_usable_replys_text_isnt_kept(self, db):
         _call(db, client=_client(_message(thinking="Hmm.")))
@@ -140,14 +146,15 @@ class TestRecording:
         monkeypatch.setattr(llm_calls, "_retryable", lambda e: isinstance(e, Overloaded))
         _call(db, client=_client(Overloaded("529"), Overloaded("529 again"), _message()))
         r = _row(db)
-        assert r["attempts"] == 3 and r["status"] == "ok"
-        assert r["retry_errors"] == ["Overloaded: 529", "Overloaded: 529 again"]
+        assert r["error"] is None and r["retry_errors"] == ["Overloaded: 529", "Overloaded: 529 again"]
+        assert llm_calls.get_call(r["call_id"])["attempts"] == 3
 
     def test_a_failed_call_is_recorded_and_still_raised(self, db):
         with pytest.raises(ValueError):
             _call(db, client=_client(ValueError("bad request")))
         r = _row(db)
-        assert r["status"] == "error" and "bad request" in r["error"] and r["cost_usd"] is None
+        assert "bad request" in r["error"] and r["cost_usd"] is None
+        assert llm_calls.get_call(r["call_id"])["status"] == "error"
 
     def test_failing_to_record_never_breaks_the_call(self, db, monkeypatch):
         monkeypatch.setattr(llm_calls, "get_con", lambda: (_ for _ in ()).throw(OSError("db gone")))
@@ -237,6 +244,9 @@ def test_every_settings_change_is_logged(db):
     rows = db.execute("SELECT action, before->>'match_value', after->>'match_value' FROM settings_changes "
                       "WHERE table_name = 'rules' ORDER BY change_id").fetchall()
     assert rows == [("INSERT", None, "gym"), ("UPDATE", "gym", "the gym"), ("DELETE", "the gym", None)]
+    # An edit keeps only what changed, plus what says which row it was.
+    edit = db.execute("SELECT before, after FROM settings_changes WHERE action = 'UPDATE'").fetchone()
+    assert set(edit[0]) == set(edit[1]) == {"id", "name", "subcategory_id", "match_value"}
     assert dbf.get_settings_changes(date.today())  # read back for the Activity page
 
 
