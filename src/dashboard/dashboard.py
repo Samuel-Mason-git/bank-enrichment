@@ -4,6 +4,7 @@ Loads the transactions, draws the sidebar's filters (shared by every page),
 then runs the page picked in the navigation. Each page is its own script in
 views/ and gets the filtered data through page_context.shared(). Only the open
 page runs on each click, rather than every tab's code as before."""
+import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -19,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
 # exactly as the webhook does. Last on the path: nothing there shadows ours.
 sys.path.append(str(Path(__file__).parent.parent / "server"))
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+# Changes made here are recorded as the dashboard's (settings_changes).
+os.environ.setdefault("DB_APP_NAME", "dashboard")
 
 from database_functions import init_db, get_con
 from dashboard_helpers import merchant_display_name
@@ -267,19 +270,27 @@ share(df=df, filtered=filtered, prev_filtered=prev_filtered, all_parents=all_par
       subs_by_parent=subs_by_parent, date_from=date_from, date_to=date_to)
 
 _views = Path(__file__).parent / "views"
-page = st.navigation([
-    st.Page(_views / "overview.py", title="Overview", default=True),
-    st.Page(_views / "over_time.py", title="Over Time"),
-    st.Page(_views / "transactions.py", title="Transactions"),
-    st.Page(_views / "drill_down.py", title="Category Drill-Down"),
-    st.Page(_views / "merchants.py", title="Top Merchants"),
-    st.Page(_views / "subscriptions.py", title="Subscriptions"),
-    st.Page(_views / "queue.py", title="Queue"),
-    st.Page(_views / "payment.py", title="Payment details"),
-    st.Page(_views / "rules.py", title="Rules"),
-    st.Page(_views / "activity.py", title="Activity"),
-    st.Page(_views / "settings.py", title="Settings"),
-], position="top")
+# Grouped, so the top bar holds three menus rather than a dozen tabs.
+page = st.navigation({
+    "Your money": [
+        st.Page(_views / "overview.py", title="Overview", default=True),
+        st.Page(_views / "over_time.py", title="Over Time"),
+        st.Page(_views / "transactions.py", title="Transactions"),
+        st.Page(_views / "drill_down.py", title="Category Drill-Down"),
+        st.Page(_views / "merchants.py", title="Top Merchants"),
+        st.Page(_views / "subscriptions.py", title="Subscriptions"),
+    ],
+    "Manage": [
+        st.Page(_views / "queue.py", title="Queue"),
+        st.Page(_views / "payment.py", title="Payment details"),
+        st.Page(_views / "rules.py", title="Rules"),
+        st.Page(_views / "settings.py", title="Settings"),
+    ],
+    "Behind the scenes": [
+        st.Page(_views / "activity.py", title="Activity"),
+        st.Page(_views / "ai.py", title="AI usage"),
+    ],
+}, position="top")
 
 st.title("💳 Bank Enrichment")
 page.run()

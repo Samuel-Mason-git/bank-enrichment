@@ -21,6 +21,7 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
+import llm_calls
 from database_functions import get_con, init_db, insert_with_next_id, now
 
 load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
@@ -288,13 +289,19 @@ def review_subcategory(client, parent: str, subcategory: str, rows: list[dict],
     prompt = build_prompt(parent, subcategory, rows, taxonomy)
     log.debug(f"Taxonomy review prompt for {parent}/{subcategory}:\n{prompt}")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="taxonomy_review", prompt_fn=build_prompt, txn_ids=[r["id"] for r in rows],
             model=MODEL, max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
         log.debug(f"Taxonomy review response for {subcategory}:\n{raw}")
-        proposals = _extract_json(raw)
+        try:
+            proposals = _extract_json(raw)
+        except ValueError:
+            llm_calls.parsed(False)
+            raise
+        llm_calls.parsed(True, len(proposals))
     except Exception as e:
         log.error(f"Taxonomy review failed for {parent}/{subcategory}: {e}")
         return []

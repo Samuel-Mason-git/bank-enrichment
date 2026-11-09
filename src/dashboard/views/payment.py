@@ -104,6 +104,16 @@ else:
         column_config={"When": st.column_config.DatetimeColumn("When", format="D MMM YYYY, HH:mm:ss",
                                                                 width="medium")},
     )
+    call_rows = [(h["call_id"], describe_event(h)[0], h["at"]) for h in history if h.get("call_id")]
+    if call_rows:
+        c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
+        picked = c1.selectbox("A call to Claude about this payment", [c[0] for c in call_rows],
+                              format_func=lambda i: next(f"{at:%d %b %Y, %H:%M} · {what}"
+                                                         for cid, what, at in call_rows if cid == i),
+                              key=f"payment_call_{t['id']}")
+        if c2.button("Open it", width="stretch", help="Everything that went in and came out, and what it cost."):
+            st.session_state.ai_open_call = picked
+            st.switch_page("views/ai.py")
 
     with st.expander("Raw payload from Monzo"):
         st.json(t["raw_payload"])

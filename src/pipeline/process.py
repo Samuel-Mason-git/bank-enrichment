@@ -8,9 +8,11 @@ monthly review, rule suggestions and the summaries. Any card it creates (a
 category or taxonomy proposal, a rule suggestion) is sent by the server."""
 import logging
 import time
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 
 import activity
+import llm_calls
 from database_functions import init_db, get_con, apply_quick_tap_classifications, log_path
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
@@ -50,6 +52,18 @@ def _release_run_lock() -> None:
 
 _db_log: activity.DatabaseLogHandler | None = None
 
+# How long each step of the current run took, in seconds (runs.steps).
+_step_seconds: dict[str, float] = {}
+
+
+@contextmanager
+def _timed(step: str):
+    t0 = time.monotonic()
+    try:
+        yield
+    finally:
+        _step_seconds[step] = round(time.monotonic() - t0, 2)
+
 
 def _quietly(what: str, fn, *args):
     """Activity bookkeeping: worth having, never worth failing a run over."""
@@ -83,6 +97,8 @@ def main() -> int:
         _quietly("skip", activity.skipped_run, get_con())
         return ALREADY_RUNNING
     run_id = _quietly("start", activity.start_run, get_con())
+    llm_calls.current_run_id = run_id
+    _step_seconds.clear()
     crashed = False
     try:
         _steps()
@@ -91,87 +107,98 @@ def main() -> int:
         raise
     finally:
         _release_run_lock()
+        llm_calls.current_run_id = None
         if run_id is not None:
             summary = _quietly("summary", activity.run_summary, get_con(), run_id) or {}
             status = "problems" if crashed or summary.get("errors") else "ok"
-            _quietly("end", activity.finish_run, get_con(), run_id, status, summary)
+            _quietly("end", activity.finish_run, get_con(), run_id, status, summary,
+                     dict(_step_seconds), activity.memory())
             _quietly("clear-out", activity.clear_old, get_con())
     log.info(f"--- Run complete in {time.time() - run_start:.2f}s ---")
     return RAN
 
 
 def _steps() -> None:
-    try:
-        t0 = time.time()
-        # A tap is the user's own choice, but a mis-tap (a dentist filed under
-        # Alcohol) is exactly what it can't catch -- so the placement judge
-        # gets a look and can hold one behind a card instead.
-        reviewer = make_placement_reviewer()
-        quick_classified = apply_quick_tap_classifications(review=reviewer.review_tap)
-        reviewer.sync()
-        if quick_classified:
-            log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
-    except Exception as e:
-        log.error(f"Quick-tap classification failed: {e}", exc_info=True)
+    with _timed("quick_taps"):
+        try:
+            t0 = time.time()
+            # A tap is the user's own choice, but a mis-tap (a dentist filed under
+            # Alcohol) is exactly what it can't catch -- so the placement judge
+            # gets a look and can hold one behind a card instead.
+            reviewer = make_placement_reviewer()
+            quick_classified = apply_quick_tap_classifications(review=reviewer.review_tap)
+            reviewer.sync()
+            if quick_classified:
+                log.info(f"Quick-tap classified {quick_classified} transactions without the LLM ({time.time() - t0:.2f}s)")
+        except Exception as e:
+            log.error(f"Quick-tap classification failed: {e}", exc_info=True)
 
     # Category-creation decisions first, so a transaction released by a denial
     # (or classified by an approval) is settled before this run's classifier
     # batches touch it again.
-    try:
-        applied = collect_category_decisions()
-        if applied:
-            log.info(f"Applied {applied} approved category proposal(s)")
-    except Exception as e:
-        log.error(f"Collecting category decisions failed: {e}", exc_info=True)
+    with _timed("category_decisions"):
+        try:
+            applied = collect_category_decisions()
+            if applied:
+                log.info(f"Applied {applied} approved category proposal(s)")
+        except Exception as e:
+            log.error(f"Collecting category decisions failed: {e}", exc_info=True)
 
     # After decisions, before the classifier: a "Try again" tap leaves its
     # transactions held by the (now-denied) old proposal on purpose, so this
     # has to run before run_classifier() would otherwise leave them alone
     # (they're not in get_unclassified() while held).
-    try:
-        regenerated = regenerate_category_proposals()
-        if regenerated:
-            log.info(f"Regenerated {regenerated} category proposal(s)")
-    except Exception as e:
-        log.error(f"Regenerating category proposals failed: {e}", exc_info=True)
+    with _timed("regenerate_proposals"):
+        try:
+            regenerated = regenerate_category_proposals()
+            if regenerated:
+                log.info(f"Regenerated {regenerated} category proposal(s)")
+        except Exception as e:
+            log.error(f"Regenerating category proposals failed: {e}", exc_info=True)
 
-    try:
-        run_classifier()
-    except Exception as e:
-        log.error(f"LLM classification run failed: {e}", exc_info=True)
+    with _timed("classifier"):
+        try:
+            run_classifier()
+        except Exception as e:
+            log.error(f"LLM classification run failed: {e}", exc_info=True)
 
     # Decisions first, then this month's review -- so a proposal approved on the
     # phone is applied before anything new is proposed on top of it.
-    try:
-        applied = collect_taxonomy_decisions()
-        if applied:
-            log.info(f"Applied {applied} approved taxonomy proposal(s)")
-    except Exception as e:
-        log.error(f"Collecting taxonomy decisions failed: {e}", exc_info=True)
+    with _timed("taxonomy_decisions"):
+        try:
+            applied = collect_taxonomy_decisions()
+            if applied:
+                log.info(f"Applied {applied} approved taxonomy proposal(s)")
+        except Exception as e:
+            log.error(f"Collecting taxonomy decisions failed: {e}", exc_info=True)
 
-    try:
-        proposed = run_taxonomy_review()
-        if proposed:
-            log.info(f"Proposed {len(proposed)} taxonomy change(s) for review")
-    except Exception as e:
-        log.error(f"Taxonomy review run failed: {e}", exc_info=True)
+    with _timed("taxonomy_review"):
+        try:
+            proposed = run_taxonomy_review()
+            if proposed:
+                log.info(f"Proposed {len(proposed)} taxonomy change(s) for review")
+        except Exception as e:
+            log.error(f"Taxonomy review run failed: {e}", exc_info=True)
 
-    try:
-        suggested = sync_rule_candidates()
-        if suggested:
-            log.info(f"Suggested {suggested} rule(s)")
-    except Exception as e:
-        log.error(f"Rule suggestions failed: {e}", exc_info=True)
+    with _timed("rule_suggestions"):
+        try:
+            suggested = sync_rule_candidates()
+            if suggested:
+                log.info(f"Suggested {suggested} rule(s)")
+        except Exception as e:
+            log.error(f"Rule suggestions failed: {e}", exc_info=True)
 
-    try:
-        run_monthly_summary()
-    except Exception as e:
-        log.error(f"Monthly summary run failed: {e}", exc_info=True)
+    with _timed("monthly_summary"):
+        try:
+            run_monthly_summary()
+        except Exception as e:
+            log.error(f"Monthly summary run failed: {e}", exc_info=True)
 
-    try:
-        run_weekly_summary()
-    except Exception as e:
-        log.error(f"Weekly summary run failed: {e}", exc_info=True)
+    with _timed("weekly_summary"):
+        try:
+            run_weekly_summary()
+        except Exception as e:
+            log.error(f"Weekly summary run failed: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

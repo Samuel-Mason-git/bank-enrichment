@@ -15,6 +15,7 @@ from database_functions import (
     get_subcategory_stats, format_subcategory_stats,
 )
 import alerts
+import llm_calls
 import category_proposals
 import placement_judge
 
@@ -363,6 +364,17 @@ def _extract_json(raw: str) -> list:
         raise ValueError(f"Could not extract JSON array from response: {e}\nRaw: {raw[:200]}")
 
 
+def _parsed(raw: str, expected: int | None) -> list:
+    """_extract_json, with whether it worked recorded against the call."""
+    try:
+        results = _extract_json(raw)
+    except ValueError:
+        llm_calls.parsed(False, 0, expected)
+        raise
+    llm_calls.parsed(True, len(results), expected)
+    return results
+
+
 def _warn_if_truncated(response, pass_name: str, batch_size: int) -> None:
     """A response cut off at max_tokens produces invalid JSON, which then looks
     exactly like a bad reply from the model -- and costs the entire batch. Say
@@ -383,14 +395,15 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
     prompt = _pass0_prompt(transactions, subcategories)
     log.info("Pass 0: matching against existing taxonomy")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="match_existing", prompt_fn=_pass0_prompt, txn_ids=[t["id"] for t in transactions],
             model=MODEL,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 0", len(transactions))
         raw = response.content[0].text.strip()
-        results = _extract_json(raw)
+        results = _parsed(raw, len(transactions))
         matched = {}
         for r in results:
             if r.get("category") and r.get("subcategory"):
@@ -412,7 +425,8 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
     # belongs by default.
     log.debug(f"Pass 1 prompt:\n{prompt}")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="classify_parents", prompt_fn=_pass1_prompt, txn_ids=[t["id"] for t in transactions],
             model=MODEL,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
@@ -420,7 +434,7 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
         _warn_if_truncated(response, "Pass 1", len(transactions))
         raw = response.content[0].text.strip()
         log.debug(f"Pass 1 response:\n{raw}")
-        results = _extract_json(raw)
+        results = _parsed(raw, len(transactions))
         return {r["id"]: r["category"] for r in results}
     except Exception as e:
         log.error(f"Pass 1 LLM error: {e}")
@@ -434,7 +448,8 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
     log.info(f"Pass 2: assigning subcategories under '{parent_name}'")
     log.debug(f"Pass 2 prompt ({parent_name}):\n{prompt}")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="classify_subcategories", prompt_fn=_pass2_prompt, txn_ids=[t["id"] for t in transactions],
             model=MODEL,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
@@ -442,7 +457,7 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
         _warn_if_truncated(response, f"Pass 2 ({parent_name})", len(transactions))
         raw = response.content[0].text.strip()
         log.debug(f"Pass 2 response ({parent_name}):\n{raw}")
-        results = _extract_json(raw)
+        results = _parsed(raw, len(transactions))
         return {r["id"]: r["subcategory"] for r in results}
     except Exception as e:
         log.error(f"Pass 2 LLM error for '{parent_name}': {e}")
@@ -459,7 +474,8 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
     log.info(f"Pass 3: proposing alternatives for {len(groups)} novel group(s)")
     log.debug(f"Pass 3 prompt:\n{prompt}")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="propose_alternatives", prompt_fn=_pass3_prompt, txn_ids=[tid for g in groups for tid in g.get("txn_ids", [])],
             model=MODEL,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
@@ -467,7 +483,7 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
         _warn_if_truncated(response, "Pass 3", len(groups))
         raw = response.content[0].text.strip()
         log.debug(f"Pass 3 response:\n{raw}")
-        results = _extract_json(raw)
+        results = _parsed(raw, len(groups))
         return {r["group"]: r.get("alternatives") or [] for r in results}
     except Exception as e:
         log.error(f"Pass 3 LLM error: {e}")
@@ -475,7 +491,7 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
         return {}
 
 
-def propose_regenerated_options(client: anthropic.Anthropic, previous_options: list[dict], examples: list[str], parents: list[dict], subcategories: list[dict]) -> list[dict]:
+def propose_regenerated_options(client: anthropic.Anthropic, previous_options: list[dict], examples: list[str], parents: list[dict], subcategories: list[dict], txn_ids=()) -> list[dict]:
     """Returns up to MAX_OPTIONS fresh candidate options for a "Try again" tap,
     each carrying parent_is_new computed from the current taxonomy (never
     trusted from the model) and excluding anything matching a previously
@@ -484,7 +500,8 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
     log.info("Regenerating category options")
     log.debug(f"Regenerate prompt:\n{prompt}")
     try:
-        response = client.messages.create(
+        response = llm_calls.create(
+            client, job="regenerate_options", prompt_fn=_pass_regenerate_prompt, txn_ids=txn_ids,
             model=MODEL,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
@@ -492,7 +509,7 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
         _warn_if_truncated(response, "Regenerate", 1)
         raw = response.content[0].text.strip()
         log.debug(f"Regenerate response:\n{raw}")
-        results = _extract_json(raw)
+        results = _parsed(raw, None)
     except Exception as e:
         log.error(f"Regenerate LLM error: {e}")
         alerts.llm_failure("regenerating category options", e)
@@ -567,7 +584,7 @@ def regenerate_category_proposals() -> int:
 
     for item in pending:
         options = propose_regenerated_options(
-            client, item["previous_options"], item["examples"], parents, subcategories
+            client, item["previous_options"], item["examples"], parents, subcategories, txn_ids=item["txn_ids"]
         )
         if not options:
             log.warning(
@@ -766,6 +783,7 @@ def run():
                     "primary_parent": p_name,
                     "primary_sub": s_name,
                     "primary_is_new_parent": novel_group_is_new_parent[(p_name, s_name)],
+                    "txn_ids": novel_groups[(p_name, s_name)],
                     "examples": [
                         _format_transaction(batch_by_id[tid]) for tid in novel_groups[(p_name, s_name)][:3]
                     ],

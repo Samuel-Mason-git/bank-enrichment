@@ -25,6 +25,8 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Who made a change, in settings_changes (schema.sql's trigger reads it).
+        application_name="server",
         # Times are read and written in UTC whatever the server's own setting.
         options="-c TimeZone=UTC",
     )
@@ -81,7 +83,7 @@ def latest_label_source(con, txn_id: str) -> str | None:
 
 
 def record_context(con, txn_id: str, context: str | None, *, skipped: bool = False,
-                   source: str, clear_rule_label: bool = True) -> None:
+                   source: str, clear_rule_label: bool = True, rule_id: int | None = None) -> None:
     """A transaction's context, given or changed. Each event holds the full
     values, so any date corrected earlier is carried forward.
 
@@ -95,9 +97,9 @@ def record_context(con, txn_id: str, context: str | None, *, skipped: bool = Fal
         [txn_id],
     ).fetchone()
     con.execute(
-        """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at)
-           VALUES (%s, %s, %s, %s, %s, %s)""",
-        [txn_id, context, skipped, previous[0] if previous else None, source, now()],
+        """INSERT INTO context_events (txn_id, user_context, skipped, created_at_override, source, set_at, rule_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        [txn_id, context, skipped, previous[0] if previous else None, source, now(), rule_id],
     )
     if clear_rule_label and latest_label_source(con, txn_id) == "rule":
         record_label(con, txn_id, None, None, source="manual")
@@ -111,11 +113,11 @@ def record_request(con, txn_id: str) -> None:
 
 
 def record_label(con, txn_id: str, parent_id: int | None, subcategory_id: int | None, *,
-                 source: str, model: str | None = None, confidence=None) -> None:
+                 source: str, model: str | None = None, confidence=None, rule_id: int | None = None) -> None:
     con.execute(
-        """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, confidence, set_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-        [txn_id, parent_id, subcategory_id, source, model, confidence, now()],
+        """INSERT INTO label_events (txn_id, parent_id, subcategory_id, source, model, confidence, set_at, rule_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        [txn_id, parent_id, subcategory_id, source, model, confidence, now(), rule_id],
     )
 
 

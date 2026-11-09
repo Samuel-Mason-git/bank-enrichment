@@ -13,7 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from database_functions import (
-    first_recorded_run_day, get_activity_by_day, get_day_events, get_log_events, get_runs,
+    first_recorded_run_day, get_activity_by_day, get_day_events, get_llm_spend, get_log_events, get_runs,
+    get_settings_changes,
 )
 from payment_actions import LABEL_SOURCES, describe_event
 from ui import _card_rows
@@ -34,12 +35,47 @@ def _did(summary: dict) -> str:
     # Labels first, errors last (the database keeps keys in its own order).
     order = sorted(summary, key=lambda k: (not k.startswith("labelled_"), k == "errors", k))
     for key, n in ((k, summary[k]) for k in order):
-        if key.startswith("labelled_"):
+        if key == "llm_cost_usd":
+            continue
+        if key == "llm_calls":
+            parts.append(f"{n} Claude call{'s' if n != 1 else ''} (${summary.get('llm_cost_usd', 0):.4f})")
+        elif key.startswith("labelled_"):
             parts.append(f"{n} labelled by {LABEL_SOURCES.get(key.removeprefix('labelled_'), key)}")
         else:
             word = SUMMARY_WORDS.get(key, key)
             parts.append(f"{n} {word}{'s' if n != 1 else ''}")
     return " · ".join(parts) or "Nothing new to do"
+
+
+def _slowest(steps: dict) -> str:
+    """'classifier 12.4s · quick_taps 1.1s': the two slowest steps of a run."""
+    top = sorted(steps.items(), key=lambda kv: -kv[1])[:2]
+    return " · ".join(f"{name.replace('_', ' ')} {secs:.1f}s" for name, secs in top if secs >= 0.1)
+
+
+def _memory(memory: dict) -> str:
+    """'142 of 350 MB' at the end of a run (the worker's cap is mem_limit)."""
+    if "current_mb" not in memory:
+        return ""
+    return f"{memory['current_mb']} of {memory['limit_mb']} MB" if "limit_mb" in memory else f"{memory['current_mb']} MB"
+
+
+SETTING_NAMES = {"rules": "Rule", "parent_categories": "Category", "subcategories": "Subcategory",
+                 "category_roles": "Role", "subscriptions": "Subscription"}
+ACTIONS = {"INSERT": "added", "UPDATE": "changed", "DELETE": "deleted"}
+
+
+def _change_row(c: dict) -> dict:
+    """One settings change in words: what, which, and which fields changed."""
+    row = c["after"] or c["before"] or {}
+    name = row.get("name") or row.get("role") or f"#{row.get('id', '')}"
+    fields = ""
+    if c["action"] == "UPDATE" and c["before"] and c["after"]:
+        changed = [k for k in c["after"] if c["after"].get(k) != c["before"].get(k)]
+        fields = ", ".join(f"{k}: {c['before'].get(k)!r} → {c['after'].get(k)!r}" for k in changed)
+    return {"Time": c["changed_at"], "What": f"{SETTING_NAMES.get(c['table_name'], c['table_name'])} "
+                                            f"{ACTIONS.get(c['action'], c['action'])}",
+            "Which": name, "Changes": fields, "By": (c["source"] or "unknown").title()}
 
 
 def _shift(days: int) -> None:
@@ -93,6 +129,11 @@ day: date = st.session_state.activity_day
 runs = get_runs(day)
 problems = get_log_events(day)
 events = get_day_events(day)
+try:
+    spend = get_llm_spend(day)
+    changes = get_settings_changes(day)
+except psycopg.errors.UndefinedTable:  # the server hasn't made the newer tables yet
+    spend, changes = None, []
 real_runs = [r for r in runs if r["status"] != "skipped"]
 first_day = first_recorded_run_day()
 recorded = first_day is not None and day >= first_day
@@ -112,8 +153,10 @@ _card_rows([
      "Hourly runs that happened, of those due (08:00 to 22:00).", ""),
     ("Runs with problems", str(sum(r["status"] == "problems" for r in runs)) if recorded else "—", ACTIVITY_COLOR,
      "A step failed; the rest of the run still went ahead.", ""),
-    ("Errors", str(errors), ACTIVITY_COLOR, "Errors logged by the server or the worker.", ""),
-    ("Warnings", str(len(problems) - errors), ACTIVITY_COLOR, "Warnings logged by the server or the worker.", ""),
+    ("Errors / warnings", f"{errors} / {len(problems) - errors}", ACTIVITY_COLOR,
+     "Errors and warnings logged by the server or the worker.", ""),
+    ("Claude", f"{spend['calls']} · ${spend['cost_usd']:.2f}" if spend else "—", ACTIVITY_COLOR,
+     "Calls to Claude and what they cost (see AI usage).", ""),
     ("Payments received", str(int((kinds == "arrived").sum())), ACTIVITY_COLOR, "New payments from Monzo.", ""),
     ("Questions sent", str(int((kinds == "asked").sum())), ACTIVITY_COLOR, "Telegram cards and nudges.", ""),
     ("Answers and skips", str(int(kinds.isin(["context", "skipped"]).sum())), ACTIVITY_COLOR,
@@ -141,6 +184,8 @@ else:
             "Took": f"{r['seconds']:.0f}s" if r["seconds"] is not None else "—",
             "Outcome": outcome.get(r["status"], r["status"]),
             "What it did": _did(r["summary"] or {}),
+            "Slowest steps": _slowest(r.get("steps") or {}),
+            "Memory": _memory(r.get("memory") or {}),
         } for r in runs]), hide_index=True, width="stretch",
             column_config={"Started": st.column_config.DatetimeColumn("Started", format="HH:mm:ss", width="small"),
                            "Took": st.column_config.Column(width="small")})
@@ -166,6 +211,17 @@ else:
         st.code(p["message"] + ("\n\n" + p["detail"] if p["detail"] else ""), language=None)
     else:
         st.caption("Select a row to see the full message and its traceback.")
+
+# ── Settings changes ──────────────────────────────────────────────────────────
+st.subheader(f"Settings changes ({len(changes)})")
+if not changes:
+    st.caption("No rules, categories, roles or subscriptions changed on this day.")
+else:
+    st.caption("Every change to a rule, category, role or subscription, and where it came from: the dashboard, "
+               "the server (a Telegram approval) or the worker (an approved new category, the monthly review).")
+    st.dataframe(pd.DataFrame([_change_row(c) for c in changes]), hide_index=True, width="stretch",
+                 column_config={"Time": st.column_config.DatetimeColumn(format="HH:mm:ss", width="small"),
+                                "By": st.column_config.Column(width="small")})
 
 # ── Payments ──────────────────────────────────────────────────────────────────
 st.subheader(f"What happened to your payments ({len(events)})")

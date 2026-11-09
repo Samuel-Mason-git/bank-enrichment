@@ -649,7 +649,7 @@ class TestRegenerateCategoryProposals:
     def test_creates_a_fresh_proposal_and_relocks_the_transactions(self, db, monkeypatch):
         old_id = self._seed_denied_for_regeneration(db)
         new_options = [{"parent_name": "Professional Services", "subcategory_name": "Tax Filing", "parent_is_new": False, "rationale": "Different angle."}]
-        monkeypatch.setattr(ll, "propose_regenerated_options", lambda client, previous, examples, parents, subs: new_options)
+        monkeypatch.setattr(ll, "propose_regenerated_options", lambda client, previous, examples, parents, subs, txn_ids=(): new_options)
         monkeypatch.setattr(ll, "anthropic", type("M", (), {"Anthropic": lambda **kw: None}))
         synced = []
         monkeypatch.setattr(cp, "sync_new_proposals", lambda ids: synced.extend(ids))

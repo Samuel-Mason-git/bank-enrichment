@@ -49,7 +49,7 @@ class TestSchemeIsExtractable:
 class TestPotRuleMatchesTheRightThings:
     def test_a_pot_transfer_matches(self, server_con):
         _add_rule(server_con)
-        assert check_rules(_txn()) == RuleMatch("Moved between Monzo pot and account", False)
+        assert check_rules(_txn()) == RuleMatch("Moved between Monzo pot and account", False, rule_id=1)
 
     def test_a_card_payment_does_not_match(self, server_con):
         _add_rule(server_con)
@@ -107,7 +107,7 @@ class TestDirectionDistinguishesDepositsFromWithdrawals:
     def test_money_leaving_the_account_into_the_pot_matches_the_deposit_rule(self, server_con):
         _add_rule(server_con, context="Moved into savings pot",
                   match_field_2="amount", match_type_2="amount_negative", match_value_2="any")
-        assert check_rules(_txn(amount=-100000)) == RuleMatch("Moved into savings pot", False)
+        assert check_rules(_txn(amount=-100000)) == RuleMatch("Moved into savings pot", False, rule_id=1)
 
     def test_money_arriving_back_from_the_pot_does_not_match_the_deposit_rule(self, server_con):
         _add_rule(server_con, context="Moved into savings pot",
@@ -117,7 +117,7 @@ class TestDirectionDistinguishesDepositsFromWithdrawals:
     def test_money_arriving_back_from_the_pot_matches_the_withdrawal_rule(self, server_con):
         _add_rule(server_con, context="Moved out of savings pot",
                   match_field_2="amount", match_type_2="amount_positive", match_value_2="any")
-        assert check_rules(_txn(amount=20000)) == RuleMatch("Moved out of savings pot", False)
+        assert check_rules(_txn(amount=20000)) == RuleMatch("Moved out of savings pot", False, rule_id=1)
 
     def test_both_rules_together_route_each_direction_to_its_own_context(self, server_con):
         """The realistic setup: deposit rule first, withdrawal rule second --

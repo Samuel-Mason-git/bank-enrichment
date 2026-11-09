@@ -65,6 +65,9 @@ def _connect(read_only: bool = False) -> psycopg.Connection:
         user=e["DB_USER"], password=e["DB_PASSWORD"], connect_timeout=10, autocommit=True,
         # Times are read and written in UTC whatever the server's own setting.
         options="-c TimeZone=UTC",
+        # Who made a change, in settings_changes (schema.sql's trigger reads
+        # it): the worker by default; the dashboard sets DB_APP_NAME.
+        application_name=e.get("DB_APP_NAME", "worker"),
     )
     if read_only:
         con.execute("SET default_transaction_read_only = on")
@@ -506,52 +509,73 @@ def get_payment(transaction_id: str) -> dict | None:
 
 def get_payment_history(transaction_id: str) -> list[dict]:
     """Everything that's happened to a payment, oldest first: it arriving,
-    Monzo updating it, each question, answer, skip and label, and the judge's
-    reviews. Times in London."""
+    Monzo updating it, each question, answer, skip and label (and which rule,
+    if one did it), the judge's reviews, new-category suggestions, and every
+    call to Claude that was about it (call_id set on those). Times in London."""
     return _rows(
-        """SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.extra FROM (
+        """SELECT h.at AT TIME ZONE 'Europe/London' AS at, h.kind, h.source, h.detail, h.extra, h.call_id FROM (
                SELECT received_at AS at, 'arrived' AS kind, 'webhook' AS source,
-                      NULL::TEXT AS detail, NULL::TEXT AS extra
+                      NULL::TEXT AS detail, NULL::TEXT AS extra, NULL::BIGINT AS call_id
                FROM transactions_raw WHERE id = %(id)s
                UNION ALL
-               SELECT received_at, 'updated', source, NULL, NULL
+               SELECT received_at, 'updated', source, NULL, NULL, NULL
                FROM transaction_updates WHERE txn_id = %(id)s
                UNION ALL
-               SELECT set_at,
-                      CASE WHEN source = 'request' THEN 'asked'
-                           WHEN skipped THEN 'skipped'
-                           WHEN user_context IS NULL THEN 'context cleared'
+               SELECT c.set_at,
+                      CASE WHEN c.source = 'request' THEN 'asked'
+                           WHEN c.skipped THEN 'skipped'
+                           WHEN c.user_context IS NULL THEN 'context cleared'
                            ELSE 'context' END,
-                      source, user_context,
-                      CASE WHEN created_at_override IS NOT NULL
-                           THEN 'date set to ' || to_char(created_at_override AT TIME ZONE 'Europe/London',
-                                                          'DD Mon YYYY HH24:MI') END
-               FROM context_events WHERE txn_id = %(id)s
+                      c.source, c.user_context,
+                      NULLIF(concat_ws(' · ', """ + _RULE_NAME_SQL.format(alias="c") + """,
+                                       CASE WHEN c.created_at_override IS NOT NULL
+                                            THEN 'date set to ' || to_char(c.created_at_override AT TIME ZONE 'Europe/London',
+                                                                           'DD Mon YYYY HH24:MI') END), ''),
+                      NULL
+               FROM context_events c LEFT JOIN rules r ON r.id = c.rule_id WHERE c.txn_id = %(id)s
                UNION ALL
                SELECT l.set_at,
                       CASE WHEN l.parent_id IS NULL THEN 'label cleared' ELSE 'labelled' END,
                       l.source,
                       CASE WHEN p.name IS NOT NULL THEN p.name || COALESCE(' › ' || s.name, '') END,
-                      concat_ws(' · ', l.model,
-                                CASE WHEN l.confidence IS NOT NULL
-                                     THEN round(l.confidence * 100)::TEXT || '%% sure' END)
+                      NULLIF(concat_ws(' · ', """ + _RULE_NAME_SQL.format(alias="l") + """,
+                                       CASE WHEN l.source <> 'rule' THEN l.model END,
+                                       CASE WHEN l.confidence IS NOT NULL
+                                            THEN round(l.confidence * 100)::TEXT || '%% sure' END), ''),
+                      NULL
                FROM label_events l
                LEFT JOIN parent_categories p ON p.id = l.parent_id
                LEFT JOIN subcategories s ON s.id = l.subcategory_id
+               LEFT JOIN rules r ON r.id = l.rule_id
                WHERE l.txn_id = %(id)s
                UNION ALL
-               SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory, outcome
+               SELECT reviewed_at, 'reviewed', 'judge', category || ' › ' || subcategory, outcome, NULL
                FROM judge_reviews WHERE txn_id = %(id)s
                UNION ALL
                SELECT proposed_at, 'proposed', 'proposal',
                       (SELECT string_agg((o->>'parent_name') || ' › ' || (o->>'subcategory_name'), ' / ')
                        FROM jsonb_array_elements(options) o),
-                      status
+                      status, NULL
                FROM category_proposals WHERE txn_ids ? %(id)s
+               UNION ALL
+               SELECT started_at, 'llm call', job,
+                      concat_ws(' · ', COALESCE(response_model, model), (input_tokens + cache_read_tokens + cache_write_5m_tokens
+                                + cache_write_1h_tokens)::TEXT || ' in / ' || output_tokens::TEXT || ' out'),
+                      concat_ws(' · ', CASE WHEN cost_usd IS NOT NULL THEN '$' || round(cost_usd, 4)::TEXT END,
+                                CASE WHEN error IS NOT NULL THEN 'failed' END,
+                                CASE WHEN parsed = false THEN 'reply unusable' END),
+                      call_id
+               FROM llm_calls WHERE txn_ids ? %(id)s
            ) h
            ORDER BY h.at""",
         {"id": transaction_id},
     )
+
+
+# 'rule "Gym"' for a row a rule wrote (by its name now, or its number if it's
+# since been deleted); NULL otherwise. Needs rules joined as r.
+_RULE_NAME_SQL = """CASE WHEN {alias}.rule_id IS NOT NULL
+                         THEN 'rule "' || COALESCE(r.name, '#' || {alias}.rule_id::TEXT) || '"' END"""
 
 
 def get_lifetime_stats() -> dict:
@@ -584,10 +608,29 @@ def get_runs(day) -> list[dict]:
     return _rows(
         f"""SELECT run_id, started_at AT TIME ZONE 'Europe/London' AS started_at,
                    finished_at AT TIME ZONE 'Europe/London' AS finished_at,
-                   EXTRACT(EPOCH FROM finished_at - started_at)::FLOAT AS seconds, status, summary
+                   EXTRACT(EPOCH FROM finished_at - started_at)::FLOAT AS seconds, status, summary, steps, memory
             FROM runs WHERE {_LONDON_DAY.format(col='started_at')} ORDER BY started_at""",
         {"day": day},
     )
+
+
+def get_settings_changes(day) -> list[dict]:
+    """Every change to a setting on one London day (settings_changes, written by
+    triggers), oldest first."""
+    return _rows(
+        f"""SELECT changed_at AT TIME ZONE 'Europe/London' AS changed_at, table_name, action, before, after, source
+            FROM settings_changes WHERE {_LONDON_DAY.format(col='changed_at')} ORDER BY change_id""",
+        {"day": day},
+    )
+
+
+def get_llm_spend(day) -> dict:
+    """Calls to Claude on one London day, and what they cost."""
+    return _rows(
+        f"""SELECT COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0)::FLOAT AS cost_usd
+            FROM llm_calls WHERE {_LONDON_DAY.format(col='started_at')}""",
+        {"day": day},
+    )[0]
 
 
 def first_recorded_run_day():

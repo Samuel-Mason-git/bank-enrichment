@@ -25,6 +25,19 @@ LABEL_SOURCES = {
 }
 
 
+# What each kind of call to Claude is for (llm_calls.job).
+JOB_LABELS = {
+    "match_existing": "Classifier: match to an existing category",
+    "classify_parents": "Classifier: pick the category",
+    "classify_subcategories": "Classifier: pick the subcategory",
+    "propose_alternatives": "Classifier: suggest new categories",
+    "regenerate_options": "Classifier: suggest again (Try again)",
+    "placement_judge": "Placement judge: second look",
+    "rule_suggestions": "Rule suggestions: worth a rule?",
+    "taxonomy_review": "Monthly taxonomy review",
+}
+
+
 def describe_event(h: dict) -> tuple[str, str]:
     """(what happened, the detail) for one row of a payment's history
     (get_payment_history, get_day_events)."""
@@ -52,6 +65,8 @@ def describe_event(h: dict) -> tuple[str, str]:
         state = {"pending": "waiting for your pick on Telegram", "selected": "picked, being applied",
                  "applied": "applied", "denied": "none of these", "expired": "expired"}.get(extra, extra)
         return "New categories suggested", f"{detail} · {state}"
+    if kind == "llm call":
+        return f"Claude: {JOB_LABELS.get(source, source)}", " · ".join(x for x in (detail, extra) if x)
     return kind, detail
 
 
