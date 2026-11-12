@@ -1,6 +1,8 @@
 
 import pytest
 
+import llm_calls
+
 import category_proposals as cp
 import database_functions as dbf
 import judge_backlog as jb
@@ -79,9 +81,20 @@ class TestEstimateStep:
         assert jb.main([]) == 0
 
         out = capsys.readouterr().out
-        assert "3 classified transaction(s)" in out and "$0.02" in out and "Nothing has been sent" in out
+        assert "3 classified transaction(s)" in out and "$0.0012" in out and "Nothing has been sent" in out
+        assert "no judge calls recorded yet" in out
         assert db.execute("SELECT COUNT(*) FROM judge_reviews").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM category_proposals").fetchone()[0] == 0
+
+    def test_the_estimate_comes_from_recorded_judge_calls(self, db, capsys):
+        seed_taxonomy(db)
+        classified(db, "t0")
+        for _ in range(llm_calls.OWN_CALLS_NEEDED):
+            db.execute("INSERT INTO llm_calls (started_at, job, model, cost_usd) VALUES (now(), 'placement_judge', %s, 0.03)",
+                       [jb.JOBS["placement_judge"]["model"]])
+        jb.main([])
+        out = capsys.readouterr().out
+        assert "$0.03 a call" in out and f"on {jb.JOBS['placement_judge']['model']}" in out
 
     def test_limit_applies_to_the_estimate_too(self, db, capsys):
         seed_taxonomy(db)

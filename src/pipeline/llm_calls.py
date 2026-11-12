@@ -124,6 +124,52 @@ def response_text(response) -> str:
     return "".join(_str(getattr(b, "text", None)) or "" for b in blocks if is_text(b)).strip()
 
 
+# ── Estimating ────────────────────────────────────────────────────────────────
+
+# How many recent calls an estimate is drawn from, and how many on the job's
+# own model it needs before their recorded cost is trusted over re-pricing.
+ESTIMATE_FROM = 50
+OWN_CALLS_NEEDED = 5
+
+
+def cost_per_call(job: str, settings: dict) -> tuple[float, str] | None:
+    """What one call of a job is likely to cost on the model it's set to now,
+    from the calls already recorded, with a note of how that was worked out:
+    the average recorded cost of that model's recent calls of the job when
+    there are enough of them; otherwise the job's recent average tokens on any
+    model, priced at this model's rates. None when the job has no history (or
+    the model has no price)."""
+    model = settings["model"]
+    con = get_con()
+    n, avg = con.execute(
+        """SELECT COUNT(*), AVG(cost_usd) FROM (
+               SELECT cost_usd FROM llm_calls
+               WHERE job = %s AND COALESCE(response_model, model) = %s
+                 AND error IS NULL AND cost_usd IS NOT NULL
+               ORDER BY started_at DESC LIMIT %s) c""",
+        [job, model, ESTIMATE_FROM],
+    ).fetchone()
+    if n >= OWN_CALLS_NEEDED:
+        return float(avg), f"the average of the last {n} {job} call(s) on {model}"
+
+    row = con.execute(
+        """SELECT COUNT(*), AVG(input_tokens), AVG(cache_write_5m_tokens), AVG(cache_write_1h_tokens),
+                  AVG(cache_read_tokens), AVG(output_tokens) FROM (
+               SELECT * FROM llm_calls WHERE job = %s AND error IS NULL
+               ORDER BY started_at DESC LIMIT %s) c""",
+        [job, ESTIMATE_FROM],
+    ).fetchone()
+    prices = prices_for(model, date.today())
+    if not row[0] or prices is None:
+        return None
+    tokens = dict(zip(("input", "cache_write_5m", "cache_write_1h", "cache_read", "output"),
+                      (float(v or 0) for v in row[1:])))
+    note = f"the token counts of the last {row[0]} {job} call(s), priced for {model}"
+    if thinks(settings):
+        note += " -- thinking may add output on top"
+    return cost(prices, tokens), note
+
+
 # ── What a call is about ──────────────────────────────────────────────────────
 
 current_run_id: int | None = None   # set by process.main for the length of a run

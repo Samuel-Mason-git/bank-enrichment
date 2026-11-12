@@ -196,7 +196,7 @@ class FakeClaude:
     def __init__(self):
         self.messages = self
 
-    def create(self, model, max_tokens, messages):
+    def create(self, model, max_tokens, messages, **_settings):
         prompt = messages[0]["content"]
         if "Holding deposit" in prompt:
             verdict = {"verdict": "reject", "confidence": 0.9, "issue": "distorts_totals", "reason": "One-off.",

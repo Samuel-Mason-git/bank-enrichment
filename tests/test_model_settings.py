@@ -140,3 +140,34 @@ def test_report_prints_without_a_baseline(capsys):
     s, _ = me.score([{"kind": "pass1", "txns": [_txn(1)]}], [_ok([{"id": "t1", "category": "Food & Drink"}])])
     me.report({"haiku-5-5 low": s})
     assert "haiku-5-5 low" in capsys.readouterr().out
+
+
+# ── cost_per_call (needs the database) ────────────────────────────────────────
+
+def _call(db, model, cost=None, input_tokens=0, output_tokens=0, job="placement_judge", error=None):
+    db.execute(
+        """INSERT INTO llm_calls (started_at, job, model, cost_usd, input_tokens, output_tokens, error)
+           VALUES (now(), %s, %s, %s, %s, %s, %s)""",
+        [job, model, cost, input_tokens, output_tokens, error])
+
+
+def test_cost_per_call_uses_the_models_own_recorded_cost(db):
+    for c in (0.001, 0.003) * 3:
+        _call(db, "claude-haiku-5-5", cost=c)
+    _call(db, "claude-haiku-5-5", cost=9.0, error="boom")      # failed calls don't count
+    usd, note = llm_calls.cost_per_call("placement_judge", {"model": "claude-haiku-5-5"})
+    assert usd == pytest.approx(0.002)
+    assert "last 6 placement_judge call(s) on claude-haiku-5-5" in note
+
+
+def test_cost_per_call_reprices_another_models_tokens_after_a_switch(db):
+    for _ in range(3):
+        _call(db, "claude-sonnet-4-6", cost=0.0056, input_tokens=10_000, output_tokens=1_000)
+    usd, note = llm_calls.cost_per_call("placement_judge", {"model": "claude-haiku-5-5", "thinking": True})
+    assert usd == pytest.approx(0.001 + 0.0005)             # Haiku's rates, not Sonnet's $0.0056
+    assert "priced for claude-haiku-5-5" in note and "thinking" in note
+
+
+def test_cost_per_call_without_history_is_none(db):
+    _call(db, "claude-sonnet-4-6", cost=0.01, job="classify_parents")
+    assert llm_calls.cost_per_call("placement_judge", {"model": "claude-haiku-5-5"}) is None
