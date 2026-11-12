@@ -219,9 +219,11 @@ class PlacementReviewer:
     and stops calling the API for the rest of the run on a credit error rather
     than failing the same call for every remaining transaction."""
 
-    def __init__(self, client, model: str, format_txn, gate_check=lambda: True):
+    def __init__(self, client, model: str | dict, format_txn, gate_check=lambda: True):
+        """model is a model name, or job settings (llm_calls.request_kwargs)."""
         self.client = client
-        self.model = model
+        self.settings = model if isinstance(model, dict) else {"model": model}
+        self.model = self.settings["model"]
         self.format_txn = format_txn
         # Evaluated lazily and once: it is an HTTP round trip, and process.py
         # builds a reviewer on every run even when there are no quick-taps.
@@ -281,10 +283,10 @@ class PlacementReviewer:
             response = llm_calls.create(
                 self.client, job="placement_judge", prompt_fn=build_prompt,
                 txn_ids=[txn_id] if txn_id else [],
-                model=self.model, max_tokens=MAX_TOKENS, messages=[{"role": "user", "content": prompt}]
+                **llm_calls.request_kwargs(self.settings, MAX_TOKENS), messages=[{"role": "user", "content": prompt}]
             )
             try:
-                verdict = parse_verdict(response.content[0].text)
+                verdict = parse_verdict(llm_calls.response_text(response))
             except ValueError:
                 llm_calls.parsed(False, 0, 1)
                 raise

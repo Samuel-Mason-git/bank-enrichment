@@ -70,6 +70,106 @@ def cost(prices: dict | None, tokens: dict) -> float | None:
                                                 "cache_read", "output")) / 1_000_000
 
 
+# ── Model settings ────────────────────────────────────────────────────────────
+#
+# A job's model is a small dict: {"model": ..., "effort": ..., "thinking": ...}.
+# effort (low/medium/high) and thinking (True/False) are optional; left out,
+# the model's own default applies. On the 5.5 models thinking is ON by default
+# and billed as output, so a classification job usually wants it off.
+
+# How each model spells "thinking off". Opus 5.5 can't switch it off at all.
+_THINKING_OFF = {
+    "claude-haiku-5-5": {"type": "disabled"},
+    "claude-sonnet-5-5": {"type": "between_tools"},
+    "claude-sonnet-5": {"type": "disabled"},
+    "claude-opus-5": {"type": "disabled"},
+}
+# Room for thinking on top of the answer, when thinking is on. Output is billed
+# per token generated, so the ceiling itself costs nothing.
+THINKING_MAX_TOKENS = 16_000
+
+
+def thinks(settings: dict) -> bool:
+    """Whether a call with these settings may think: on when asked for, and on
+    by default for every model that has a "thinking off" switch above."""
+    if settings.get("thinking") is not None:
+        return bool(settings["thinking"])
+    return settings["model"] in _THINKING_OFF or settings["model"] == "claude-opus-5-5"
+
+
+def request_kwargs(settings: dict, max_tokens: int) -> dict:
+    """create() arguments for a job's model settings."""
+    kwargs = {"model": settings["model"], "max_tokens": max_tokens}
+    if settings.get("effort"):
+        kwargs["output_config"] = {"effort": settings["effort"]}
+    thinking = settings.get("thinking")
+    if thinking is False:
+        if settings["model"] not in _THINKING_OFF:
+            raise ValueError(f"{settings['model']} can't have thinking switched off this way")
+        kwargs["thinking"] = _THINKING_OFF[settings["model"]]
+    elif thinking is True:
+        kwargs["thinking"] = {"type": "adaptive"}
+    if thinks(settings):
+        kwargs["max_tokens"] = max(max_tokens, THINKING_MAX_TOKENS)
+    return kwargs
+
+
+def response_text(response) -> str:
+    """The reply's text. On a model that thinks, the first block can be a
+    thinking block rather than the answer, so content[0].text isn't safe."""
+    blocks = getattr(response, "content", None) or []
+    def is_text(b):
+        kind = getattr(b, "type", None)
+        return not isinstance(kind, str) or kind == "text"   # untyped: a test double
+    return "".join(_str(getattr(b, "text", None)) or "" for b in blocks if is_text(b)).strip()
+
+
+# ── Estimating ────────────────────────────────────────────────────────────────
+
+# How many recent calls an estimate is drawn from, and how many on the job's
+# own model it needs before their recorded cost is trusted over re-pricing.
+ESTIMATE_FROM = 50
+OWN_CALLS_NEEDED = 5
+
+
+def cost_per_call(job: str, settings: dict) -> tuple[float, str] | None:
+    """What one call of a job is likely to cost on the model it's set to now,
+    from the calls already recorded, with a note of how that was worked out:
+    the average recorded cost of that model's recent calls of the job when
+    there are enough of them; otherwise the job's recent average tokens on any
+    model, priced at this model's rates. None when the job has no history (or
+    the model has no price)."""
+    model = settings["model"]
+    con = get_con()
+    n, avg = con.execute(
+        """SELECT COUNT(*), AVG(cost_usd) FROM (
+               SELECT cost_usd FROM llm_calls
+               WHERE job = %s AND COALESCE(response_model, model) = %s
+                 AND error IS NULL AND cost_usd IS NOT NULL
+               ORDER BY started_at DESC LIMIT %s) c""",
+        [job, model, ESTIMATE_FROM],
+    ).fetchone()
+    if n >= OWN_CALLS_NEEDED:
+        return float(avg), f"the average of the last {n} {job} call(s) on {model}"
+
+    row = con.execute(
+        """SELECT COUNT(*), AVG(input_tokens), AVG(cache_write_5m_tokens), AVG(cache_write_1h_tokens),
+                  AVG(cache_read_tokens), AVG(output_tokens) FROM (
+               SELECT * FROM llm_calls WHERE job = %s AND error IS NULL
+               ORDER BY started_at DESC LIMIT %s) c""",
+        [job, ESTIMATE_FROM],
+    ).fetchone()
+    prices = prices_for(model, date.today())
+    if not row[0] or prices is None:
+        return None
+    tokens = dict(zip(("input", "cache_write_5m", "cache_write_1h", "cache_read", "output"),
+                      (float(v or 0) for v in row[1:])))
+    note = f"the token counts of the last {row[0]} {job} call(s), priced for {model}"
+    if thinks(settings):
+        note += " -- thinking may add output on top"
+    return cost(prices, tokens), note
+
+
 # ── What a call is about ──────────────────────────────────────────────────────
 
 current_run_id: int | None = None   # set by process.main for the length of a run

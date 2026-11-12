@@ -30,11 +30,12 @@ import psycopg
 
 import placement_judge
 from database_functions import _rows, backup_db, init_db
-from llm_labelling import make_placement_reviewer
+import llm_calls
+from llm_labelling import JOBS, make_placement_reviewer
 
-# Measured on 342 judge calls (Sep 2026): 449k input + 39k output tokens, about $1.93 at
-# Sonnet pricing. An estimate for planning, not a quote.
-COST_PER_CALL = 0.0056
+# Used only when no judge call has been recorded yet; otherwise the estimate comes
+# from the calls in llm_calls, on whatever model llm_labelling.JOBS names.
+FALLBACK_COST_PER_CALL = 0.0004
 CHUNK = 40
 # Classifications that are the user's own decision.
 USER_DECISIONS = ("manual", "category-proposal")
@@ -79,6 +80,11 @@ def describe(item: tuple) -> str:
     )
 
 
+def _usd(x: float) -> str:
+    """Cents for anything over one, otherwise enough places to not read $0.00."""
+    return f"${x:.2f}" if x >= 0.01 else f"${x:.4f}"
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Second-look review of transactions classified before the judge existed.")
     p.add_argument("--yes", action="store_true", help="actually judge them (costs API credit) and hold objections behind cards")
@@ -104,8 +110,10 @@ def main(argv=None) -> int:
 
     if not args.yes:
         print(f"{len(todo)} classified transaction(s) haven't had a second look yet.")
-        print(f"Judging them is {len(todo)} API call(s), roughly ${len(todo) * COST_PER_CALL:.2f} "
-              f"(an estimate from earlier runs, about ${COST_PER_CALL} a call).")
+        estimate = llm_calls.cost_per_call("placement_judge", JOBS["placement_judge"])
+        per_call, basis = estimate or (FALLBACK_COST_PER_CALL, "a rough figure: no judge calls recorded yet")
+        print(f"Judging them is {len(todo)} API call(s), roughly {_usd(len(todo) * per_call)} "
+              f"(about {_usd(per_call)} a call, from {basis}).")
         print("Nothing has been sent, written or held. Re-run with --yes to go ahead.")
         return 0
 

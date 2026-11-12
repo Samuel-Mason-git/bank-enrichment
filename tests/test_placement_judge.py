@@ -24,7 +24,7 @@ class FakeClient:
         self.calls = []
         self.messages = self
 
-    def create(self, model, max_tokens, messages):
+    def create(self, model, max_tokens, messages, **_settings):
         prompt = messages[0]["content"]
         self.calls.append(prompt)
         out = self.respond(prompt)
