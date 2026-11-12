@@ -136,7 +136,7 @@ def filter_worth_a_rule(client: anthropic.Anthropic, candidates: list[dict]) -> 
             messages=[{"role": "user", "content": prompt}],
         )
         try:
-            verdicts = _extract_json(response.content[0].text.strip())
+            verdicts = _extract_json(llm_calls.response_text(response))
         except ValueError:
             llm_calls.parsed(False, 0, len(candidates))
             raise

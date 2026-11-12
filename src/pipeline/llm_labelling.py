@@ -23,6 +23,25 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
 MODEL = "claude-sonnet-4-6"
+# Which model each call uses -- see llm_calls.request_kwargs for the settings.
+# Compare candidates on your own labelled history with model_eval.py before
+# changing one.
+#
+# Pass 0 and the judge run on Haiku 5.5 with thinking: on 90 labelled
+# transactions (model_eval.py, 2026-11-12) it made no wrong Pass 0 matches
+# (Sonnet 4.6: 3.7%), matched the judge's catch rate with fewer false alarms,
+# at ~6% of the cost -- and those two calls are most of the spend. Thinking
+# earns its keep there: without it Pass 0 matched 73% instead of 87%. Pass 1/2
+# stay on Sonnet 4.6, where Haiku was a few points weaker.
+_HAIKU = {"model": "claude-haiku-5-5", "effort": "low", "thinking": True}
+JOBS: dict[str, dict] = {
+    "match_existing": _HAIKU,
+    "classify_parents": {"model": MODEL},
+    "classify_subcategories": {"model": MODEL},
+    "propose_alternatives": {"model": MODEL},
+    "regenerate_options": {"model": MODEL},
+    "placement_judge": _HAIKU,
+}
 BATCH_SIZE = 15
 # Output tokens are billed per token generated, so a ceiling well above what
 # a batch needs costs nothing -- while hitting it truncates the JSON, fails
@@ -397,12 +416,11 @@ def match_existing(client: anthropic.Anthropic, transactions: list[dict], subcat
     try:
         response = llm_calls.create(
             client, job="match_existing", prompt_fn=_pass0_prompt, txn_ids=[t["id"] for t in transactions],
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+            **llm_calls.request_kwargs(JOBS["match_existing"], MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 0", len(transactions))
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         results = _parsed(raw, len(transactions))
         matched = {}
         for r in results:
@@ -427,12 +445,11 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
     try:
         response = llm_calls.create(
             client, job="classify_parents", prompt_fn=_pass1_prompt, txn_ids=[t["id"] for t in transactions],
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+            **llm_calls.request_kwargs(JOBS["classify_parents"], MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 1", len(transactions))
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         log.debug(f"Pass 1 response:\n{raw}")
         results = _parsed(raw, len(transactions))
         return {r["id"]: r["category"] for r in results}
@@ -450,12 +467,11 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
     try:
         response = llm_calls.create(
             client, job="classify_subcategories", prompt_fn=_pass2_prompt, txn_ids=[t["id"] for t in transactions],
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+            **llm_calls.request_kwargs(JOBS["classify_subcategories"], MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, f"Pass 2 ({parent_name})", len(transactions))
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         log.debug(f"Pass 2 response ({parent_name}):\n{raw}")
         results = _parsed(raw, len(transactions))
         return {r["id"]: r["subcategory"] for r in results}
@@ -476,12 +492,11 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
     try:
         response = llm_calls.create(
             client, job="propose_alternatives", prompt_fn=_pass3_prompt, txn_ids=[tid for g in groups for tid in g.get("txn_ids", [])],
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+            **llm_calls.request_kwargs(JOBS["propose_alternatives"], MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 3", len(groups))
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         log.debug(f"Pass 3 response:\n{raw}")
         results = _parsed(raw, len(groups))
         return {r["group"]: r.get("alternatives") or [] for r in results}
@@ -502,12 +517,11 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
     try:
         response = llm_calls.create(
             client, job="regenerate_options", prompt_fn=_pass_regenerate_prompt, txn_ids=txn_ids,
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+            **llm_calls.request_kwargs(JOBS["regenerate_options"], MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Regenerate", 1)
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         log.debug(f"Regenerate response:\n{raw}")
         results = _parsed(raw, None)
     except Exception as e:
@@ -542,7 +556,7 @@ def make_placement_reviewer() -> placement_judge.PlacementReviewer:
     client of its own. Without a key the reviewer is simply off and every tap
     is applied as tapped."""
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET) if CLAUDE_SECRET else None
-    return placement_judge.PlacementReviewer(client, MODEL, _format_transaction, gate_check=lambda: True)
+    return placement_judge.PlacementReviewer(client, JOBS["placement_judge"], _format_transaction, gate_check=lambda: True)
 
 
 # ── Regenerate ────────────────────────────────────────────────────────────────
@@ -640,7 +654,7 @@ def run():
 
     # A questioned placement is held behind the same kind of card as a new
     # category, so the judge is pointless -- and stays off -- when the gate is.
-    reviewer = placement_judge.PlacementReviewer(client, MODEL, _format_transaction, gate_check=lambda: gate_novel)
+    reviewer = placement_judge.PlacementReviewer(client, JOBS["placement_judge"], _format_transaction, gate_check=lambda: gate_novel)
 
     total_classified = 0
     batches = [unclassified[i:i + BATCH_SIZE] for i in range(0, len(unclassified), BATCH_SIZE)]
@@ -766,7 +780,8 @@ def run():
                 continue
             if tag == "P1+2":
                 upsert_subcategory(s_name, parent_id_map[p_name])
-            update_classification(t["id"], p_name, s_name, None, MODEL)
+            update_classification(t["id"], p_name, s_name, None,
+                                  JOBS["match_existing" if tag == "P0" else "classify_parents"]["model"])
             total_classified += 1
             log.info(f"  [{tag}] {t['id']} -> {p_name} / {s_name or '—'}")
 

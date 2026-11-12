@@ -294,7 +294,7 @@ def review_subcategory(client, parent: str, subcategory: str, rows: list[dict],
             model=MODEL, max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
+        raw = llm_calls.response_text(response)
         log.debug(f"Taxonomy review response for {subcategory}:\n{raw}")
         try:
             proposals = _extract_json(raw)

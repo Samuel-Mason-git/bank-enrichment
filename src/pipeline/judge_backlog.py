@@ -32,9 +32,10 @@ import placement_judge
 from database_functions import _rows, backup_db, init_db
 from llm_labelling import make_placement_reviewer
 
-# Measured on 342 judge calls (Sep 2026): 449k input + 39k output tokens, about $1.93 at
-# Sonnet pricing. An estimate for planning, not a quote.
-COST_PER_CALL = 0.0056
+# The judge runs on Haiku 5.5 with thinking (llm_labelling.JOBS): ~1.6k input tokens
+# and a few hundred output (thinking included) a call, about $0.0004. On Sonnet 4.6 it
+# was $0.0056 (342 calls, Sep 2026). An estimate for planning, not a quote.
+COST_PER_CALL = 0.0004
 CHUNK = 40
 # Classifications that are the user's own decision.
 USER_DECISIONS = ("manual", "category-proposal")

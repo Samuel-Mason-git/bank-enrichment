@@ -70,6 +70,60 @@ def cost(prices: dict | None, tokens: dict) -> float | None:
                                                 "cache_read", "output")) / 1_000_000
 
 
+# ── Model settings ────────────────────────────────────────────────────────────
+#
+# A job's model is a small dict: {"model": ..., "effort": ..., "thinking": ...}.
+# effort (low/medium/high) and thinking (True/False) are optional; left out,
+# the model's own default applies. On the 5.5 models thinking is ON by default
+# and billed as output, so a classification job usually wants it off.
+
+# How each model spells "thinking off". Opus 5.5 can't switch it off at all.
+_THINKING_OFF = {
+    "claude-haiku-5-5": {"type": "disabled"},
+    "claude-sonnet-5-5": {"type": "between_tools"},
+    "claude-sonnet-5": {"type": "disabled"},
+    "claude-opus-5": {"type": "disabled"},
+}
+# Room for thinking on top of the answer, when thinking is on. Output is billed
+# per token generated, so the ceiling itself costs nothing.
+THINKING_MAX_TOKENS = 16_000
+
+
+def thinks(settings: dict) -> bool:
+    """Whether a call with these settings may think: on when asked for, and on
+    by default for every model that has a "thinking off" switch above."""
+    if settings.get("thinking") is not None:
+        return bool(settings["thinking"])
+    return settings["model"] in _THINKING_OFF or settings["model"] == "claude-opus-5-5"
+
+
+def request_kwargs(settings: dict, max_tokens: int) -> dict:
+    """create() arguments for a job's model settings."""
+    kwargs = {"model": settings["model"], "max_tokens": max_tokens}
+    if settings.get("effort"):
+        kwargs["output_config"] = {"effort": settings["effort"]}
+    thinking = settings.get("thinking")
+    if thinking is False:
+        if settings["model"] not in _THINKING_OFF:
+            raise ValueError(f"{settings['model']} can't have thinking switched off this way")
+        kwargs["thinking"] = _THINKING_OFF[settings["model"]]
+    elif thinking is True:
+        kwargs["thinking"] = {"type": "adaptive"}
+    if thinks(settings):
+        kwargs["max_tokens"] = max(max_tokens, THINKING_MAX_TOKENS)
+    return kwargs
+
+
+def response_text(response) -> str:
+    """The reply's text. On a model that thinks, the first block can be a
+    thinking block rather than the answer, so content[0].text isn't safe."""
+    blocks = getattr(response, "content", None) or []
+    def is_text(b):
+        kind = getattr(b, "type", None)
+        return not isinstance(kind, str) or kind == "text"   # untyped: a test double
+    return "".join(_str(getattr(b, "text", None)) or "" for b in blocks if is_text(b)).strip()
+
+
 # ── What a call is about ──────────────────────────────────────────────────────
 
 current_run_id: int | None = None   # set by process.main for the length of a run
