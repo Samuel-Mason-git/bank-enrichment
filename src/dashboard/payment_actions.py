@@ -35,6 +35,7 @@ JOB_LABELS = {
     "placement_judge": "Placement judge: second look",
     "rule_suggestions": "Rule suggestions: worth a rule?",
     "taxonomy_review": "Monthly taxonomy review",
+    "finance_agent": "Ask: answering your questions",
 }
 
 
