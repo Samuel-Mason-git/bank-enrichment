@@ -421,9 +421,14 @@ it used, what it asked for and what came back, so any figure can be checked.
   `sql/postgres/schema.sql`) and can't write anything. Without that login, Ask is off.
 - **A daily limit**, set on the Settings page ($0.30 to begin with), shared by the dashboard and
   Telegram. A typical question costs well under $0.01.
-- **Nothing you ask is kept.** Each call's cost, tokens and timing are recorded (the AI usage page), but
-  not the question, what the tools read, or the answer. A chat lasts as long as the browser tab, or
-  half an hour on Telegram.
+- **Nothing you ask is kept, unless you save the chat.** Each call's cost, tokens and timing are
+  recorded (the AI usage page), but not the question, what the tools read, or the answer. A chat lasts
+  as long as the browser tab, or half an hour on Telegram. **Save chat** keeps one as it was on screen
+  (questions, answers, charts and workings) under **Saved chats**, where it can be read back or
+  deleted. Saved chats are deliberately not exported to bronze, so deleting one deletes it (only the
+  data box's nightly dumps hold it, for 7 days).
+- **Charts.** When an answer breaks money down across several categories, merchants or months, the
+  agent puts a chart under it. It only chooses *what* to plot; the figures come from the data.
 - **Accuracy** is measured by `src/pipeline/agent_eval.py`: questions whose answers are worked out from
   your data, graded automatically. On 13 Nov 2026 Haiku got 15/15, as did Sonnet 5.5 at 15x the cost.
 
