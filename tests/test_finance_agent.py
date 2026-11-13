@@ -332,3 +332,34 @@ def test_cut_off_and_refused_answers_say_so(money):
 def test_the_prompt_carries_todays_date():
     from datetime import date
     assert "Thursday 12 November 2026" in fa.system_prompt(date(2026, 11, 12))
+
+
+# ── the daily limit, from the Settings page ───────────────────────────────────
+
+def test_the_daily_limit_defaults_until_set_and_is_read_on_every_question(money):
+    import database_functions as dbf
+    assert fa.daily_limit() == fa.DEFAULT_DAILY_LIMIT_USD
+    money.execute("INSERT INTO llm_calls (started_at, job, model, cost_usd) VALUES (now(), 'finance_agent', 'm', 0.5)")
+    agent = fa.FinanceAgent(FakeClient([reply("answered")]))       # no limit of its own: the setting's
+    with pytest.raises(fa.DailyLimitReached, match=r"\$0\.30"):
+        agent.ask("q")
+    dbf.set_setting(fa.DAILY_LIMIT_SETTING, 1.0)                    # raised while the chat is open
+    assert agent.daily_limit_usd == 1.0
+    assert agent.ask("q").text == "answered"
+
+
+def test_a_limit_change_is_recorded_like_other_settings(money):
+    import database_functions as dbf
+    dbf.set_setting(fa.DAILY_LIMIT_SETTING, 0.5)
+    dbf.set_setting(fa.DAILY_LIMIT_SETTING, 0.75)
+    rows = money.execute("SELECT action, before, after FROM settings_changes WHERE table_name = 'app_settings' "
+                         "ORDER BY change_id").fetchall()
+    assert [r[0] for r in rows] == ["INSERT", "UPDATE"]
+    assert rows[1][1]["key"] == rows[1][2]["key"] == fa.DAILY_LIMIT_SETTING
+    assert (rows[1][1]["value"], rows[1][2]["value"]) == (0.5, 0.75)
+
+
+def test_a_nonsense_stored_limit_falls_back_to_the_default(money):
+    import database_functions as dbf
+    dbf.set_setting(fa.DAILY_LIMIT_SETTING, "lots")
+    assert fa.daily_limit() == fa.DEFAULT_DAILY_LIMIT_USD

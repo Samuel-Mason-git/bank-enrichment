@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 import llm_calls
-from database_functions import get_con
+from database_functions import get_con, get_setting
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,20 @@ MAX_TOKENS = 16_000
 # Rounds of tool calls per question before it must answer with what it has.
 MAX_TOOL_ROUNDS = 10
 # USD a London day across every question, after which new ones are refused.
-DAILY_LIMIT_USD = float(os.getenv("FINANCE_AGENT_DAILY_LIMIT_USD", "0.30"))
+# Set on the dashboard's Settings page (app_settings); this is the default
+# until it has been.
+DAILY_LIMIT_SETTING = "finance_agent_daily_limit_usd"
+DEFAULT_DAILY_LIMIT_USD = 0.30
+
+
+def daily_limit() -> float:
+    """Today's limit, as set on the Settings page -- read on every question, so
+    a change applies at once, even to a chat already open."""
+    value = get_setting(DAILY_LIMIT_SETTING, DEFAULT_DAILY_LIMIT_USD)
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return DEFAULT_DAILY_LIMIT_USD
 
 SQL_TIMEOUT_MS = 5_000
 SQL_MAX_ROWS = 200
@@ -496,10 +509,14 @@ class FinanceAgent:
         eval neither counts against nor is stopped by the Ask page's daily limit."""
         self.client = client
         self.settings = settings or MODEL_SETTINGS
-        self.daily_limit_usd = DAILY_LIMIT_USD if daily_limit_usd is None else daily_limit_usd
+        self._daily_limit_usd = daily_limit_usd   # None: the Settings page's, read when asked
         self.messages: list[dict] = []
         self.cost_usd = 0.0
         self.job = job
+
+    @property
+    def daily_limit_usd(self) -> float:
+        return daily_limit() if self._daily_limit_usd is None else self._daily_limit_usd
 
     def _call(self, today: date, **extra):
         response = llm_calls.create(
@@ -521,9 +538,11 @@ class FinanceAgent:
         sending anything once today's spend has reached the limit, and
         AgentNotConfigured without its read-only login."""
         agent_con()
-        if self.job == "finance_agent" and spent_today() >= self.daily_limit_usd:
+        limit = self.daily_limit_usd
+        if self.job == "finance_agent" and spent_today() >= limit:
             raise DailyLimitReached(
-                f"Today's limit of ${self.daily_limit_usd:.2f} for questions has been reached -- it resets at midnight.")
+                f"Today's limit of ${limit:.2f} for questions has been reached -- it resets at midnight, "
+                "or raise it on the Settings page.")
         today = datetime.now(LONDON).date()
         start = len(self.messages)
         self.messages.append({"role": "user", "content": question})

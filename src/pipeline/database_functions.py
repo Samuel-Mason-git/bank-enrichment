@@ -1013,6 +1013,20 @@ def set_subcategory_role(sub_id: int, role: str | None) -> None:
         )
 
 
+def get_setting(key: str, default=None):
+    """A dashboard setting (app_settings), or default when it's never been set."""
+    row = get_con().execute("SELECT value FROM app_settings WHERE key = %s", [key]).fetchone()
+    return default if row is None else row[0]
+
+
+def set_setting(key: str, value) -> None:
+    get_con().execute(
+        """INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at""",
+        [key, Jsonb(value)],
+    )
+
+
 def get_subscriptions() -> list[dict]:
     return _rows("SELECT * FROM subscriptions ORDER BY active DESC, name ASC")
 

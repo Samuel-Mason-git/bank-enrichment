@@ -122,3 +122,15 @@ def test_a_failed_question_says_why_and_the_page_keeps_working(ask, error, shown
     FakeAgent.raise_on_ask = None
     at.chat_input[0].set_value("again").run()
     assert "on: again" in _text(at)
+
+
+def test_the_daily_limit_is_set_on_the_settings_page(db):
+    import database_functions as dbf
+    _seed(db)
+    at = _app("settings")
+    assert not at.exception
+    at.number_input(key="ask_daily_limit").set_value(1.5)
+    next(b for b in at.button if b.key == "ask_daily_limit_save").click().run()
+    assert not at.exception
+    assert dbf.get_setting(fa.DAILY_LIMIT_SETTING) == 1.5
+    assert fa.daily_limit() == 1.5

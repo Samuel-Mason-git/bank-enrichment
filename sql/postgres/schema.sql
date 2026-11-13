@@ -208,6 +208,15 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 -- The figures each weekly and monthly summary sent, and the record that it was
 -- sent, so none goes out twice. Replaces weekly_summaries and monthly_summaries.
+-- Settings changed from the dashboard that aren't categories or rules: one row
+-- per setting, its value as JSON. Read with a default, so a missing row means
+-- the default applies. Recorded in settings_changes like the other settings.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        VARCHAR     PRIMARY KEY,
+    value      JSONB       NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS summaries (
     period         VARCHAR(5)    NOT NULL CHECK (period IN ('week', 'month')),
     period_key     VARCHAR(10)   NOT NULL,   -- '2026-W43' / '2026-10'
@@ -371,7 +380,7 @@ CREATE OR REPLACE FUNCTION record_settings_change() RETURNS trigger AS $$
 DECLARE
     old_row JSONB := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
     new_row JSONB := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
-    names   TEXT[] := ARRAY['id', 'name', 'parent_id', 'subcategory_id'];
+    names   TEXT[] := ARRAY['id', 'name', 'parent_id', 'subcategory_id', 'key'];
 BEGIN
     IF TG_OP = 'UPDATE' THEN
         IF old_row = new_row THEN
@@ -391,7 +400,8 @@ $$ LANGUAGE plpgsql;
 DO $$
 DECLARE t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['rules', 'parent_categories', 'subcategories', 'category_roles', 'subscriptions'] LOOP
+    FOREACH t IN ARRAY ARRAY['rules', 'parent_categories', 'subcategories', 'category_roles', 'subscriptions',
+                              'app_settings'] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS record_settings_change ON %I', t);
         EXECUTE format('CREATE TRIGGER record_settings_change AFTER INSERT OR UPDATE OR DELETE ON %I '
                        'FOR EACH ROW EXECUTE FUNCTION record_settings_change()', t);
