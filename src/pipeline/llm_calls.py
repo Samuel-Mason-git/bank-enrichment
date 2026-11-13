@@ -291,6 +291,9 @@ def _record(job, prompt_fn, txn_ids, kwargs, started, duration_ms, retry_errors,
     try:
         # The model has a column of its own; params holds only the other settings.
         params = {k: v for k, v in kwargs.items() if k not in ("messages", "system", "model")}
+        # Tool definitions are kilobytes repeated on every call: their names say which.
+        if isinstance(params.get("tools"), list):
+            params["tools"] = [t.get("name") if isinstance(t, dict) else str(t) for t in params["tools"]]
         if prompt_fn is not None:
             _store_version(prompt_fn)
         sha, chars = _fingerprint(kwargs)
