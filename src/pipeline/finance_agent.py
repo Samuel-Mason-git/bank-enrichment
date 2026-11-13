@@ -13,6 +13,14 @@ way a finance agent goes wrong is adding transfers or pot moves into spend.
 run_sql is the escape hatch for anything the fixed tools can't answer: one
 SELECT, run in a read-only transaction with a short timeout and a row cap.
 
+Every tool reads through the agent's own database login (AGENT_DB_USER), made
+by data-vault's new_reader.sh: read-only, and able to see only what
+sql/postgres/schema.sql grants it -- the transaction_roles view, subscriptions
+and the category tables. Not the raw tables, llm_calls, rules or anything
+else. Without that login the agent doesn't run; it never falls back to the
+main, read-write login. (Recording its calls in llm_calls is the one write,
+and that goes through the main login, outside the agent's reach.)
+
 Each call to Claude goes through llm_calls.create (job "finance_agent"), so
 it is recorded and costed like every other call, and a daily ceiling on that
 job's spend stops new questions once it is reached.
@@ -28,8 +36,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import psycopg
+
 import llm_calls
-from database_functions import _rows, get_con, get_parents, get_subcategories
+from database_functions import get_con
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +65,47 @@ MAX_TRANSACTIONS = 100
 
 class DailyLimitReached(Exception):
     pass
+
+
+class AgentNotConfigured(Exception):
+    pass
+
+
+# ── The agent's own, read-only connection ─────────────────────────────────────
+
+_con: psycopg.Connection | None = None
+
+
+def is_configured() -> bool:
+    return bool(os.getenv("AGENT_DB_USER") and os.getenv("AGENT_DB_PASSWORD"))
+
+
+def _connect() -> psycopg.Connection:
+    if not is_configured():
+        raise AgentNotConfigured(
+            "The agent's read-only database login isn't set up: add AGENT_DB_USER and AGENT_DB_PASSWORD "
+            "to config/.env (data-vault's new_reader.sh makes it).")
+    e = os.environ
+    return psycopg.connect(
+        host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],
+        user=e["AGENT_DB_USER"], password=e["AGENT_DB_PASSWORD"], connect_timeout=10, autocommit=True,
+        # Read-only even if the login's own setting were ever lost.
+        options="-c TimeZone=UTC -c default_transaction_read_only=on", application_name="finance_agent",
+    )
+
+
+def agent_con() -> psycopg.Connection:
+    """The agent's connection, made again if it has dropped."""
+    global _con
+    if _con is None or _con.closed or _con.broken:
+        _con = _connect()
+    return _con
+
+
+def _q(sql: str, params: list | None = None) -> list[dict]:
+    cur = agent_con().execute(sql, params or [])
+    cols = [c.name for c in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -161,7 +212,7 @@ def get_totals(args: dict) -> dict:
         sql = f"SELECT * FROM ({sql}) g " + (
             "ORDER BY 1" if group_by == "month" else
             "ORDER BY GREATEST(spend, income, ABS(invested), ABS(saved), transferred_out, transferred_in) DESC")
-    rows = _rows(sql, params)
+    rows = _q(sql, params)
     result = {"period": {"from": args.get("date_from") or "all time", "to": args.get("date_to") or "today"}}
     if not cols:
         result["totals"] = _clean(rows[0])
@@ -192,12 +243,12 @@ def find_transactions(args: dict) -> dict:
     limit = max(1, min(int(args.get("limit") or 25), MAX_TRANSACTIONS))
     clause = " AND ".join(where)
 
-    summary = _rows(
+    summary = _q(
         f"""SELECT COUNT(*) AS matches,
                    COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) AS money_out,
                    COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) AS money_in
             FROM transaction_roles WHERE {clause}""", params)[0]
-    rows = _rows(
+    rows = _q(
         f"""SELECT id, created_at::date AS date, amount, {_PAYEE} AS payee, description,
                    user_context AS context, llm_category AS category, llm_subcategory AS subcategory, role
             FROM transaction_roles WHERE {clause} ORDER BY {sort} LIMIT %s""", params + [limit])
@@ -210,7 +261,7 @@ def find_transactions(args: dict) -> dict:
 
 def list_subscriptions(args: dict) -> dict:
     monthly_factor = {"weekly": 52 / 12, "fortnightly": 26 / 12, "monthly": 1, "annual": 1 / 12}
-    subs = _rows("SELECT name, merchant_name, amount, frequency, active FROM subscriptions ORDER BY active DESC, name")
+    subs = _q("SELECT name, merchant_name, amount, frequency, active FROM subscriptions ORDER BY active DESC, name")
     for s in subs:
         s["per_month"] = float(s["amount"]) * monthly_factor[s["frequency"]]
     active = [s for s in subs if s["active"]]
@@ -220,16 +271,32 @@ def list_subscriptions(args: dict) -> dict:
 
 
 def list_categories(args: dict) -> dict:
-    subs_by_parent: dict[str, list] = {}
-    for s in get_subcategories():
-        subs_by_parent.setdefault(s["parent_name"], []).append(
-            {"name": s["name"], "transactions": s["transaction_count"],
-             **({"role": s["role_override"]} if s["role_override"] else {})})
-    return {"categories": [
-        {"name": p["name"], "role": p["role"], "transactions": p["transaction_count"],
-         "subcategories": subs_by_parent.get(p["name"], [])}
-        for p in get_parents()
-    ]}
+    """Read from the granted tables only (the agent can't see label_events)."""
+    counts: dict[tuple, int] = {}
+    for r in _q("""SELECT parent_id, subcategory_id, COUNT(*) AS n FROM transaction_roles
+                   WHERE parent_id IS NOT NULL AND NOT skipped GROUP BY 1, 2"""):
+        counts[(r["parent_id"], r["subcategory_id"])] = r["n"]
+    rows = _q("""SELECT p.id AS parent_id, p.name AS parent,
+                        COALESCE(pr.role, default_role_for_parent(p.name), 'spend') AS parent_role,
+                        s.id AS sub_id, s.name AS sub, sr.role AS sub_role
+                 FROM parent_categories p
+                 LEFT JOIN subcategories s ON s.parent_id = p.id AND s.archived_at IS NULL
+                 LEFT JOIN category_roles pr ON pr.parent_id = p.id AND pr.subcategory_id IS NULL
+                 LEFT JOIN category_roles sr ON sr.subcategory_id = s.id
+                 WHERE p.archived_at IS NULL
+                 ORDER BY p.name, s.name""")
+    cats: dict[str, dict] = {}
+    for r in rows:
+        cat = cats.setdefault(r["parent"], {
+            "name": r["parent"], "role": r["parent_role"],
+            "transactions": sum(n for (pid, _), n in counts.items() if pid == r["parent_id"]),
+            "subcategories": []})
+        if r["sub"]:
+            cat["subcategories"].append({"name": r["sub"], "transactions": counts.get((r["parent_id"], r["sub_id"]), 0),
+                                         **({"role": r["sub_role"]} if r["sub_role"] else {})})
+    for cat in cats.values():
+        cat["subcategories"].sort(key=lambda sub: -sub["transactions"])
+    return {"categories": sorted(cats.values(), key=lambda c: -c["transactions"])}
 
 
 _SQL_START = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
@@ -241,7 +308,7 @@ def run_sql(args: dict) -> dict:
         raise ToolError("Only a single SELECT (or WITH ... SELECT) query is allowed.")
     if ";" in query:
         raise ToolError("One statement only: no semicolons inside the query.")
-    con = get_con()
+    con = agent_con()
     try:
         # Read-only whatever the query says, and given up on after the timeout.
         with con.transaction():
@@ -345,7 +412,8 @@ TOOLS = [
             "monzo_category, llm_category (parent category), llm_subcategory, role (spend | income | investment | "
             "saving | transfer | excluded), skipped (BOOLEAN: leave skipped rows out, as the dashboard does). "
             "Totals must follow the role rules in get_totals' description -- never sum transfers into spend. "
-            "Other tables: subscriptions (name, merchant_name, amount, frequency, active)."
+            "The only other tables it can read: subscriptions (name, merchant_name, amount, frequency, active), "
+            "parent_categories, subcategories and category_roles."
         ),
         "input_schema": {
             "type": "object",
@@ -446,7 +514,9 @@ class FinanceAgent:
     def ask(self, question: str, on_step=None) -> Answer:
         """Answer one question. on_step(Step) is called as each tool finishes,
         for a live view of what it's doing. Raises DailyLimitReached before
-        sending anything once today's spend has reached the limit."""
+        sending anything once today's spend has reached the limit, and
+        AgentNotConfigured without its read-only login."""
+        agent_con()
         if spent_today() >= self.daily_limit_usd:
             raise DailyLimitReached(
                 f"Today's limit of ${self.daily_limit_usd:.2f} for questions has been reached -- it resets at midnight.")

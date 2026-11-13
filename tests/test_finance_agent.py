@@ -1,12 +1,42 @@
 """The finance agent (src/pipeline/finance_agent.py): its tools against a real
 schema, the read-only SQL guard, and the question loop with a fake client."""
 import json
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 
 import finance_agent as fa
 from tests.local_helpers import insert_transaction
+
+AGENT_ROLE = "bank_enrichment_agent"
+_SCHEMA_SQL = (Path(__file__).parent.parent / "sql" / "postgres" / "schema.sql").read_text()
+# Exactly what schema.sql runs on every start to grant the agent its tables.
+_GRANTS = _SCHEMA_SQL[_SCHEMA_SQL.index("-- ── The finance agent's read-only login"):]
+
+
+@pytest.fixture
+def agent_db(db, monkeypatch):
+    """The agent's connection as it really is: a role holding only the grants
+    schema.sql gives bank_enrichment_agent, in a read-only session."""
+    schema = db.execute("SELECT current_schema()").fetchone()[0]
+    db.execute(f"""DO $$ BEGIN
+                     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{AGENT_ROLE}') THEN
+                         CREATE ROLE {AGENT_ROLE} NOLOGIN;
+                     END IF;
+                   END $$""")
+    db.execute(f"GRANT USAGE ON SCHEMA {schema} TO {AGENT_ROLE}")   # new_reader.sh's part
+    db.execute(_GRANTS)
+    con = psycopg.connect(os.environ["TEST_POSTGRES_URL"], autocommit=True,
+                          options="-c TimeZone=UTC -c default_transaction_read_only=on")
+    con.execute(f"SET search_path TO {schema}")
+    con.execute(f"SET ROLE {AGENT_ROLE}")
+    monkeypatch.setattr(fa, "_connect", lambda: con)
+    monkeypatch.setattr(fa, "_con", None)
+    yield con
+    con.close()
 
 
 # ── data ──────────────────────────────────────────────────────────────────────
@@ -16,7 +46,7 @@ from tests.local_helpers import insert_transaction
 #   transferred out 500 / in 100. The skipped -999 counts nowhere.
 
 @pytest.fixture
-def money(db):
+def money(db, agent_db):
     rows = [
         ("g1", -20, "2026-10-05", "Food & Drink", "Groceries", dict(merchant_name="Tesco", user_context="weekly shop")),
         ("g2", -30, "2026-10-20", "Food & Drink", "Groceries", dict(merchant_name="Tesco")),
@@ -127,9 +157,34 @@ def test_sql_refuses_anything_but_one_select(money, query):
 
 
 def test_sql_cannot_write_even_disguised_as_a_select(money):
-    with pytest.raises(fa.ToolError, match="read-only"):
+    with pytest.raises(fa.ToolError, match="(?i)read-only|permission denied"):
         fa.run_sql({"query": "WITH gone AS (DELETE FROM subscriptions RETURNING 1) SELECT * FROM gone"})
     assert money.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0] == 3
+
+
+@pytest.mark.parametrize("table", ["llm_calls", "transactions_raw", "label_events", "rules", "transactions"])
+def test_the_agent_cannot_read_what_it_was_not_granted(money, table):
+    with pytest.raises(fa.ToolError, match="permission denied"):
+        fa.run_sql({"query": f"SELECT * FROM {table}"})
+
+
+def test_the_agent_login_cannot_write_even_with_read_only_switched_off(money, agent_db):
+    agent_db.execute("SET default_transaction_read_only = off")
+    for sql in ("DELETE FROM subscriptions", "INSERT INTO subscriptions (id, name, amount, frequency, created_at) "
+                                             "VALUES (9, 'x', 1, 'monthly', now())", "CREATE TABLE t (x int)"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            agent_db.execute(sql)
+    assert money.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0] == 3
+
+
+def test_without_its_own_login_the_agent_does_not_run(db, monkeypatch):
+    monkeypatch.delenv("AGENT_DB_USER", raising=False)
+    monkeypatch.setattr(fa, "_con", None)
+    assert not fa.is_configured()
+    client = FakeClient([])
+    with pytest.raises(fa.AgentNotConfigured):
+        fa.FinanceAgent(client, daily_limit_usd=1).ask("q")
+    assert client.requests == []
 
 
 def test_sql_times_out_and_caps_rows(money, monkeypatch):
