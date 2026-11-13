@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 import llm_calls
-from database_functions import get_con
+from database_functions import get_con, get_setting
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,20 @@ MAX_TOKENS = 16_000
 # Rounds of tool calls per question before it must answer with what it has.
 MAX_TOOL_ROUNDS = 10
 # USD a London day across every question, after which new ones are refused.
-DAILY_LIMIT_USD = float(os.getenv("FINANCE_AGENT_DAILY_LIMIT_USD", "0.30"))
+# Set on the dashboard's Settings page (app_settings); this is the default
+# until it has been.
+DAILY_LIMIT_SETTING = "finance_agent_daily_limit_usd"
+DEFAULT_DAILY_LIMIT_USD = 0.30
+
+
+def daily_limit() -> float:
+    """Today's limit, as set on the Settings page -- read on every question, so
+    a change applies at once, even to a chat already open."""
+    value = get_setting(DAILY_LIMIT_SETTING, DEFAULT_DAILY_LIMIT_USD)
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return DEFAULT_DAILY_LIMIT_USD
 
 SQL_TIMEOUT_MS = 5_000
 SQL_MAX_ROWS = 200
@@ -325,6 +338,58 @@ def run_sql(args: dict) -> dict:
     return out
 
 
+# ── Charts (the dashboard only) ───────────────────────────────────────────────
+#
+# The model never types a chart's figures: it says what to plot, and the
+# figures come straight from get_totals, so a chart can't show a number the
+# data doesn't hold.
+
+CHART_METRICS = ("spend", "income", "invested", "saved", "transferred_out", "transferred_in")
+CHART_GROUPS = ("category", "subcategory", "month", "merchant")
+CHART_MAX_BARS = 25
+
+
+def build_chart(args: dict) -> dict:
+    metric, group_by = args.get("metric"), args.get("group_by")
+    if metric not in CHART_METRICS:
+        raise ToolError(f"metric must be one of {', '.join(CHART_METRICS)}")
+    if group_by not in CHART_GROUPS:
+        raise ToolError(f"group_by must be one of {', '.join(CHART_GROUPS)}")
+    kind = args.get("kind") or ("line" if group_by == "month" else "bar")
+    if kind not in ("bar", "line"):
+        raise ToolError("kind must be bar or line")
+    top_n = max(1, min(int(args.get("top_n") or 12), CHART_MAX_BARS))
+    filters = {k: args[k] for k in ("date_from", "date_to", "category", "subcategory", "text") if args.get(k)}
+    rows = get_totals({**filters, "group_by": group_by})["groups"]
+
+    def label(r):
+        if group_by == "subcategory":
+            return r["subcategory"] if args.get("category") else f"{r['category']} › {r['subcategory']}"
+        return str(r[group_by])
+
+    points = [{"label": label(r), "value": float(r.get(metric, 0))} for r in rows]
+    if group_by != "month":
+        points = sorted((p for p in points if p["value"]), key=lambda p: -p["value"])
+        if len(points) > top_n:
+            rest = points[top_n:]
+            points = points[:top_n] + [{"label": f"Everything else ({len(rest)})",
+                                        "value": round(sum(p["value"] for p in rest), 2)}]
+    if not any(p["value"] for p in points):
+        raise ToolError(f"Nothing to chart: no {metric} for that period and filter.")
+    return {"kind": kind, "title": str(args.get("title") or "").strip()[:80] or f"{metric.title()} by {group_by}",
+            "metric": metric, "group_by": group_by,
+            "period": {"from": args.get("date_from") or "all time", "to": args.get("date_to") or "today"},
+            "points": points}
+
+
+def chart_summary(chart: dict) -> dict:
+    """What the model is told: the chart is on screen, and its shape."""
+    biggest = max(chart["points"], key=lambda p: p["value"])
+    return {"chart_shown": True, "points": len(chart["points"]),
+            "total": round(sum(p["value"] for p in chart["points"]), 2),
+            "largest": [biggest["label"], biggest["value"]]}
+
+
 TOOL_FUNCTIONS = {
     "get_totals": get_totals,
     "find_transactions": find_transactions,
@@ -340,6 +405,7 @@ TOOL_LABELS = {
     "list_subscriptions": "Checking subscriptions",
     "list_categories": "Reading your categories",
     "run_sql": "Running a query",
+    "show_chart": "Drawing a chart",
 }
 
 _PERIOD = {
@@ -424,6 +490,30 @@ TOOLS = [
 ]
 
 
+CHART_TOOL = {
+    "name": "show_chart",
+    "description": (
+        "Show the user a chart under your answer -- only when one genuinely helps: several categories, "
+        "merchants or months side by side. Don't chart a single figure. You choose what to plot; the "
+        "figures are fetched from the data by the same rules as get_totals, so you never type them. "
+        "Months come out in order as a line; anything else as bars, biggest first, the smallest "
+        "folded into 'Everything else'. Still give the key figures in words."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "A short title, e.g. 'Spending by category, October 2026'."},
+            "metric": {"type": "string", "enum": list(CHART_METRICS)},
+            "group_by": {"type": "string", "enum": list(CHART_GROUPS)},
+            "kind": {"type": "string", "enum": ["bar", "line"], "description": "Default: line for months, bar otherwise."},
+            "top_n": {"type": "integer", "description": f"Bars to show before 'Everything else' (default 12, at most {CHART_MAX_BARS})."},
+            **_PERIOD,
+        },
+        "required": ["title", "metric", "group_by"],
+    },
+}
+
+
 def run_tool(name: str, args: dict) -> tuple[str, bool]:
     """(result text, is_error). A bad call comes back as an error the model
     can read and correct, never as an exception out of the loop."""
@@ -441,7 +531,7 @@ def run_tool(name: str, args: dict) -> tuple[str, bool]:
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
-def system_prompt(today: date) -> str:
+def system_prompt(today: date, channel: str = "dashboard") -> str:
     return f"""You answer questions about the user's personal finances from their own bank data (a UK Monzo account, amounts in £), using the tools provided. Today is {today:%A %d %B %Y}.
 
 How to work:
@@ -455,7 +545,13 @@ How to work:
 How to answer:
 - Lead with the answer in one or two sentences, with the figures (£1,234.56). Then add only the detail that helps: the biggest contributors, the change versus the comparison period, anything surprising.
 - Keep it short and plain. Use a small table only when comparing several items.
-- Treat transfers between the user's own accounts, savings pots and refunds as what the data says they are, not as spending or income."""
+- Treat transfers between the user's own accounts, savings pots and refunds as what the data says they are, not as spending or income.""" + (
+        "\n- You're replying in a Telegram chat on a phone: keep it to a few short lines (about 120 words at most), "
+        "bold the key figures with **, and don't use tables or headings."
+        if channel == "telegram" else
+        "\n- Whenever your answer breaks money down across three or more categories, merchants or months "
+        "(\"where did my money go\", \"month by month\", \"compared with\"), also call show_chart once, with the "
+        "same period and filters, so the breakdown appears as a chart under your answer. Not for one or two figures.")
 
 
 # ── The agent ─────────────────────────────────────────────────────────────────
@@ -474,6 +570,7 @@ class Answer:
     steps: list[Step] = field(default_factory=list)
     cost_usd: float = 0.0
     stop_reason: str | None = None
+    charts: list[dict] = field(default_factory=list)   # from show_chart, for the page to draw
 
 
 def spent_today() -> float:
@@ -490,21 +587,31 @@ class FinanceAgent:
     history (thinking blocks included, passed back unchanged as the API
     requires) stays on the object."""
 
-    def __init__(self, client, settings: dict | None = None, daily_limit_usd: float | None = None):
+    def __init__(self, client, settings: dict | None = None, daily_limit_usd: float | None = None,
+                 job: str = "finance_agent", channel: str = "dashboard"):
+        """job names its calls in llm_calls: agent_eval.py uses its own, so an
+        eval neither counts against nor is stopped by the Ask page's daily limit."""
         self.client = client
         self.settings = settings or MODEL_SETTINGS
-        self.daily_limit_usd = DAILY_LIMIT_USD if daily_limit_usd is None else daily_limit_usd
+        self._daily_limit_usd = daily_limit_usd   # None: the Settings page's, read when asked
         self.messages: list[dict] = []
         self.cost_usd = 0.0
+        self.job = job
+        self.channel = channel   # "telegram" asks for short, phone-sized replies
+
+    @property
+    def daily_limit_usd(self) -> float:
+        return daily_limit() if self._daily_limit_usd is None else self._daily_limit_usd
 
     def _call(self, today: date, **extra):
         response = llm_calls.create(
-            self.client, job="finance_agent", prompt_fn=system_prompt,
+            self.client, job=self.job, prompt_fn=system_prompt,
             **llm_calls.request_kwargs(self.settings, MAX_TOKENS),
             # Cached: the tools and instructions are the same on every call
             # of the day, so each follow-up only pays full price for what's new.
-            system=[{"type": "text", "text": system_prompt(today), "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS, messages=self.messages, **extra,
+            system=[{"type": "text", "text": system_prompt(today, self.channel), "cache_control": {"type": "ephemeral"}}],
+            tools=TOOLS + [CHART_TOOL] if self.channel == "dashboard" else TOOLS,
+            messages=self.messages, **extra,
         )
         tokens = llm_calls._tokens(getattr(response, "usage", None))
         model = llm_calls._str(getattr(response, "model", None)) or self.settings["model"]
@@ -517,9 +624,11 @@ class FinanceAgent:
         sending anything once today's spend has reached the limit, and
         AgentNotConfigured without its read-only login."""
         agent_con()
-        if spent_today() >= self.daily_limit_usd:
+        limit = self.daily_limit_usd
+        if self.job == "finance_agent" and spent_today() >= limit:
             raise DailyLimitReached(
-                f"Today's limit of ${self.daily_limit_usd:.2f} for questions has been reached -- it resets at midnight.")
+                f"Today's limit of ${limit:.2f} for questions has been reached -- it resets at midnight, "
+                "or raise it on the Settings page.")
         today = datetime.now(LONDON).date()
         start = len(self.messages)
         self.messages.append({"role": "user", "content": question})
@@ -530,6 +639,10 @@ class FinanceAgent:
                 response, cost = self._call(today, **({"tool_choice": {"type": "none"}} if last_round else {}))
                 answer.cost_usd += cost
                 answer.stop_reason = response.stop_reason
+                # Answers summarise your finances, and llm_calls goes to bronze
+                # for good: like every other job, a reply's text is kept only
+                # when it couldn't be used (cut off, refused), to see why.
+                llm_calls.parsed(response.stop_reason in ("end_turn", "tool_use"))
                 self.messages.append({"role": "assistant", "content": response.content})
 
                 tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
@@ -537,7 +650,18 @@ class FinanceAgent:
                     break
                 results = []
                 for block in tool_uses:
-                    output, is_error = run_tool(block.name, block.input)
+                    if block.name == CHART_TOOL["name"] and self.channel == "dashboard":
+                        try:
+                            chart = build_chart(dict(block.input or {}))
+                            answer.charts.append(chart)
+                            output, is_error = _json(chart_summary(chart)), False
+                        except ToolError as e:
+                            output, is_error = str(e), True
+                        except Exception as e:
+                            log.exception("finance agent chart failed")
+                            output, is_error = f"The chart failed: {type(e).__name__}: {e}"[:500], True
+                    else:
+                        output, is_error = run_tool(block.name, block.input)
                     step = Step(block.name, dict(block.input or {}), output, is_error)
                     answer.steps.append(step)
                     if on_step:

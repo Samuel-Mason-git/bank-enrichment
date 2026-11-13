@@ -396,12 +396,38 @@ excluding something hides it from view, it does not delete or reclassify it.
 | Tab | Description |
 |-----|-------------|
 | Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Saved, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
+| Ask | Questions about your money in plain English, answered from your own data by an agent (see [Ask](#ask) below). Ignores the sidebar: the dates come from the question. |
 | Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); standalone Invested and Saved trend charts; Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
 | Transactions | Full filterable table with a few "fun fact" stat cards up top (unique merchants, biggest transaction, busiest day, etc). Category and Subcategory are edited via dropdowns restricted to your existing taxonomy, so labels stay consistent; Date and Context are also editable; Merchant and Description are read-only. |
 | Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved — Invested/Saved already net deposits against withdrawals; Transferred/Excluded splits into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
 | Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
 | Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
-| Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Backups section (see below). |
+| Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Ask page's daily spending limit and the Backups section (see below). |
+
+### Ask
+
+Ask anything about your spending, income, savings or subscriptions — on the dashboard's **Ask** tab,
+or from your phone by sending the Telegram bot `/ask` and your question (`/ask how much have I spent
+this week?`). Follow-ups carry on the conversation (on Telegram, any `/ask` within half an hour); a
+bare `/ask` starts afresh.
+
+Claude (Haiku 5.5) answers by calling a few tools over the database: totals counted exactly as the
+Overview page counts them, matching transactions, subscriptions, the category list, and, as a last
+resort, one read-only SQL query. On the dashboard, **Show workings** under each answer lists every tool
+it used, what it asked for and what came back, so any figure can be checked.
+
+- **Read-only, by login.** It reads through its own database login, `bank_enrichment_agent`, which can
+  see only the `transaction_roles` view, subscriptions and the category tables (granted in
+  `sql/postgres/schema.sql`) and can't write anything. Without that login, Ask is off.
+- **A daily limit**, set on the Settings page ($0.30 to begin with), shared by the dashboard and
+  Telegram. A typical question costs well under $0.01.
+- **Nothing you ask is kept.** Each call's cost, tokens and timing are recorded (the AI usage page), but
+  not the question, what the tools read, or the answer, and chats are never saved: one lasts as long
+  as the browser tab, or half an hour on Telegram.
+- **Charts.** When an answer breaks money down across several categories, merchants or months, the
+  agent puts a chart under it. It only chooses *what* to plot; the figures come from the data.
+- **Accuracy** is measured by `src/pipeline/agent_eval.py`: questions whose answers are worked out from
+  your data, graded automatically. On 13 Nov 2026 Haiku got 15/15, as did Sonnet 5.5 at 15x the cost.
 
 ### Backups
 

@@ -35,6 +35,8 @@ BASE_DIR = os.path.dirname(__file__)
 # dashboard's Activity page). Last on the path, so nothing there shadows ours.
 sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
 import activity  # noqa: E402
+import database_functions  # noqa: E402
+import ask_tg  # noqa: E402  (imports the pipeline's finance_agent)
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -127,6 +129,8 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
 
 bot: TelegramBot | None = None
+# /ask conversations, one per chat (ask_tg.py).
+ask_chats = ask_tg.AskChats()
 
 SESSION_TIMEOUT = 180  # seconds
 
@@ -152,6 +156,9 @@ async def lifespan(app: FastAPI):
     global bot
     init_db()
     activity.attach("server", get_con)
+    # The Ask agent's cost records and daily limit (pipeline code) go through
+    # this server's connection too, rather than one of their own.
+    database_functions.use_connection_from(get_con)
     log.info("Database initialised")
     try:
         bot = TelegramBot()
@@ -727,6 +734,14 @@ async def recieve_telegram(request: Request):
     elif update.message and update.message.text:
         msg = update.message
         chat_id = msg.chat.id
+
+        # /ask goes to the finance agent, answered in the background so this
+        # returns at once. Anything else is a transaction's description, as before.
+        question = ask_tg.ask_text(msg.text)
+        if question is not None:
+            ask_chats.start(bot, chat_id, question)
+            return {"ok": True}
+
         session = _sessions.get(chat_id)
 
         if not session:

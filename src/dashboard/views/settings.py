@@ -1,17 +1,18 @@
-"""Settings: categories and their roles, and backups."""
+"""Settings: categories and their roles, the Ask page's daily limit, and backups."""
 import pandas as pd
 import streamlit as st
 from pathlib import Path
 from database_functions import (
     BACKUPS_KEPT, ROLES, backup_db, backup_dir, backup_size_bytes, delete_backup, delete_parent,
     delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
-    read_backup_manifest, rename_parent, set_parent_role, set_subcategory_role, upsert_parent,
+    read_backup_manifest, rename_parent, set_parent_role, set_setting, set_subcategory_role, upsert_parent,
     upsert_subcategory, wipe_parent_labels, wipe_taxonomy,
 )
 from dashboard_helpers import (
     backup_coverage, backup_label, backup_reason, format_bytes, merchant_display_name,
 )
 from ui import _query, _card_rows
+import finance_agent as fa
 from page_context import shared
 
 df, = shared('df')
@@ -425,6 +426,23 @@ with tax_right:
                 st.caption(f"{len(txns)} transaction(s)")
             else:
                 st.info("No transactions assigned to this subcategory.")
+
+# ── Ask: the agent's daily limit ───────────────────────────────────────────
+st.divider()
+_limit = fa.daily_limit()
+_spent = fa.spent_today()
+with st.expander(f"🤖 Ask — daily limit ${_limit:.2f} (${_spent:.4f} used today)"):
+    st.caption(
+        "Most the Ask page may spend on Claude in one day (London time), in US dollars as Anthropic "
+        "bills. Once today's questions reach it, new ones are refused until midnight. A typical "
+        "question costs well under $0.01. Changes apply straight away, even to a chat that's open."
+    )
+    new_limit = st.number_input("Daily limit (USD)", min_value=0.0, max_value=20.0, step=0.10,
+                                value=float(_limit), format="%.2f", key="ask_daily_limit")
+    if st.button("Save limit", key="ask_daily_limit_save"):
+        set_setting(fa.DAILY_LIMIT_SETTING, round(float(new_limit), 2))
+        st.success(f"Daily limit set to ${new_limit:.2f}.")
+        st.rerun()
 
 # ── Backups ────────────────────────────────────────────────────────────────
 st.divider()

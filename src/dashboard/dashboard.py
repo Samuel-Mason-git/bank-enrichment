@@ -274,6 +274,7 @@ _views = Path(__file__).parent / "views"
 page = st.navigation({
     "Your money": [
         st.Page(_views / "overview.py", title="Overview", default=True),
+        st.Page(_views / "ask.py", title="Ask"),
         st.Page(_views / "over_time.py", title="Over Time"),
         st.Page(_views / "transactions.py", title="Transactions"),
         st.Page(_views / "drill_down.py", title="Category Drill-Down"),

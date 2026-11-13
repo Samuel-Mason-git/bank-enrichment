@@ -55,6 +55,7 @@ def _reset_db():
     """Ensure database_functions._con is None before and after every test."""
     import database_functions
     database_functions._con = None
+    database_functions._provider = None
     yield
     if database_functions._con is not None:
         try:
@@ -62,6 +63,7 @@ def _reset_db():
         except Exception:
             pass
     database_functions._con = None
+    database_functions._provider = None
 
 
 @pytest.fixture
