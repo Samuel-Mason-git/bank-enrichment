@@ -4,11 +4,7 @@ agent (src/pipeline/finance_agent.py) from your own data.
 Every answer has its workings underneath -- each tool the agent used, what it
 asked for and what came back -- so any figure can be checked. The agent reads
 through its own read-only database login and ignores the sidebar's filters:
-the dates come from the question. A chat lasts as long as the browser tab,
-unless you save it: saved chats (saved_chats) keep what was on screen, can be
-opened and deleted here, and aren't exported to bronze, so deleting one
-deletes it."""
-import dataclasses
+the dates come from the question. A chat lasts as long as the browser tab."""
 import json
 import os
 
@@ -17,7 +13,6 @@ import plotly.express as px
 import streamlit as st
 
 import finance_agent as fa
-from database_functions import delete_saved_chat, get_saved_chat, list_saved_chats, save_chat
 
 STARTERS = [
     "How much did I spend last month, and on what?",
@@ -78,70 +73,6 @@ def _charts(charts: list, key: str) -> None:
 def _new_chat() -> None:
     st.session_state["ask_agent"] = fa.FinanceAgent(anthropic.Anthropic(api_key=os.getenv("CLAUDE_SECRET")))
     st.session_state["ask_history"] = []
-    st.session_state.pop("ask_saving", None)
-
-
-def _to_saved(history: list[dict]) -> list[dict]:
-    """The chat as plain JSON, as on screen: questions, answers, charts and
-    workings. Failed turns (a limit, an API error) aren't worth keeping."""
-    out = []
-    for e in history:
-        if e.get("error"):
-            continue
-        d = {k: e[k] for k in ("role", "text", "caption", "charts") if e.get(k)}
-        if e.get("steps"):
-            d["steps"] = [dataclasses.asdict(s) for s in e["steps"]]
-        out.append(d)
-    return out
-
-
-def _from_saved(messages: list[dict]) -> list[dict]:
-    return [{**m, "steps": [fa.Step(**s) for s in m.get("steps", [])]} for m in messages]
-
-
-def _saved_chats_list() -> None:
-    chats = list_saved_chats()
-    if not chats:
-        return
-    with st.expander(f"📁 Saved chats ({len(chats)})"):
-        for c in chats:
-            title, when, open_ = st.columns([6, 2, 1])
-            title.markdown(f"**{_md(c['title'])}**")
-            when.caption(f"{c['saved_at'].astimezone(fa.LONDON):%d %b %Y, %H:%M} · {c['messages']} messages")
-            if open_.button("Open", key=f"ask_open_{c['id']}", width="stretch"):
-                st.session_state["ask_viewing"] = c["id"]
-                st.rerun()
-
-
-def _view_saved(chat_id: int) -> None:
-    """A saved chat, to read back (it can't be carried on: start a new one)."""
-    chat = get_saved_chat(chat_id)
-    if chat is None:
-        st.session_state.pop("ask_viewing", None)
-        st.rerun()
-    back, delete, _ = st.columns([1, 1, 4])
-    if back.button("← Back", key="ask_back", width="stretch"):
-        st.session_state.pop("ask_viewing", None)
-        st.rerun()
-    if st.session_state.get("ask_confirm_delete") == chat_id:
-        st.warning("Delete this saved chat? It can't be undone.")
-        yes, no, _ = st.columns([1, 1, 4])
-        if yes.button("Delete it", key="ask_delete_yes", type="primary", width="stretch"):
-            delete_saved_chat(chat_id)
-            st.session_state.pop("ask_viewing", None)
-            st.session_state.pop("ask_confirm_delete", None)
-            st.toast(f"Deleted \"{chat['title']}\"")
-            st.rerun()
-        if no.button("Keep it", key="ask_delete_no", width="stretch"):
-            st.session_state.pop("ask_confirm_delete", None)
-            st.rerun()
-    elif delete.button("Delete", key="ask_delete", width="stretch"):
-        st.session_state["ask_confirm_delete"] = chat_id
-        st.rerun()
-    st.subheader(chat["title"])
-    st.caption(f"Saved {chat['saved_at'].astimezone(fa.LONDON):%d %B %Y at %H:%M}")
-    for n, entry in enumerate(_from_saved(chat["messages"])):
-        _render(entry, f"saved_{chat_id}_{n}")
 
 
 def _render(entry: dict, key: str) -> None:
@@ -166,10 +97,6 @@ if not os.getenv("CLAUDE_SECRET"):
     st.info("The Ask page needs CLAUDE_SECRET in config/.env.")
     st.stop()
 
-if st.session_state.get("ask_viewing"):
-    _view_saved(st.session_state["ask_viewing"])
-    st.stop()
-
 if "ask_agent" not in st.session_state:
     _new_chat()
 agent = st.session_state["ask_agent"]
@@ -179,36 +106,12 @@ history: list[dict] = st.session_state["ask_history"]
 # of the page is drawn knowing a chat is under way.
 question = st.chat_input("Ask about your money…") or st.session_state.pop("ask_pending", None)
 
-intro, save, reset = st.columns([4, 1, 1])
+intro, reset = st.columns([5, 1])
 intro.caption("Ask anything about your spending, income, savings or subscriptions. Answers come from your own "
-              "data, through a read-only login, and ignore the sidebar's filters — say the dates in the question. "
-              "Nothing is kept unless you save the chat.")
+              "data, through a read-only login, and ignore the sidebar's filters — say the dates in the question.")
 if (history or question) and reset.button("New chat", width="stretch"):
     _new_chat()
     st.rerun()
-# Shown whenever a chat is under way -- including on the run that answers its
-# first question, so the button is there as soon as the answer is.
-if (history or question) and save.button("Save chat", width="stretch", key="ask_save"):
-    st.session_state["ask_saving"] = True
-if st.session_state.get("ask_saving") and history:
-    with st.form("ask_save_form"):
-        first = next((e["text"] for e in history if e["role"] == "user"), "Chat")
-        title = st.text_input("Save as", value=first[:80])
-        keep, cancel = st.columns(2)
-        if keep.form_submit_button("Save", type="primary", width="stretch"):
-            messages = _to_saved(history)
-            if not any(m["role"] == "assistant" for m in messages):
-                st.warning("There's no answer in this chat yet to save.")
-            else:
-                save_chat(title, messages)
-                st.session_state.pop("ask_saving", None)
-                st.toast(f"Saved \"{title.strip()[:80] or 'Untitled chat'}\" — find it under Saved chats")
-                st.rerun()
-        if cancel.form_submit_button("Cancel", width="stretch"):
-            st.session_state.pop("ask_saving", None)
-            st.rerun()
-
-_saved_chats_list()
 
 for n, entry in enumerate(history):
     _render(entry, str(n))

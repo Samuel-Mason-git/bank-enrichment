@@ -1045,29 +1045,6 @@ def set_setting(key: str, value) -> None:
     )
 
 
-def save_chat(title: str, messages: list[dict]) -> int:
-    """Keep an Ask chat (saved_chats). messages are plain dicts, as on screen."""
-    return get_con().execute(
-        "INSERT INTO saved_chats (title, messages) VALUES (%s, %s) RETURNING id",
-        [title.strip()[:200] or "Untitled chat", Jsonb(messages)],
-    ).fetchone()[0]
-
-
-def list_saved_chats() -> list[dict]:
-    """Saved chats, newest first, without their messages."""
-    return _rows("""SELECT id, title, saved_at, jsonb_array_length(messages) AS messages
-                    FROM saved_chats ORDER BY saved_at DESC, id DESC""")
-
-
-def get_saved_chat(chat_id: int) -> dict | None:
-    rows = _rows("SELECT id, title, saved_at, messages FROM saved_chats WHERE id = %s", [chat_id])
-    return rows[0] if rows else None
-
-
-def delete_saved_chat(chat_id: int) -> None:
-    get_con().execute("DELETE FROM saved_chats WHERE id = %s", [chat_id])
-
-
 def get_subscriptions() -> list[dict]:
     return _rows("SELECT * FROM subscriptions ORDER BY active DESC, name ASC")
 
