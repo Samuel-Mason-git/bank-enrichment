@@ -9,6 +9,7 @@ import json
 import os
 
 import anthropic
+import plotly.express as px
 import streamlit as st
 
 import finance_agent as fa
@@ -52,17 +53,35 @@ def _workings(steps: list) -> None:
             st.code(_pretty(s.output), language=None if s.is_error else "json")
 
 
+METRIC_LABELS = {"spend": "Spend", "income": "Income", "invested": "Invested", "saved": "Saved",
+                 "transferred_out": "Transferred out", "transferred_in": "Transferred in"}
+
+
+def _charts(charts: list, key: str) -> None:
+    """Each chart the agent asked for. The figures came from the data, not the
+    model (finance_agent.build_chart)."""
+    for i, c in enumerate(charts or []):
+        labels = [p["label"] for p in c["points"]]
+        values = [p["value"] for p in c["points"]]
+        axis = {"x": labels, "y": values, "labels": {"x": "", "y": METRIC_LABELS.get(c["metric"], c["metric"])}}
+        fig = px.line(**axis, markers=True) if c["kind"] == "line" else px.bar(**axis)
+        fig.update_traces(hovertemplate="%{x}<br>£%{y:,.2f}<extra></extra>")
+        fig.update_layout(title=c["title"], yaxis_tickprefix="£", height=360, margin={"t": 50, "b": 10, "l": 10, "r": 10})
+        st.plotly_chart(fig, width="stretch", key=f"ask_chart_{key}_{i}")
+
+
 def _new_chat() -> None:
     st.session_state["ask_agent"] = fa.FinanceAgent(anthropic.Anthropic(api_key=os.getenv("CLAUDE_SECRET")))
     st.session_state["ask_history"] = []
 
 
-def _render(entry: dict) -> None:
+def _render(entry: dict, key: str) -> None:
     with st.chat_message(entry["role"]):
         if entry.get("error"):
             st.warning(entry["text"])
             return
         st.markdown(_md(entry["text"]) if entry["role"] == "assistant" else entry["text"])
+        _charts(entry.get("charts"), key)
         _workings(entry.get("steps") or [])
         if entry.get("caption"):
             st.caption(_md(entry["caption"]))
@@ -94,8 +113,8 @@ if (history or question) and reset.button("New chat", width="stretch"):
     _new_chat()
     st.rerun()
 
-for entry in history:
-    _render(entry)
+for n, entry in enumerate(history):
+    _render(entry, str(n))
 
 if not history and not question:
     st.caption("Try one of these:")
@@ -107,7 +126,7 @@ if not history and not question:
 
 if question:
     history.append({"role": "user", "text": question})
-    _render(history[-1])
+    _render(history[-1], str(len(history) - 1))
     with st.chat_message("assistant"):
         status = st.status("Working it out…", expanded=True)
 
@@ -140,8 +159,10 @@ if question:
                           state="complete", expanded=False)
             caption = (f"This answer {_usd(answer.cost_usd)} · this chat {_usd(agent.cost_usd)} · "
                        f"today {_usd(fa.spent_today())} of the {_usd(agent.daily_limit_usd)} daily limit")
-            entry = {"role": "assistant", "text": answer.text, "steps": answer.steps, "caption": caption}
+            entry = {"role": "assistant", "text": answer.text, "steps": answer.steps, "caption": caption,
+                     "charts": answer.charts}
             history.append(entry)
             st.markdown(_md(answer.text))
+            _charts(answer.charts, str(len(history) - 1))
             _workings(answer.steps)
             st.caption(_md(caption))

@@ -338,6 +338,58 @@ def run_sql(args: dict) -> dict:
     return out
 
 
+# ── Charts (the dashboard only) ───────────────────────────────────────────────
+#
+# The model never types a chart's figures: it says what to plot, and the
+# figures come straight from get_totals, so a chart can't show a number the
+# data doesn't hold.
+
+CHART_METRICS = ("spend", "income", "invested", "saved", "transferred_out", "transferred_in")
+CHART_GROUPS = ("category", "subcategory", "month", "merchant")
+CHART_MAX_BARS = 25
+
+
+def build_chart(args: dict) -> dict:
+    metric, group_by = args.get("metric"), args.get("group_by")
+    if metric not in CHART_METRICS:
+        raise ToolError(f"metric must be one of {', '.join(CHART_METRICS)}")
+    if group_by not in CHART_GROUPS:
+        raise ToolError(f"group_by must be one of {', '.join(CHART_GROUPS)}")
+    kind = args.get("kind") or ("line" if group_by == "month" else "bar")
+    if kind not in ("bar", "line"):
+        raise ToolError("kind must be bar or line")
+    top_n = max(1, min(int(args.get("top_n") or 12), CHART_MAX_BARS))
+    filters = {k: args[k] for k in ("date_from", "date_to", "category", "subcategory", "text") if args.get(k)}
+    rows = get_totals({**filters, "group_by": group_by})["groups"]
+
+    def label(r):
+        if group_by == "subcategory":
+            return r["subcategory"] if args.get("category") else f"{r['category']} › {r['subcategory']}"
+        return str(r[group_by])
+
+    points = [{"label": label(r), "value": float(r.get(metric, 0))} for r in rows]
+    if group_by != "month":
+        points = sorted((p for p in points if p["value"]), key=lambda p: -p["value"])
+        if len(points) > top_n:
+            rest = points[top_n:]
+            points = points[:top_n] + [{"label": f"Everything else ({len(rest)})",
+                                        "value": round(sum(p["value"] for p in rest), 2)}]
+    if not any(p["value"] for p in points):
+        raise ToolError(f"Nothing to chart: no {metric} for that period and filter.")
+    return {"kind": kind, "title": str(args.get("title") or "").strip()[:80] or f"{metric.title()} by {group_by}",
+            "metric": metric, "group_by": group_by,
+            "period": {"from": args.get("date_from") or "all time", "to": args.get("date_to") or "today"},
+            "points": points}
+
+
+def chart_summary(chart: dict) -> dict:
+    """What the model is told: the chart is on screen, and its shape."""
+    biggest = max(chart["points"], key=lambda p: p["value"])
+    return {"chart_shown": True, "points": len(chart["points"]),
+            "total": round(sum(p["value"] for p in chart["points"]), 2),
+            "largest": [biggest["label"], biggest["value"]]}
+
+
 TOOL_FUNCTIONS = {
     "get_totals": get_totals,
     "find_transactions": find_transactions,
@@ -353,6 +405,7 @@ TOOL_LABELS = {
     "list_subscriptions": "Checking subscriptions",
     "list_categories": "Reading your categories",
     "run_sql": "Running a query",
+    "show_chart": "Drawing a chart",
 }
 
 _PERIOD = {
@@ -437,6 +490,30 @@ TOOLS = [
 ]
 
 
+CHART_TOOL = {
+    "name": "show_chart",
+    "description": (
+        "Show the user a chart under your answer -- only when one genuinely helps: several categories, "
+        "merchants or months side by side. Don't chart a single figure. You choose what to plot; the "
+        "figures are fetched from the data by the same rules as get_totals, so you never type them. "
+        "Months come out in order as a line; anything else as bars, biggest first, the smallest "
+        "folded into 'Everything else'. Still give the key figures in words."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "A short title, e.g. 'Spending by category, October 2026'."},
+            "metric": {"type": "string", "enum": list(CHART_METRICS)},
+            "group_by": {"type": "string", "enum": list(CHART_GROUPS)},
+            "kind": {"type": "string", "enum": ["bar", "line"], "description": "Default: line for months, bar otherwise."},
+            "top_n": {"type": "integer", "description": f"Bars to show before 'Everything else' (default 12, at most {CHART_MAX_BARS})."},
+            **_PERIOD,
+        },
+        "required": ["title", "metric", "group_by"],
+    },
+}
+
+
 def run_tool(name: str, args: dict) -> tuple[str, bool]:
     """(result text, is_error). A bad call comes back as an error the model
     can read and correct, never as an exception out of the loop."""
@@ -471,7 +548,10 @@ How to answer:
 - Treat transfers between the user's own accounts, savings pots and refunds as what the data says they are, not as spending or income.""" + (
         "\n- You're replying in a Telegram chat on a phone: keep it to a few short lines (about 120 words at most), "
         "bold the key figures with **, and don't use tables or headings."
-        if channel == "telegram" else "")
+        if channel == "telegram" else
+        "\n- Whenever your answer breaks money down across three or more categories, merchants or months "
+        "(\"where did my money go\", \"month by month\", \"compared with\"), also call show_chart once, with the "
+        "same period and filters, so the breakdown appears as a chart under your answer. Not for one or two figures.")
 
 
 # ── The agent ─────────────────────────────────────────────────────────────────
@@ -490,6 +570,7 @@ class Answer:
     steps: list[Step] = field(default_factory=list)
     cost_usd: float = 0.0
     stop_reason: str | None = None
+    charts: list[dict] = field(default_factory=list)   # from show_chart, for the page to draw
 
 
 def spent_today() -> float:
@@ -529,7 +610,8 @@ class FinanceAgent:
             # Cached: the tools and instructions are the same on every call
             # of the day, so each follow-up only pays full price for what's new.
             system=[{"type": "text", "text": system_prompt(today, self.channel), "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS, messages=self.messages, **extra,
+            tools=TOOLS + [CHART_TOOL] if self.channel == "dashboard" else TOOLS,
+            messages=self.messages, **extra,
         )
         tokens = llm_calls._tokens(getattr(response, "usage", None))
         model = llm_calls._str(getattr(response, "model", None)) or self.settings["model"]
@@ -568,7 +650,18 @@ class FinanceAgent:
                     break
                 results = []
                 for block in tool_uses:
-                    output, is_error = run_tool(block.name, block.input)
+                    if block.name == CHART_TOOL["name"] and self.channel == "dashboard":
+                        try:
+                            chart = build_chart(dict(block.input or {}))
+                            answer.charts.append(chart)
+                            output, is_error = _json(chart_summary(chart)), False
+                        except ToolError as e:
+                            output, is_error = str(e), True
+                        except Exception as e:
+                            log.exception("finance agent chart failed")
+                            output, is_error = f"The chart failed: {type(e).__name__}: {e}"[:500], True
+                    else:
+                        output, is_error = run_tool(block.name, block.input)
                     step = Step(block.name, dict(block.input or {}), output, is_error)
                     answer.steps.append(step)
                     if on_step:

@@ -213,7 +213,8 @@ def test_run_tool_turns_problems_into_readable_errors(money):
 
 
 def test_every_tool_has_a_definition_and_a_label():
-    assert {t["name"] for t in fa.TOOLS} == set(fa.TOOL_FUNCTIONS) == set(fa.TOOL_LABELS)
+    assert {t["name"] for t in fa.TOOLS} == set(fa.TOOL_FUNCTIONS)
+    assert set(fa.TOOL_LABELS) == set(fa.TOOL_FUNCTIONS) | {fa.CHART_TOOL["name"]}
 
 
 # ── the loop ──────────────────────────────────────────────────────────────────
@@ -269,7 +270,7 @@ def test_each_call_is_recorded_with_tool_names_only(money):
     fa.FinanceAgent(FakeClient([tool_use("list_categories", {}), reply("ok")]), daily_limit_usd=1).ask("q")
     rows = money.execute("SELECT job, params->'tools', cost_usd FROM llm_calls ORDER BY call_id").fetchall()
     assert len(rows) == 2 and rows[0][0] == "finance_agent"
-    assert rows[0][1] == [t["name"] for t in fa.TOOLS]
+    assert rows[0][1] == [t["name"] for t in fa.TOOLS + [fa.CHART_TOOL]]
     assert fa.spent_today() == pytest.approx(sum(float(r[2]) for r in rows))
 
 
@@ -369,3 +370,66 @@ def test_before_the_server_has_made_app_settings_the_default_applies(money):
     money.execute("DROP TABLE app_settings")
     assert fa.daily_limit() == fa.DEFAULT_DAILY_LIMIT_USD
     assert fa.FinanceAgent(FakeClient([reply("ok")])).ask("q").text == "ok"
+
+
+
+# ── charts ────────────────────────────────────────────────────────────────────
+
+def test_a_bar_chart_takes_its_figures_from_the_data_biggest_first(money):
+    c = fa.build_chart({**OCT, "title": "October", "metric": "spend", "group_by": "category"})
+    assert c["kind"] == "bar" and c["title"] == "October"
+    assert c["points"] == [{"label": "Food & Drink", "value": 50.0}, {"label": "Unclassified", "value": 7.0}]
+
+
+def test_the_smallest_bars_fold_into_everything_else(money):
+    c = fa.build_chart({**OCT, "title": "t", "metric": "spend", "group_by": "merchant", "top_n": 1})
+    assert c["points"] == [{"label": "Tesco", "value": 50.0}, {"label": "Everything else (1)", "value": 7.0}]
+
+
+def test_months_come_out_in_order_as_a_line(money):
+    c = fa.build_chart({"title": "t", "metric": "spend", "group_by": "month", "category": "Food & Drink"})
+    assert c["kind"] == "line"
+    assert [p["label"] for p in c["points"]] == ["2026-09", "2026-10"]
+
+
+def test_subcategory_labels_name_the_parent_unless_it_is_filtered(money):
+    every = fa.build_chart({**OCT, "title": "t", "metric": "spend", "group_by": "subcategory"})
+    assert every["points"][0]["label"] == "Food & Drink › Groceries"
+    one = fa.build_chart({**OCT, "title": "t", "metric": "spend", "group_by": "subcategory", "category": "Food & Drink"})
+    assert one["points"][0]["label"] == "Groceries"
+
+
+@pytest.mark.parametrize("args, says", [
+    ({"metric": "profit", "group_by": "category"}, "metric"),
+    ({"metric": "spend", "group_by": "week"}, "group_by"),
+    ({"metric": "spend", "group_by": "category", "kind": "pie"}, "kind"),
+    ({"metric": "invested", "group_by": "category", "date_from": "2026-10-01", "date_to": "2026-10-31"}, "Nothing to chart"),
+])
+def test_a_chart_that_cannot_be_drawn_says_why(money, args, says):
+    with pytest.raises(fa.ToolError, match=says):
+        fa.build_chart({"title": "t", **args})
+
+
+def test_the_agent_collects_its_charts_and_is_told_only_their_shape(money):
+    client = FakeClient([tool_use("show_chart", {**OCT, "title": "Oct", "metric": "spend", "group_by": "category"}),
+                         reply("Mostly food.")])
+    answer = fa.FinanceAgent(client, daily_limit_usd=1).ask("where did October go?")
+    assert [c["title"] for c in answer.charts] == ["Oct"]
+    told = json.loads(answer.steps[0].output)
+    assert told == {"chart_shown": True, "points": 2, "total": 57.0, "largest": ["Food & Drink", 50.0]}
+    assert "show_chart" in [t["name"] for t in client.requests[0]["tools"]]
+
+
+def test_a_bad_chart_request_goes_back_as_an_error(money):
+    client = FakeClient([tool_use("show_chart", {"title": "t", "metric": "profit", "group_by": "category"}),
+                         reply("Sorry.")])
+    answer = fa.FinanceAgent(client, daily_limit_usd=1).ask("q")
+    assert answer.charts == [] and answer.steps[0].is_error
+
+
+def test_telegram_gets_no_chart_tool(money):
+    client = FakeClient([tool_use("show_chart", {"title": "t", "metric": "spend", "group_by": "category"}),
+                         reply("ok")])
+    answer = fa.FinanceAgent(client, daily_limit_usd=1, channel="telegram").ask("q")
+    assert "show_chart" not in [t["name"] for t in client.requests[0]["tools"]]
+    assert answer.charts == [] and answer.steps[0].is_error

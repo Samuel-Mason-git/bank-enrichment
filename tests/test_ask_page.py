@@ -40,7 +40,11 @@ class FakeAgent:
             if on_step:
                 on_step(s)
         self.cost_usd += 0.0021
-        return fa.Answer(text=f"You spent £57.00 on: {question}", steps=steps, cost_usd=0.0021, stop_reason="end_turn")
+        charts = [{"kind": "bar", "title": "Spend by category", "metric": "spend", "group_by": "category",
+                   "period": {"from": "2026-10-01", "to": "2026-10-31"},
+                   "points": [{"label": "Food & Drink", "value": 50.0}, {"label": "Bills", "value": 7.0}]}]
+        return fa.Answer(text=f"You spent £57.00 on: {question}", steps=steps, cost_usd=0.0021, stop_reason="end_turn",
+                         charts=charts if "chart" in question else [])
 
 
 @pytest.fixture
@@ -134,3 +138,14 @@ def test_the_daily_limit_is_set_on_the_settings_page(db):
     assert not at.exception
     assert dbf.get_setting(fa.DAILY_LIMIT_SETTING) == 1.5
     assert fa.daily_limit() == 1.5
+
+
+
+def test_a_chart_the_agent_asked_for_is_drawn_and_stays_on_screen(ask):
+    at = ask()
+    at.chat_input[0].set_value("chart my October spending").run()
+    assert not at.exception
+    assert len(at.get("plotly_chart")) == 1
+    at.chat_input[0].set_value("and what about September?").run()
+    assert not at.exception
+    assert len(at.get("plotly_chart")) == 1          # the first still there, none added for the second
