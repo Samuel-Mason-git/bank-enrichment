@@ -490,16 +490,20 @@ class FinanceAgent:
     history (thinking blocks included, passed back unchanged as the API
     requires) stays on the object."""
 
-    def __init__(self, client, settings: dict | None = None, daily_limit_usd: float | None = None):
+    def __init__(self, client, settings: dict | None = None, daily_limit_usd: float | None = None,
+                 job: str = "finance_agent"):
+        """job names its calls in llm_calls: agent_eval.py uses its own, so an
+        eval neither counts against nor is stopped by the Ask page's daily limit."""
         self.client = client
         self.settings = settings or MODEL_SETTINGS
         self.daily_limit_usd = DAILY_LIMIT_USD if daily_limit_usd is None else daily_limit_usd
         self.messages: list[dict] = []
         self.cost_usd = 0.0
+        self.job = job
 
     def _call(self, today: date, **extra):
         response = llm_calls.create(
-            self.client, job="finance_agent", prompt_fn=system_prompt,
+            self.client, job=self.job, prompt_fn=system_prompt,
             **llm_calls.request_kwargs(self.settings, MAX_TOKENS),
             # Cached: the tools and instructions are the same on every call
             # of the day, so each follow-up only pays full price for what's new.
@@ -517,7 +521,7 @@ class FinanceAgent:
         sending anything once today's spend has reached the limit, and
         AgentNotConfigured without its read-only login."""
         agent_con()
-        if spent_today() >= self.daily_limit_usd:
+        if self.job == "finance_agent" and spent_today() >= self.daily_limit_usd:
             raise DailyLimitReached(
                 f"Today's limit of ${self.daily_limit_usd:.2f} for questions has been reached -- it resets at midnight.")
         today = datetime.now(LONDON).date()
