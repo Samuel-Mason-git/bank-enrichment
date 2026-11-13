@@ -454,7 +454,7 @@ def run_tool(name: str, args: dict) -> tuple[str, bool]:
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
-def system_prompt(today: date) -> str:
+def system_prompt(today: date, channel: str = "dashboard") -> str:
     return f"""You answer questions about the user's personal finances from their own bank data (a UK Monzo account, amounts in £), using the tools provided. Today is {today:%A %d %B %Y}.
 
 How to work:
@@ -468,7 +468,10 @@ How to work:
 How to answer:
 - Lead with the answer in one or two sentences, with the figures (£1,234.56). Then add only the detail that helps: the biggest contributors, the change versus the comparison period, anything surprising.
 - Keep it short and plain. Use a small table only when comparing several items.
-- Treat transfers between the user's own accounts, savings pots and refunds as what the data says they are, not as spending or income."""
+- Treat transfers between the user's own accounts, savings pots and refunds as what the data says they are, not as spending or income.""" + (
+        "\n- You're replying in a Telegram chat on a phone: keep it to a few short lines (about 120 words at most), "
+        "bold the key figures with **, and don't use tables or headings."
+        if channel == "telegram" else "")
 
 
 # ── The agent ─────────────────────────────────────────────────────────────────
@@ -504,7 +507,7 @@ class FinanceAgent:
     requires) stays on the object."""
 
     def __init__(self, client, settings: dict | None = None, daily_limit_usd: float | None = None,
-                 job: str = "finance_agent"):
+                 job: str = "finance_agent", channel: str = "dashboard"):
         """job names its calls in llm_calls: agent_eval.py uses its own, so an
         eval neither counts against nor is stopped by the Ask page's daily limit."""
         self.client = client
@@ -513,6 +516,7 @@ class FinanceAgent:
         self.messages: list[dict] = []
         self.cost_usd = 0.0
         self.job = job
+        self.channel = channel   # "telegram" asks for short, phone-sized replies
 
     @property
     def daily_limit_usd(self) -> float:
@@ -524,7 +528,7 @@ class FinanceAgent:
             **llm_calls.request_kwargs(self.settings, MAX_TOKENS),
             # Cached: the tools and instructions are the same on every call
             # of the day, so each follow-up only pays full price for what's new.
-            system=[{"type": "text", "text": system_prompt(today), "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": system_prompt(today, self.channel), "cache_control": {"type": "ephemeral"}}],
             tools=TOOLS, messages=self.messages, **extra,
         )
         tokens = llm_calls._tokens(getattr(response, "usage", None))

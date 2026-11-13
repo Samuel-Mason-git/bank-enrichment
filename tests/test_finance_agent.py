@@ -363,3 +363,9 @@ def test_a_nonsense_stored_limit_falls_back_to_the_default(money):
     import database_functions as dbf
     dbf.set_setting(fa.DAILY_LIMIT_SETTING, "lots")
     assert fa.daily_limit() == fa.DEFAULT_DAILY_LIMIT_USD
+
+
+def test_before_the_server_has_made_app_settings_the_default_applies(money):
+    money.execute("DROP TABLE app_settings")
+    assert fa.daily_limit() == fa.DEFAULT_DAILY_LIMIT_USD
+    assert fa.FinanceAgent(FakeClient([reply("ok")])).ask("q").text == "ok"

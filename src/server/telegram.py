@@ -93,6 +93,11 @@ class TelegramBot:
             payload["reply_markup"] = reply_markup
         self._post("sendMessage", payload)
 
+    def send_chat_action(self, chat_id: int, action: str = "typing"):
+        """The "typing…" indicator: lasts about five seconds, or until a message
+        is sent. One attempt only -- a missed indicator doesn't matter."""
+        self._post("sendChatAction", {"chat_id": chat_id, "action": action}, attempts=1)
+
     def send_alert(self, chat_id: int, title: str, message: str):
         """A "the pipeline can't do its job" notice from the local side -- out of
         Anthropic credit, a rejected key, a check that couldn't run. Escaped

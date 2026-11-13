@@ -74,11 +74,24 @@ def _connect(read_only: bool = False) -> psycopg.Connection:
     return con
 
 
+_provider = None
+
+
+def use_connection_from(get_con_fn) -> None:
+    """For a process that has a connection of its own (the server): the
+    pipeline functions it calls -- the Ask agent's cost records and daily
+    limit -- use that one, reconnects and all, rather than opening another."""
+    global _provider
+    _provider = get_con_fn
+
+
 def get_con() -> psycopg.Connection:
     """The connection, made again if it has dropped (the VPN blinking, the data
     box restarting) -- a long-lived dashboard would otherwise fail every query
     until restarted."""
     global _con
+    if _provider is not None:
+        return _provider()
     if _con is None:
         raise RuntimeError("Database not initialised — call init_db() first")
     if _con.closed or _con.broken:
@@ -1014,8 +1027,13 @@ def set_subcategory_role(sub_id: int, role: str | None) -> None:
 
 
 def get_setting(key: str, default=None):
-    """A dashboard setting (app_settings), or default when it's never been set."""
-    row = get_con().execute("SELECT value FROM app_settings WHERE key = %s", [key]).fetchone()
+    """A dashboard setting (app_settings), or default when it's never been set
+    -- or when the table isn't there yet: the server makes it on start, and the
+    dashboard can be running newer code than the server for a while."""
+    try:
+        row = get_con().execute("SELECT value FROM app_settings WHERE key = %s", [key]).fetchone()
+    except psycopg.errors.UndefinedTable:
+        return default
     return default if row is None else row[0]
 
 
