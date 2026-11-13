@@ -530,6 +530,10 @@ class FinanceAgent:
                 response, cost = self._call(today, **({"tool_choice": {"type": "none"}} if last_round else {}))
                 answer.cost_usd += cost
                 answer.stop_reason = response.stop_reason
+                # Answers summarise your finances, and llm_calls goes to bronze
+                # for good: like every other job, a reply's text is kept only
+                # when it couldn't be used (cut off, refused), to see why.
+                llm_calls.parsed(response.stop_reason in ("end_turn", "tool_use"))
                 self.messages.append({"role": "assistant", "content": response.content})
 
                 tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]

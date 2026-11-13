@@ -273,6 +273,13 @@ def test_each_call_is_recorded_with_tool_names_only(money):
     assert fa.spent_today() == pytest.approx(sum(float(r[2]) for r in rows))
 
 
+def test_answers_are_not_kept_but_unusable_replies_are(money):
+    fa.FinanceAgent(FakeClient([tool_use("list_categories", {}), reply("You spent £57.00.")]), daily_limit_usd=1).ask("q")
+    fa.FinanceAgent(FakeClient([reply("Half an answ", stop="max_tokens")]), daily_limit_usd=1).ask("q")
+    rows = money.execute("SELECT stop_reason, parsed, response_text FROM llm_calls ORDER BY call_id").fetchall()
+    assert rows == [("tool_use", True, None), ("end_turn", True, None), ("max_tokens", False, "Half an answ")]
+
+
 def test_follow_ups_keep_the_conversation(money):
     agent = fa.FinanceAgent(FakeClient([reply("first"), reply("second")]), daily_limit_usd=1)
     agent.ask("one")
