@@ -60,21 +60,26 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
                     textposition="outside", cliponaxis=False, hoverinfo="skip")
     if mb.current:
         for i in range(len(rows)):
-            fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.4, y1=i + 0.4,
+            fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.45, y1=i + 0.45,
                           line={"color": PACE, "width": 3})
+    ticks = [t for t in (0, 0.5, 1.0, 1.5, 2.0) if t <= top + 1e-9]
     fig.add_shape(type="line", x0=1.0, x1=1.0, y0=-0.6, y1=len(rows) - 0.4,
                   line={"color": MUTED, "width": 1, "dash": "dash"})
-    ticks = [t for t in (0, 0.5, 1.0, 1.5, 2.0) if t <= top + 1e-9]
-    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 24, "b": 10, "l": 10, "r": 110},
+    # Legend entries, drawn as empty traces so the lines above get a key.
+    fig.add_scatter(x=[None], y=[None], mode="lines", line={"color": PACE, "width": 3},
+                    name=f"On pace: where spending would be by now (day {mb.day} of {mb.days})" if mb.current else "",
+                    showlegend=mb.current, hoverinfo="skip")
+    fig.add_scatter(x=[None], y=[None], mode="lines", line={"color": MUTED, "width": 1, "dash": "dash"},
+                    name="Budget (100%)", hoverinfo="skip")
+    fig.update_layout(barmode="overlay", height=150 + 52 * len(rows),
+                      margin={"t": 24, "b": 70, "l": 10, "r": 110},
+                      legend={"orientation": "h", "yanchor": "top", "y": -0.12, "xanchor": "left", "x": 0},
                       xaxis={"range": [0, top * 1.12], "tickvals": ticks,
                              "ticktext": [f"{t:.0%}" for t in ticks], "showgrid": False},
                       yaxis={"showgrid": False},
                       annotations=[{"x": 1.0, "y": 1.0, "xref": "x", "yref": "paper", "text": "budget",
                                     "showarrow": False, "yanchor": "bottom", "font": {"color": MUTED}}])
     st.plotly_chart(fig, width="stretch", key="budget_fill")
-    if mb.current:
-        st.caption(f"The dark line on each bar is where on-pace spending would be: {mb.pace:.0%} of the way "
-                   f"through {mb.month:%B} (day {mb.day} of {mb.days}). The dashed line is the budget.")
 
 
 def _history_chart() -> None:

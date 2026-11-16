@@ -62,8 +62,9 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
             label = f"+{s.used - 1.0:.0%} over" + (" (cut off)" if s.used > BAR_CAP else "")
             ax.text(end + 0.02 * top, i, label, va="center", ha="left", fontsize=8.5, color=RED, fontweight="bold")
         if mb.current:
-            ax.plot([mb.pace, mb.pace], [i - 0.38, i + 0.38], color=PACE, linewidth=1.6, zorder=3)
-    ax.axvline(1.0, color=MUTED, linewidth=1.0, linestyle="--", zorder=0)
+            ax.plot([mb.pace, mb.pace], [i - 0.45, i + 0.45], color=PACE, linewidth=2.6, zorder=3,
+                    label=f"On pace: where spending would be by now (day {mb.day} of {mb.days})" if i == 0 else None)
+    ax.axvline(1.0, color=MUTED, linewidth=1.0, linestyle="--", zorder=0, label="Budget (100%)")
     ax.text(1.0, len(rows) - 0.35, "budget", ha="center", va="bottom", fontsize=8, color=MUTED)
     labels = [f"{s.category}\n{_money(s.spent)} of {_money(s.budget)} · {s.used:.0%}" for s in rows]
     ax.set_yticks(range(len(rows)), labels, fontsize=9)
@@ -78,6 +79,7 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
            if mb.current else "The whole month")
     ax.set_title(f"{title or 'Budgets'}, {month}\n", loc="left", fontsize=12, fontweight="bold", color=INK)
     ax.text(0, 1.02, sub, transform=ax.transAxes, fontsize=8.5, color=MUTED)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, -0.09), ncol=2, frameon=False, fontsize=8.5)
     return _png(fig)
 
 
