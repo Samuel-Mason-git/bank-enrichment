@@ -288,8 +288,8 @@ poetry run python src/pipeline/process.py
 This single command does everything in sequence:
 1. Connect to the database (it stops here, saying so, if the VPN is down) and seed the default taxonomy if there isn't one — 13 parent categories and ~70 subcategories
 2. File any quick-tap answers without calling the LLM (after the second look)
-3. Act on any new-category decisions made on Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](README.md#new-category-approval) in the README)
-4. Act on any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](README.md#monthly-taxonomy-review))
+3. Act on any new-category decisions made on Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](docs/new-categories.md#new-category-approval) in the README)
+4. Act on any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](docs/new-categories.md#monthly-taxonomy-review))
 5. Look for new rule suggestions
 6. Send any missing weekly or monthly summaries to Telegram
 
@@ -366,7 +366,7 @@ Run it from the project root so `$PWD` resolves to the right path. You can then 
 | Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, cost totals |
 | Settings | Tree view of all categories and their Roles. Add, rename, move, and delete categories. Click 🔗 on any subcategory to view its transactions and bulk-reassign them. Click 🧹 on a parent to wipe its labels so they re-classify on the next run. |
 
-See [Local Dashboard](README.md#local-dashboard) in the README for full details on each tab.
+See [Local Dashboard](docs/dashboard.md) for full details on each tab.
 
 Use the sidebar to filter by date range (quick presets or custom), category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
 
