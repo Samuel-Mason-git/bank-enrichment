@@ -88,7 +88,7 @@ Then open `config/.env` and fill in all values:
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
-**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server still starts without them, but it logs a warning and sends you a Telegram alert on every startup until both are set.
+**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server won't start until both are set: it stops with an error naming the missing one.
 
 Once filled in, copy it to the server:
 ```bash
