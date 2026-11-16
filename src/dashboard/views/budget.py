@@ -32,39 +32,49 @@ GREEN, AMBER, RED, TRACK, PACE = "#2e9d5b", "#e0a526", "#d64545", "rgba(128,128,
 STATE_COLOUR = {"over": RED, "near": AMBER, "pace": AMBER, "ok": GREEN}
 STATE_LABEL = {"over": "🔴 Over", "near": "🟠 Nearly used", "pace": "🟠 Off pace", "ok": "🟢 On track"}
 CARD = "rgba(31, 58, 95, 0.12)"
+MUTED = "#8a94a0"
 FREQUENCY_LABELS = {"off": "Off", "daily": "Every morning", "weekly": "Mondays"}
 ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (from day 7)"}
 
 
 def _fill_chart(mb: bg.MonthBudgets) -> None:
-    """Every bar stops at the budget line. Spending fills it, in red once it's
-    over; the overspend is a label beside the bar, not a bar past the end."""
+    """Scaled to the budget: 100% is the budget line. Spending fills each bar to
+    that line in its status colour; anything over is red past it, so an
+    overspend shows in proportion. The scale grows to fit the biggest overspend,
+    up to BAR_CAP (200% of budget). Same design as the Telegram chart."""
     rows = list(reversed(mb.statuses))
     labels = [f"{s.category}  ·  {_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows]
+    top = min(max(1.0, max(s.used for s in rows)) * 1.08, bg.BAR_CAP)
     fig = go.Figure()
     fig.add_bar(y=labels, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip",
                 showlegend=False)
     fig.add_bar(y=labels, x=[min(s.used, 1.0) for s in rows], orientation="h",
-                marker_color=[STATE_COLOUR[s.state] for s in rows], showlegend=False,
-                customdata=[s.note for s in rows],
-                hovertemplate="%{y}<br>%{customdata}<extra></extra>")
-    for label, s in zip(labels, rows):
-        if s.used > 1.0:
-            fig.add_annotation(x=1.02, y=label, text=f"<b>+{s.used - 1.0:.0%} over</b>", showarrow=False,
-                               xanchor="left", font={"color": RED})
+                marker_color=["#5b7bb0" if s.state == "over" else STATE_COLOUR[s.state] for s in rows],
+                showlegend=False, customdata=[s.note for s in rows], hovertemplate="%{y}<br>%{customdata}<extra></extra>")
+    over = [(label, s) for label, s in zip(labels, rows) if s.used > 1.0]
+    if over:
+        fig.add_bar(y=[label for label, _ in over],
+                    x=[min(s.used, bg.BAR_CAP) - 1.0 for _, s in over],
+                    base=[1.0] * len(over), orientation="h", marker_color=RED, showlegend=False,
+                    text=[f"+{s.used - 1.0:.0%} over" + (" (cut off)" if s.used > bg.BAR_CAP else "") for _, s in over],
+                    textposition="outside", cliponaxis=False, hoverinfo="skip")
     if mb.current:
         for i in range(len(rows)):
             fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.4, y1=i + 0.4,
                           line={"color": PACE, "width": 3})
-    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 90},
-                      xaxis={"range": [0, 1.0 + 0.3], "tickvals": [0, 0.25, 0.5, 0.75, 1.0],
-                             "ticktext": ["0%", "25%", "50%", "75%", "budget"], "tickformat": ".0%",
-                             "showgrid": False},
-                      yaxis={"showgrid": False})
+    fig.add_shape(type="line", x0=1.0, x1=1.0, y0=-0.6, y1=len(rows) - 0.4,
+                  line={"color": MUTED, "width": 1, "dash": "dash"})
+    ticks = [t for t in (0, 0.5, 1.0, 1.5, 2.0) if t <= top + 1e-9]
+    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 24, "b": 10, "l": 10, "r": 110},
+                      xaxis={"range": [0, top * 1.12], "tickvals": ticks,
+                             "ticktext": [f"{t:.0%}" for t in ticks], "showgrid": False},
+                      yaxis={"showgrid": False},
+                      annotations=[{"x": 1.0, "y": 1.0, "xref": "x", "yref": "paper", "text": "budget",
+                                    "showarrow": False, "yanchor": "bottom", "font": {"color": MUTED}}])
     st.plotly_chart(fig, width="stretch", key="budget_fill")
     if mb.current:
         st.caption(f"The dark line on each bar is where on-pace spending would be: {mb.pace:.0%} of the way "
-                   f"through {mb.month:%B} (day {mb.day} of {mb.days}).")
+                   f"through {mb.month:%B} (day {mb.day} of {mb.days}). The dashed line is the budget.")
 
 
 def _history_chart() -> None:

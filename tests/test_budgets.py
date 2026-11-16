@@ -383,7 +383,7 @@ def test_an_over_budget_bar_keeps_the_budget_length_and_shows_how_far_over(shop)
     mb = bg.month_budgets(today=MID_OCT)
     png = charts.budget_bars(mb)
     assert png and png.startswith(b"\x89PNG")
-    assert bg.OVER_SHOWN == 0.5                              # the red extension is capped, not the bar
+    assert bg.BAR_CAP == 2.0                                 # the scale tops out at 200%, beyond it a cut-off label
 
 
 def test_the_budget_page_draws_the_six_months_and_the_bars(db, monkeypatch):
