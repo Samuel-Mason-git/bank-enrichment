@@ -14,7 +14,7 @@ run_sql is the escape hatch for anything the fixed tools can't answer: one
 SELECT, run in a read-only transaction with a short timeout and a row cap.
 
 Every tool reads through the agent's own database login (AGENT_DB_USER), made
-by data-vault's new_reader.sh: read-only, and able to see only what
+by you, as a role named bank_enrichment_agent (see SETUP.md): read-only, and able to see only what
 sql/postgres/schema.sql grants it -- the transaction_roles view, subscriptions
 and the category tables. Not the raw tables, llm_calls, rules or anything
 else. Without that login the agent doesn't run; it never falls back to the
@@ -97,7 +97,7 @@ def _connect() -> psycopg.Connection:
     if not is_configured():
         raise AgentNotConfigured(
             "The agent's read-only database login isn't set up: add AGENT_DB_USER and AGENT_DB_PASSWORD "
-            "to config/.env (data-vault's new_reader.sh makes it).")
+            "to config/.env (see SETUP.md for creating the role).")
     e = os.environ
     return psycopg.connect(
         host=e["DB_HOST"], port=e.get("DB_PORT", "5432"), dbname=e["DB_NAME"],

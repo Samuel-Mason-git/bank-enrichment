@@ -2,11 +2,10 @@
 
 - A Monzo account with developer access enabled at [developers.monzo.com](https://developers.monzo.com)
 - A server with a public IP address and Docker installed (e.g. Oracle Cloud free tier)
-- A Postgres database for it — this setup uses a second free-tier box running the
-  [data-vault](https://github.com/your-username/data-vault) repo, which also backs it up
-  nightly and runs the WireGuard VPN your local machine reaches it through. Its
-  `new_project.sh` makes this project's schema and login (`DB_*` below), and its
-  `wg_add_device.sh` makes your local machine's VPN config.
+- A Postgres 18 database the server can reach, and your own machine too if you want the dashboard
+  there. It can sit on a second small server, or on your own PC if the server can reach it. Create
+  an empty database and a login that owns it (`DB_*` below); the server creates the tables on first
+  start. Back it up however you run it.
 - A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
 - Python 3.11+ and [Poetry](https://python-poetry.org/docs/#installation) installed on your local machine
 - Git installed on both your local machine and the server
@@ -76,8 +75,8 @@ Then open `config/.env` and fill in all values:
 | `DASHBOARD_PASSWORD` | Server | Password for that login |
 | `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login, which data-vault's `new_project.sh` prints and saves on the data box. `DB_HOST` is the data box's private address, which the server reaches inside the cloud network and your local machine through the VPN |
-| `AGENT_DB_USER`, `AGENT_DB_PASSWORD` | Both | The finance agent's own **read-only** login, made on the data box with data-vault's `./new_reader.sh bank_enrichment_agent bank_enrichment`. It can read only what `sql/postgres/schema.sql` grants it (the `transaction_roles` view, subscriptions and categories) and never writes. Without it the Ask page is off; it never uses the main login. Same host, port and database as above. Kept in the same `config/.env` on both machines like everything else: after adding them locally, copy the file to the server (step below) and recreate the containers |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login you created for this project. `DB_HOST` is the database's address as the server and your machine reach it |
+| `AGENT_DB_USER`, `AGENT_DB_PASSWORD` | Both | The finance agent's own **read-only** login, a second login, made with `CREATE ROLE bank_enrichment_agent LOGIN PASSWORD '...'` in the same database. The grants in `sql/postgres/schema.sql` are for that role name, so the server applies them on its next start. It can read only what `sql/postgres/schema.sql` grants it (the `transaction_roles` view, subscriptions and categories) and never writes. Without it the Ask page is off; it never uses the main login. Same host, port and database as above. Kept in the same `config/.env` on both machines like everything else: after adding them locally, copy the file to the server (step below) and recreate the containers |
 | `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies — default `~/bank-enrichment-backups` |
 | `LOG_DIR` | Local (optional) | Where the pipeline's log files go — default `logs/` in the repo |
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
@@ -88,7 +87,7 @@ Then open `config/.env` and fill in all values:
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
-**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server still starts without them, but it logs a warning and sends you a Telegram alert on every startup until both are set.
+**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server won't start until both are set: it stops with an error naming the missing one.
 
 Once filled in, copy it to the server:
 ```bash
@@ -133,8 +132,8 @@ The containers restart automatically on failure and on server reboot.
 
 On every start the server brings the database up to date by applying `sql/postgres/schema.sql`
 (it only ever adds tables, columns and views), so there's nothing to set up by hand beyond the
-login. If it can't reach the database, check the data box allows this server in its `pg_hba.conf`
-and its security list (port 5432 from the server's private address).
+login. If it can't reach the database, check the database host allows this server to connect (for Postgres, in `pg_hba.conf`)
+and its firewall (port 5432 from the server's address).
 
 A `data/` directory is created automatically containing:
 - `server.log` — rotating log file (capped at ~3MB total)
@@ -230,10 +229,9 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 The pipeline runs on the server: Docker Compose starts a `worker` container next to the server, which
 runs it every hour from 08:00 to 22:00 London time (see step 5). Your own machine is for the dashboard, and
-for running the pipeline by hand when you want to. Both reach the same database over the data box's
-WireGuard VPN. Import the config data-vault's
-`wg_add_device.sh` made for this machine into the WireGuard app and switch it on; it only routes
-the data box's addresses, so the rest of your traffic is unaffected. (On Windows with WSL, WSL
+for running the pipeline by hand when you want to. If the database is on another machine, reach it over a private network. WireGuard works well: set
+it up so it routes only the database's addresses. If the database is on the same machine as the
+dashboard, there's nothing to set up. (On Windows with WSL, WSL
 reaches the database through the Windows tunnel — nothing to set up inside WSL.)
 
 > **Windows note — Smart App Control:** Windows 11's Smart App Control can block pandas' compiled binaries from
@@ -290,8 +288,8 @@ poetry run python src/pipeline/process.py
 This single command does everything in sequence:
 1. Connect to the database (it stops here, saying so, if the VPN is down) and seed the default taxonomy if there isn't one — 13 parent categories and ~70 subcategories
 2. File any quick-tap answers without calling the LLM (after the second look)
-3. Act on any new-category decisions made on Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](README.md#new-category-approval) in the README)
-4. Act on any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](README.md#monthly-taxonomy-review))
+3. Act on any new-category decisions made on Telegram since the last run, then run the LLM classifier (Passes 0-3) on anything still unclassified — a genuinely new category is proposed via Telegram rather than created outright (see [New Category Approval](docs/classification/new-categories.md#new-category-approval) in the README)
+4. Act on any monthly-taxonomy-review decisions, then run this month's review if it hasn't already (see [Monthly Taxonomy Review](docs/classification/new-categories.md#monthly-taxonomy-review))
 5. Look for new rule suggestions
 6. Send any missing weekly or monthly summaries to Telegram
 
@@ -368,7 +366,7 @@ Run it from the project root so `$PWD` resolves to the right path. You can then 
 | Subscriptions | Auto-detected recurring payments + manual add, active/inactive toggle, cost totals |
 | Settings | Tree view of all categories and their Roles. Add, rename, move, and delete categories. Click 🔗 on any subcategory to view its transactions and bulk-reassign them. Click 🧹 on a parent to wipe its labels so they re-classify on the next run. |
 
-See [Local Dashboard](README.md#local-dashboard) in the README for full details on each tab.
+See [Local Dashboard](docs/money/dashboard.md) for full details on each tab.
 
 Use the sidebar to filter by date range (quick presets or custom), category, subcategory, free text, or toggle skipped/unclassified rows. The **Refresh data** button reloads from the database without restarting.
 
