@@ -42,7 +42,7 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
     percentage over. Same design as the Telegram chart (telegram_charts.py)."""
     rows = list(reversed(mb.statuses))
     labels = [f"{s.category}  ·  {_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows]
-    right = 1.0 + bg.OVER_SHOWN + 0.04
+    right = 1.0 + bg.OVER_SHOWN + 0.45   # room past the red extension for its label
     fig = go.Figure()
     fig.add_bar(y=labels, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip",
                 showlegend=False)
@@ -56,12 +56,12 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
                     x=[min(s.used - 1.0, bg.OVER_SHOWN) for _, s in over_rows],
                     base=[1.0] * len(over_rows), orientation="h", marker_color=RED, showlegend=False,
                     text=[f"+{s.used - 1.0:.0%} over" for _, s in over_rows], textposition="outside",
-                    hoverinfo="skip")
+                    cliponaxis=False, hoverinfo="skip")
     if mb.current:
         for i in range(len(rows)):
             fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.4, y1=i + 0.4,
                           line={"color": PACE, "width": 3})
-    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 10},
+    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 70},
                       xaxis={"range": [0, right], "tickvals": [0, 0.25, 0.5, 0.75, 1.0],
                              "ticktext": ["0%", "25%", "50%", "75%", "budget"], "tickformat": ".0%",
                              "showgrid": False},
