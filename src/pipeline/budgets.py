@@ -31,9 +31,7 @@ MIN_BUDGET, MAX_BUDGET = 1, 100_000
 SUGGEST_MONTHS = 3
 
 # Settings (app_settings), changed on the Budget page.
-DIGEST_SETTING = "budget_digest"                 # "off" | "daily" | "weekly"
-DIGEST_CHOICES = ("off", "daily", "weekly")
-DEFAULT_DIGEST = "weekly"
+DIGEST_SETTING = "budget_digest"   # how the budget message comes: see digest_settings()
 ALERTS_SETTING = "budget_alerts"                 # the kinds of instant alert wanted
 ALERT_KINDS = ("near", "over", "pace")
 DIGEST_LAST_SENT = "budget_digest_last_sent"     # London date of the last digest
@@ -298,9 +296,53 @@ def current_budget(parent_id: int, con=None) -> float | None:
 
 # ── Settings: how often messages come, which alerts ───────────────────────────
 
-def digest_frequency() -> str:
-    value = get_setting(DIGEST_SETTING, DEFAULT_DIGEST)
-    return value if value in DIGEST_CHOICES else DEFAULT_DIGEST
+# How often the budget message comes. Each mode is decided on London's date:
+#   off       never
+#   daily     every morning
+#   weekdays  Monday to Friday
+#   days      on the days of the week chosen (any mix: Mon and Thu for twice a week)
+#   monthly   once a month, on the chosen day of the month (1 to 28)
+# The worker runs hourly from 08:00, so the first run of the day sends it.
+DIGEST_MODES = {
+    "off": "Off",
+    "daily": "Every morning",
+    "weekdays": "Weekdays only (Mon to Fri)",
+    "days": "On the days I choose",
+    "monthly": "Once a month, on a day I choose",
+}
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DEFAULT_DIGEST = {"mode": "days", "days": [0], "monthday": 1}   # Mondays, as before
+
+
+def digest_settings() -> dict:
+    """How the budget message is set to come: {"mode", "days", "monthday"}.
+    Reads the older values too ("off", "daily", "weekly")."""
+    value = get_setting(DIGEST_SETTING, None)
+    if value is None:
+        return dict(DEFAULT_DIGEST)
+    if isinstance(value, str):
+        value = {"off": {"mode": "off"}, "daily": {"mode": "daily"},
+                 "weekly": {"mode": "days", "days": [0]}}.get(value, {})
+    mode = value.get("mode") if isinstance(value, dict) else None
+    if mode not in DIGEST_MODES:
+        return dict(DEFAULT_DIGEST)
+    days = sorted({int(d) for d in value.get("days", []) if 0 <= int(d) <= 6}) if mode == "days" else []
+    monthday = min(max(int(value.get("monthday", 1)), 1), 28) if mode == "monthly" else 1
+    return {"mode": mode, "days": days, "monthday": monthday}
+
+
+def set_digest(mode: str, days=(), monthday: int = 1) -> None:
+    """Choose how the budget message comes. Errors say what's wrong, plainly."""
+    if mode not in DIGEST_MODES:
+        raise BudgetError(f"How often must be one of: {', '.join(DIGEST_MODES)}.")
+    days = sorted({int(d) for d in days})
+    if mode == "days":
+        if not days or any(d < 0 or d > 6 for d in days):
+            raise BudgetError("Choose at least one day of the week.")
+    if mode == "monthly" and not (1 <= int(monthday) <= 28):
+        raise BudgetError("Choose a day of the month from 1 to 28.")
+    set_setting(DIGEST_SETTING, {"mode": mode, "days": days if mode == "days" else [],
+                                 "monthday": int(monthday) if mode == "monthly" else 1})
 
 
 def alerts_wanted() -> set[str]:
@@ -308,25 +350,29 @@ def alerts_wanted() -> set[str]:
     return {k for k in (value if isinstance(value, list) else ALERT_KINDS) if k in ALERT_KINDS}
 
 
-def set_digest_frequency(value: str) -> None:
-    if value not in DIGEST_CHOICES:
-        raise BudgetError(f"How often must be one of {', '.join(DIGEST_CHOICES)}.")
-    set_setting(DIGEST_SETTING, value)
-
-
 def set_alerts_wanted(kinds) -> None:
     set_setting(ALERTS_SETTING, [k for k in ALERT_KINDS if k in set(kinds)])
 
 
-def digest_due(now: datetime | None = None) -> bool:
-    """Whether this morning's (daily) or this Monday's (weekly) budget message
-    is still to go. The worker runs hourly from 08:00, so the first run of the
-    day sends it: you wake up to it."""
-    now = now or datetime.now(LONDON)
-    frequency = digest_frequency()
-    if frequency == "off":
+def due_today(settings: dict, day: date) -> bool:
+    """Whether the budget message is due on this day, under these settings."""
+    mode = settings["mode"]
+    if mode == "off":
         return False
-    if frequency == "weekly" and now.weekday() != 0:
+    if mode == "daily":
+        return True
+    if mode == "weekdays":
+        return day.weekday() < 5
+    if mode == "days":
+        return day.weekday() in settings["days"]
+    last = calendar.monthrange(day.year, day.month)[1]
+    return day.day == min(settings["monthday"], last)
+
+
+def digest_due(now: datetime | None = None) -> bool:
+    """Whether today's budget message is still to go: due today, and not sent yet."""
+    now = now or datetime.now(LONDON)
+    if not due_today(digest_settings(), now.date()):
         return False
     return get_setting(DIGEST_LAST_SENT) != now.date().isoformat()
 
