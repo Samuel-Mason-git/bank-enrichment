@@ -9,16 +9,20 @@ Most budgeting tools ask you to sort last month's transactions in one go, by whi
 
 ## What it does
 
-- **📲 Asks at the point of purchase.** Each payment arrives in Telegram with a one-line question: what was this? One tap files it, a sentence explains it.
-- **🧠 Learns your categories.** Claude classifies every payment, proposes new categories for you to approve, and takes a second look at its own placements.
+- **📲 Asks at the point of purchase.** Each payment arrives in Telegram with a one-line question: what was this? One tap files it, a sentence explains it, or you skip it.
+- **⚡ Quick categories and skipping.** Common categories are one tap away on each card. Payments you don't care about can be skipped, or skipped automatically by a rule.
+- **📐 Rules.** Match a payment by merchant, description or amount and it's filed, enriched or skipped without asking. When the classifier notices a pattern that's always the same, it suggests a rule for you to approve.
+- **🧠 Learns your categories.** Claude classifies every payment, proposes new categories for you to approve in Telegram, and takes a second look at its own placements. A monthly review suggests splitting or moving subcategories that have grown muddled.
+- **🔁 Subscriptions.** Recurring payments are spotted automatically, matched by merchant or counterparty, with a view of what they cost per month and per year.
 - **🎯 Budgets per category.** A monthly limit for each, with Telegram messages (daily, weekdays, chosen days, or monthly), alerts when you're near or over, `/budget` on demand, and charts that show how full each one is. See [Budgets](#budgets).
 - **💬 Ask your money.** Plain-English questions answered by a read-only agent that shows its workings, on the dashboard or with `/ask` on Telegram. See [Ask](#ask).
-- **📊 A local dashboard.** Overview, trends, drill-downs, merchants, subscriptions, budgets, and an AI usage page showing what every Claude call cost.
+- **📨 Weekly and monthly summaries** sent to Telegram, catching up on any missed week or month.
+- **📊 A local dashboard.** Overview, over time, transactions, drill-downs, merchants, subscriptions, budgets, rules, and an AI usage page showing what every Claude call cost.
 - **🗄️ Your data, on your box.** Postgres on a server you control, every raw webhook kept exactly as Monzo sent it, nightly backups, and written restore steps.
 
 ## Who it's for
 
-One person's Monzo account, self-hosted on a small cloud server (it runs on Oracle's free tier). It isn't a hosted product and there's no sign-up. It's shared as a working example of an LLM-backed pipeline that's been run for real every day, with the warts left in.
+One person's Monzo account, self-hosted. It's light: the server and worker together run comfortably on a small 1 GB server with swap, which is what it was built on. It isn't a hosted product and there's no sign-up. It's shared as a working example of an LLM-backed pipeline that's been run for real every day, with the warts left in.
 
 ## What you need
 
