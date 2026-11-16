@@ -5,8 +5,8 @@
 #
 # Safe to re-run -- every step checks whether it's already been done.
 #
-#   sudo ./setup_swap.sh          # 2G (default)
-#   sudo ./setup_swap.sh 1G       # or any size fallocate understands
+#   sudo ./scripts/setup_swap.sh          # 2G (default)
+#   sudo ./scripts/setup_swap.sh 1G       # or any size fallocate understands
 set -euo pipefail
 
 SIZE="${1:-2G}"
