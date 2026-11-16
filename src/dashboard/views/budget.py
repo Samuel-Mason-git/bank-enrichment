@@ -32,44 +32,48 @@ GREEN, AMBER, RED, TRACK, PACE = "#2e9d5b", "#e0a526", "#d64545", "rgba(128,128,
 STATE_COLOUR = {"over": RED, "near": AMBER, "pace": AMBER, "ok": GREEN}
 STATE_LABEL = {"over": "🔴 Over", "near": "🟠 Nearly used", "pace": "🟠 Off pace", "ok": "🟢 On track"}
 CARD = "rgba(31, 58, 95, 0.12)"
+MUTED = "#8a94a0"
 FREQUENCY_LABELS = {"off": "Off", "daily": "Every morning", "weekly": "Mondays"}
 ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (from day 7)"}
 
 
 def _fill_chart(mb: bg.MonthBudgets) -> None:
-    """Every bar is the same length: the full length is the budget. Spending
-    fills it; anything over continues in red past the end, labelled with the
-    percentage over. Same design as the Telegram chart (telegram_charts.py)."""
+    """A fixed 0-100% scale, so every bar is comparable. Spending fills each bar
+    to the budget line; an over-budget bar is red and labelled past the line with
+    how far over and by how much. Same design as the Telegram chart."""
     rows = list(reversed(mb.statuses))
     labels = [f"{s.category}  ·  {_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows]
-    right = 1.0 + bg.OVER_SHOWN + 0.04
     fig = go.Figure()
     fig.add_bar(y=labels, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip",
                 showlegend=False)
     fig.add_bar(y=labels, x=[min(s.used, 1.0) for s in rows], orientation="h",
-                marker_color=[STATE_COLOUR[s.state] for s in rows], showlegend=False,
-                customdata=[s.note for s in rows],
-                hovertemplate="%{y}<br>%{customdata}<extra></extra>")
-    over_rows = [(i, s) for i, s in enumerate(rows) if s.used > 1.0]
-    if over_rows:
-        fig.add_bar(y=[labels[i] for i, _ in over_rows],
-                    x=[min(s.used - 1.0, bg.OVER_SHOWN) for _, s in over_rows],
-                    base=[1.0] * len(over_rows), orientation="h", marker_color=RED, showlegend=False,
-                    text=[f"+{s.used - 1.0:.0%} over" for _, s in over_rows], textposition="outside",
-                    hoverinfo="skip")
+                marker_color=[RED if s.state == "over" else STATE_COLOUR[s.state] for s in rows],
+                showlegend=False, customdata=[s.note for s in rows], hovertemplate="%{y}<br>%{customdata}<extra></extra>")
+    for label, s in zip(labels, rows):
+        if s.used > 1.0:
+            fig.add_annotation(x=1.03, y=label, text=f"<b>+{s.used - 1.0:.0%} over</b><br>{_fmt(s.spent - s.budget)} extra",
+                               showarrow=False, xanchor="left", align="left", font={"color": RED})
+    fig.add_shape(type="line", x0=1.0, x1=1.0, y0=-0.6, y1=len(rows) - 0.4,
+                  line={"color": MUTED, "width": 1, "dash": "dash"})
     if mb.current:
         for i in range(len(rows)):
-            fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.4, y1=i + 0.4,
+            fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.45, y1=i + 0.45,
                           line={"color": PACE, "width": 3})
-    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 10},
-                      xaxis={"range": [0, right], "tickvals": [0, 0.25, 0.5, 0.75, 1.0],
-                             "ticktext": ["0%", "25%", "50%", "75%", "budget"], "tickformat": ".0%",
-                             "showgrid": False},
-                      yaxis={"showgrid": False})
+    # Legend entries, drawn as empty traces so the lines above get a key.
+    fig.add_scatter(x=[None], y=[None], mode="lines", line={"color": PACE, "width": 3},
+                    name=f"On pace: where spending would be by now (day {mb.day} of {mb.days})" if mb.current else "",
+                    showlegend=mb.current, hoverinfo="skip")
+    fig.add_scatter(x=[None], y=[None], mode="lines", line={"color": MUTED, "width": 1, "dash": "dash"},
+                    name="Budget (100%)", hoverinfo="skip")
+    fig.update_layout(barmode="overlay", height=150 + 52 * len(rows),
+                      margin={"t": 24, "b": 70, "l": 10, "r": 150},
+                      legend={"orientation": "h", "yanchor": "top", "y": -0.12, "xanchor": "left", "x": 0},
+                      xaxis={"range": [0, 1.42], "tickvals": [0, 0.25, 0.5, 0.75, 1.0],
+                             "ticktext": ["0%", "25%", "50%", "75%", "100%"], "showgrid": False},
+                      yaxis={"showgrid": False},
+                      annotations=[{"x": 1.0, "y": 1.0, "xref": "x", "yref": "paper", "text": "budget",
+                                    "showarrow": False, "yanchor": "bottom", "font": {"color": MUTED}}])
     st.plotly_chart(fig, width="stretch", key="budget_fill")
-    if mb.current:
-        st.caption(f"The dark line on each bar is where on-pace spending would be: {mb.pace:.0%} of the way "
-                   f"through {mb.month:%B} (day {mb.day} of {mb.days}).")
 
 
 def _history_chart() -> None:
