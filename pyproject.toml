@@ -27,6 +27,9 @@ dependencies = [
 [tool.poetry.group.worker.dependencies]
 python-dotenv = ">=1.2.4,<2.0.0"
 anthropic = ">=2.3.0,<2.4.0"
+# Charts sent to Telegram (budget messages, the weekly and monthly summaries),
+# drawn as images without the dashboard's plotly.
+matplotlib = ">=3.11.2,<4.0.0"
 
 # The Streamlit dashboard, on your own machine. Installed by a plain
 # `poetry install` like any other group, so local setup and CI are unchanged.

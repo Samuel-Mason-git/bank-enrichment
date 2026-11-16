@@ -10,6 +10,8 @@ load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 import html
 
 from alerts import send_telegram
+import budget_messages
+import budgets as bg
 from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path, now
 
 LOG_PATH = log_path("monthly_summary.log")
@@ -122,6 +124,31 @@ def send_monthly_report(month_str: str, message: str) -> None:
     log.info(f"Monthly report sent and recorded for {month_str}")
 
 
+def last_months_spend(first: date, months: int = 6) -> list[dict]:
+    """Total spend per month, the `months` up to and including `first`'s."""
+    out = []
+    for i in range(months - 1, -1, -1):
+        start = bg.add_months(first, -i)
+        totals = get_totals_by_role(f"{start}", f"{bg.month_end(start)} 23:59:59")
+        out.append({"month": start, "spent": float(totals["spend"])})
+    return out
+
+
+def send_month_charts(stats: dict, standing) -> None:
+    """After the newest month's text: spend by category, the month's budget
+    bars, and the last six months. Best-effort, newest month only."""
+    import telegram_charts as charts
+    first = date.fromisoformat(f"{stats['month']}-01")
+    trend = last_months_spend(first)
+    for p in trend:
+        p["budget"] = standing.budgeted if standing.statuses else None
+    budget_messages.send_charts(
+        charts.spend_by_category(stats["spend_by_category"], f"Spending, {first:%B %Y}"),
+        charts.budget_bars(standing, "Budgets") if standing.statuses else None,
+        charts.months_trend(trend, "Spending, the last six months"),
+    )
+
+
 def run() -> None:
     run_start = time.time()
     log.info("--- Monthly summary run started ---")
@@ -134,7 +161,13 @@ def run() -> None:
         try:
             stats = get_month_stats(month)
             message = format_monthly_message(stats)
+            first = date.fromisoformat(f"{month}-01")
+            standing = bg.month_budgets(month=first)
+            if standing.statuses:
+                message += "\n" + "\n".join(budget_messages.budget_lines(standing))
             send_monthly_report(month, message)
+            if month == missing[-1]:
+                send_month_charts(stats, standing)
         except Exception as e:
             log.error(f"Failed to send monthly report for {month}: {e}", exc_info=True)
     log.info(f"--- Monthly summary complete in {time.time() - run_start:.2f}s ---")

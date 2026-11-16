@@ -390,12 +390,51 @@ def chart_summary(chart: dict) -> dict:
             "largest": [biggest["label"], biggest["value"]]}
 
 
+# ── Budgets ───────────────────────────────────────────────────────────────────
+#
+# Read through the agent's own login, by the same code as the Budget page. A
+# proposal changes nothing: it goes on the answer, and only you confirming it
+# (on the Ask page, or a Telegram button) sets the budget, through the
+# dashboard's or the server's own login.
+
+def get_budgets(args: dict) -> dict:
+    import budgets as bg
+    month = _date(args.get("month"), "month")
+    mb = bg.month_budgets(month=month, con=agent_con())
+    out = {"month": mb.month.strftime("%B %Y"), "day": mb.day, "days_in_month": mb.days,
+           "share_of_month_gone": round(mb.pace, 2),
+           "budgets": [{"category": st.category, "budget": st.budget, "spent": st.spent, "left": st.left,
+                        "used": f"{st.used:.0%}", "projected_month_end": st.projected,
+                        "status": st.state, "note": st.note} for st in mb.statuses],
+           "no_budget": [_clean({"category": u["category"], "spent": u["spent"], "suggested": u["suggested"]})
+                         for u in mb.unbudgeted]}
+    if mb.statuses:
+        out["totals"] = {"budgeted": mb.budgeted, "spent": mb.spent, "projected_month_end": mb.projected}
+    else:
+        out["note"] = "No budgets are set yet. The user sets them on the Budget page, or confirms one you propose."
+    return out
+
+
+def build_proposal(args: dict) -> dict:
+    """A budget proposal, checked as setting it would be; nothing is written."""
+    import budgets as bg
+    try:
+        category = bg.find_spend_category(args.get("category") or "", con=agent_con())
+        amount = bg.check_amount(args.get("monthly_amount"))
+    except bg.BudgetError as e:
+        raise ToolError(str(e))
+    return {"parent_id": category["id"], "category": category["name"], "amount": amount,
+            "current": bg.current_budget(category["id"], con=agent_con()),
+            "reason": str(args.get("reason") or "").strip()[:300]}
+
+
 TOOL_FUNCTIONS = {
     "get_totals": get_totals,
     "find_transactions": find_transactions,
     "list_subscriptions": list_subscriptions,
     "list_categories": list_categories,
     "run_sql": run_sql,
+    "get_budgets": get_budgets,
 }
 
 # What the page shows while a tool runs.
@@ -406,6 +445,8 @@ TOOL_LABELS = {
     "list_categories": "Reading your categories",
     "run_sql": "Running a query",
     "show_chart": "Drawing a chart",
+    "get_budgets": "Checking your budgets",
+    "propose_budget": "Suggesting a budget",
 }
 
 _PERIOD = {
@@ -479,7 +520,7 @@ TOOLS = [
             "saving | transfer | excluded), skipped (BOOLEAN: leave skipped rows out, as the dashboard does). "
             "Totals must follow the role rules in get_totals' description -- never sum transfers into spend. "
             "The only other tables it can read: subscriptions (name, merchant_name, amount, frequency, active), "
-            "parent_categories, subcategories and category_roles."
+            "parent_categories, subcategories, category_roles and budgets (parent_id, monthly_amount)."
         ),
         "input_schema": {
             "type": "object",
@@ -489,6 +530,36 @@ TOOLS = [
     },
 ]
 
+
+BUDGET_TOOLS = [
+    {
+        "name": "get_budgets",
+        "description": (
+            "The user's monthly budgets (one per spending parent category) for a month, default this one: each "
+            "budget, spent so far, left, used %, where it's heading by month end at the rate so far, and a status "
+            "(ok, pace = heading more than 10% over, near = 80% used, over). Spent counts as the dashboard counts "
+            "spend. Also lists spending categories with no budget, with a suggested amount (the average of the last "
+            "three full months). Use it for 'am I on track', 'what's left for…', 'how are my budgets'."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "month": {"type": "string", "description": "Any date in the month, YYYY-MM-DD. Omit for this month."}}},
+    },
+    {
+        "name": "propose_budget",
+        "description": (
+            "Propose setting (or changing) one category's monthly budget. This changes nothing by itself: the "
+            "user sees your proposal with a button and decides. Only when the user asks for a budget or asks "
+            "what one should be, and only for a spending parent category (exact name from list_categories or "
+            "get_budgets). Base the amount on their actual spending (get_budgets' suggestion, or totals), and "
+            "say in your answer that it's waiting for them to confirm. One call per category."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category": {"type": "string", "description": "The parent category, exactly as named."},
+            "monthly_amount": {"type": "number", "description": "The monthly budget in £ (1 to 100,000)."},
+            "reason": {"type": "string", "description": "One short sentence: why this amount."}},
+            "required": ["category", "monthly_amount"]},
+    },
+]
 
 CHART_TOOL = {
     "name": "show_chart",
@@ -571,6 +642,7 @@ class Answer:
     cost_usd: float = 0.0
     stop_reason: str | None = None
     charts: list[dict] = field(default_factory=list)   # from show_chart, for the page to draw
+    proposals: list[dict] = field(default_factory=list)  # from propose_budget: waiting for you to confirm
 
 
 def spent_today() -> float:
@@ -610,7 +682,7 @@ class FinanceAgent:
             # Cached: the tools and instructions are the same on every call
             # of the day, so each follow-up only pays full price for what's new.
             system=[{"type": "text", "text": system_prompt(today, self.channel), "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS + [CHART_TOOL] if self.channel == "dashboard" else TOOLS,
+            tools=TOOLS + BUDGET_TOOLS + ([CHART_TOOL] if self.channel == "dashboard" else []),
             messages=self.messages, **extra,
         )
         tokens = llm_calls._tokens(getattr(response, "usage", None))
@@ -660,6 +732,15 @@ class FinanceAgent:
                         except Exception as e:
                             log.exception("finance agent chart failed")
                             output, is_error = f"The chart failed: {type(e).__name__}: {e}"[:500], True
+                    elif block.name == "propose_budget":
+                        try:
+                            proposal = build_proposal(dict(block.input or {}))
+                            answer.proposals.append(proposal)
+                            output = _json({"proposal_shown": True, "applied": False,
+                                            "note": "Waiting for the user to confirm it with a button; nothing has changed."})
+                            is_error = False
+                        except ToolError as e:
+                            output, is_error = str(e), True
                     else:
                         output, is_error = run_tool(block.name, block.input)
                     step = Step(block.name, dict(block.input or {}), output, is_error)

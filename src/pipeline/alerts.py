@@ -51,6 +51,32 @@ def send_telegram(text: str) -> bool:
         return False
     return True
 
+
+def send_telegram_photo(png: bytes | None, caption: str = "") -> bool:
+    """One image (a chart) to you on Telegram, with an optional HTML caption
+    (Telegram allows 1,024 characters). Never raises, like send_telegram; a
+    missing image is simply not sent."""
+    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    if not png:
+        return False
+    if not token or not chat_id:
+        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram image not sent")
+        return False
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
+            files={"photo": ("chart.png", png, "image/png")}, timeout=30,
+        )
+    except Exception as e:
+        log.warning(f"Could not reach Telegram: {type(e).__name__}")
+        return False
+    if not response.ok:
+        log.warning(f"Telegram rejected an image: HTTP {response.status_code}")
+        return False
+    return True
+
+
 _sent: set[str] = set()
 _lock = threading.Lock()
 

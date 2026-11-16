@@ -270,11 +270,16 @@ share(df=df, filtered=filtered, prev_filtered=prev_filtered, all_parents=all_par
       subs_by_parent=subs_by_parent, date_from=date_from, date_to=date_to)
 
 _views = Path(__file__).parent / "views"
-# Grouped, so the top bar holds three menus rather than a dozen tabs.
+# Grouped, so the top bar holds three menus rather than a dozen tabs -- with
+# Ask and Budget as links of their own beside them (an unnamed section's pages
+# sit in the top bar directly).
 page = st.navigation({
+    "": [
+        st.Page(_views / "ask.py", title="Ask", icon="💬"),
+        st.Page(_views / "budget.py", title="Budget", icon="🎯"),
+    ],
     "Your money": [
         st.Page(_views / "overview.py", title="Overview", default=True),
-        st.Page(_views / "ask.py", title="Ask"),
         st.Page(_views / "over_time.py", title="Over Time"),
         st.Page(_views / "transactions.py", title="Transactions"),
         st.Page(_views / "drill_down.py", title="Category Drill-Down"),

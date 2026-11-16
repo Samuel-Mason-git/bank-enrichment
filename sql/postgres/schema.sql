@@ -217,6 +217,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A monthly spending budget per parent category (spend categories only: the
+-- Budget page and budgets.py won't set one on income, savings or transfers).
+-- What counts against it is the category's outgoing spend, as the Overview
+-- counts it. Recorded in settings_changes like the other settings.
+CREATE TABLE IF NOT EXISTS budgets (
+    parent_id      INTEGER       PRIMARY KEY REFERENCES parent_categories (id) ON DELETE CASCADE,
+    monthly_amount NUMERIC(12,2) NOT NULL CHECK (monthly_amount > 0),
+    updated_at     TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+-- The budget alerts already sent, so each goes out once per category per
+-- month: 'near' (80% used), 'over' (over budget), 'pace' (on course to end
+-- the month more than 10% over).
+CREATE TABLE IF NOT EXISTS budget_alerts (
+    parent_id INTEGER     NOT NULL REFERENCES parent_categories (id) ON DELETE CASCADE,
+    month     DATE        NOT NULL,
+    kind      VARCHAR(8)  NOT NULL CHECK (kind IN ('near', 'over', 'pace')),
+    sent_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (parent_id, month, kind)
+);
+
 CREATE TABLE IF NOT EXISTS summaries (
     period         VARCHAR(5)    NOT NULL CHECK (period IN ('week', 'month')),
     period_key     VARCHAR(10)   NOT NULL,   -- '2026-W43' / '2026-10'
@@ -401,7 +422,7 @@ DO $$
 DECLARE t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY['rules', 'parent_categories', 'subcategories', 'category_roles', 'subscriptions',
-                              'app_settings'] LOOP
+                              'app_settings', 'budgets'] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS record_settings_change ON %I', t);
         EXECUTE format('CREATE TRIGGER record_settings_change AFTER INSERT OR UPDATE OR DELETE ON %I '
                        'FOR EACH ROW EXECUTE FUNCTION record_settings_change()', t);
@@ -637,15 +658,16 @@ FROM per_merchant WHERE n <= 3;
 
 -- The Ask page's agent queries through its own login, bank_enrichment_agent
 -- (made on the data box by data-vault's new_reader.sh), which can read only
--- what is granted here: the money view it answers from, and the subscriptions
--- and categories behind its other tools. Not the raw tables behind the view,
+-- what is granted here: the money view it answers from, and the subscriptions,
+-- categories and budgets behind its other tools. Not the raw tables behind the view,
 -- not llm_calls, rules or proposals. Granted on every start, after the views
 -- above are made again, since dropping a view drops its grants. No login yet,
 -- nothing to grant.
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'bank_enrichment_agent') THEN
-        GRANT SELECT ON transaction_roles, subscriptions, parent_categories, subcategories, category_roles
+        GRANT SELECT ON transaction_roles, subscriptions, parent_categories, subcategories, category_roles,
+                        budgets
             TO bank_enrichment_agent;
     END IF;
 END $$;

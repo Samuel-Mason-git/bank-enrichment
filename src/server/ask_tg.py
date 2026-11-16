@@ -20,6 +20,7 @@ import html
 import logging
 import os
 import re
+import secrets
 import time
 
 import finance_agent as fa
@@ -39,6 +40,8 @@ HELP = ("🆕 New chat. Ask anything about your money, for example:\n\n"
 NOT_SET_UP = ("/ask isn't set up on the server: it needs AGENT_DB_USER, AGENT_DB_PASSWORD and CLAUDE_SECRET "
               "in config/.env (see SETUP.md).")
 FAILED = "Something went wrong answering that. Try again in a moment."
+PROPOSAL_SECONDS = 30 * 60
+EXPIRED = "That suggestion has expired or was already answered. Ask again with /ask."
 
 _COMMAND = re.compile(r"^/ask(?:@\w+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
 _TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
@@ -110,6 +113,8 @@ class AskChats:
         self._clock = clock
         self._chats: dict[int, dict] = {}
         self._tasks: set[asyncio.Task] = set()
+        # Budget proposals waiting for a tap: token -> {"proposal", "chat_id", "expires"}.
+        self._proposals: dict[str, dict] = {}
 
     def start(self, bot, chat_id: int, question: str) -> asyncio.Task:
         """Answer in the background, so the webhook can return straight away."""
@@ -133,6 +138,7 @@ class AskChats:
         chat["last"] = self._clock()
 
         # One question at a time per chat: a second /ask waits for the first.
+        answer = None
         async with chat["lock"]:
             await _typing(bot, chat_id)   # straight away, before the agent starts
             typing = asyncio.create_task(_keep_typing(bot, chat_id))
@@ -152,3 +158,42 @@ class AskChats:
                 typing.cancel()
             chat["last"] = self._clock()
         bot.send_message(chat_id, reply)
+        for proposal in (answer.proposals if answer is not None else []):
+            self._offer(bot, chat_id, proposal)
+
+    def _offer(self, bot, chat_id: int, proposal: dict) -> None:
+        """A budget proposal, with buttons. It changes nothing until tapped."""
+        token = secrets.token_urlsafe(9)
+        self._proposals[token] = {"proposal": proposal, "chat_id": chat_id,
+                                  "expires": self._clock() + PROPOSAL_SECONDS}
+        change = (f"£{proposal['amount']:,.0f} a month (now £{proposal['current']:,.0f})" if proposal.get("current")
+                  else f"£{proposal['amount']:,.0f} a month")
+        reason = f"\n<i>{html.escape(proposal['reason'], quote=False)}</i>" if proposal.get("reason") else ""
+        bot.send_message(
+            chat_id, f"💡 Budget for <b>{html.escape(proposal['category'], quote=False)}</b>: {change}{reason}",
+            reply_markup={"inline_keyboard": [[
+                {"text": "✅ Set it", "callback_data": f"budgetprop:set:{token}"},
+                {"text": "✖ No thanks", "callback_data": f"budgetprop:no:{token}"},
+            ]]},
+        )
+
+    def resolve(self, chat_id: int, token: str, action: str) -> str:
+        """A tap on a proposal's button: set the budget (through this server's
+        own login) or leave it. Each proposal answers once, in its own chat,
+        within half an hour."""
+        import budgets as bg
+        item = self._proposals.pop(token, None)
+        if item is None or item["chat_id"] != chat_id or self._clock() > item["expires"]:
+            return EXPIRED
+        p = item["proposal"]
+        if action != "set":
+            return f"👍 Left {html.escape(p['category'], quote=False)} as it was."
+        try:
+            amount = bg.set_budget(p["parent_id"], p["amount"])
+        except bg.BudgetError as e:
+            return f"Not set: {html.escape(str(e), quote=False)}"
+        except Exception as e:
+            log.error(f"Setting a proposed budget failed: {type(e).__name__}: {e}")
+            return FAILED
+        log.info("Set a budget from an /ask proposal")
+        return f"✅ <b>{html.escape(p['category'], quote=False)}</b> now has a £{amount:,.0f} monthly budget."
