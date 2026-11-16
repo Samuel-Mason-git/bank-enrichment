@@ -215,7 +215,31 @@ The daily processing script automatically sends two types of Telegram summary.
 - Net (saved or overspent)
 - Full breakdown by parent category for both spend and income
 
+The weekly summary also gets this week's budget lines and charts, and the monthly summary gets the month's budgets, a spending chart and a six-month trend (see [Budgets](#budgets)).
+
 Both summaries catch up automatically if the script was inactive — a summary is sent for each missed period in order, and each is recorded in the database so it is never sent twice.
+
+## Budgets
+
+A budget is a monthly amount for one spending category, for example Food & Drink £500. Only spending categories can have one. Income, savings, investments and transfers can't.
+
+**What counts.** A category's spending is its outgoing spend-role money, the same way the Overview counts it. Transfers, pot moves and refunds never use up a budget. Skipped transactions are left out. An unclassified payment counts once it's classified.
+
+**The Budget page** (top bar, beside Ask):
+- Set a monthly amount per category. Categories without one get a suggestion: the average of your last three full months, rounded up to £10. Setting a budget to 0 removes it.
+- Summary cards: budgeted, spent, left, and where the month is heading at its current rate.
+- A bar per category on a fixed 0–100% scale, so they compare directly. A category that's over its budget fills to the line in red and is labelled with how far over and by how much. The solid dark line is where spending would be by now if spread evenly through the month. The dashed line is the budget.
+- A six-month chart of spending against your current budgets.
+
+**Telegram messages.** Set on the Budget page, under the summary:
+- **The budget message** (text, and a chart of bars): off, every morning, weekdays only, on the days of the week you choose (twice a week is two days), or once a month on a day you pick, e.g. payday. Mondays is the default. The worker sends it at its first run on that day, from 08:00, so a morning message is there when you wake up.
+- **Alerts**, each at most once per category per month, each on or off: 80% used, over budget, and off pace (from day 7, heading for more than 10% over).
+- The weekly summary gets the budget lines and charts for the newest week. The monthly summary gets the budget lines, a spending-by-category chart, and a six-month trend.
+- **`/budget`** sends this month's budgets on demand: the text and the chart. It works only from your own chat.
+
+**The Ask agent** can read budgets ("am I on track?"), and can suggest a budget for you to confirm. Its suggestion shows a **Set it / Dismiss** card on the Ask page, and two buttons on Telegram. Nothing changes until you press Set it. A Telegram suggestion expires after 30 minutes.
+
+**Where it's kept.** The `budgets` table is backed up nightly with the other settings (see the data box in data-vault). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
 
 ## LLM Classification
 
@@ -397,6 +421,7 @@ excluding something hides it from view, it does not delete or reclassify it.
 |-----|-------------|
 | Overview | Standard vs Actual metric cards (Income, Spend, Net, Savings Rate, Invested, Saved, Transferred/Excluded), each with a colored delta badge vs the previous period (direction-aware — e.g. a rise in Spend reads as unfavorable, a rise in Income as favorable). Outgoings/Incomings breakdown charts with a metric selector and Category/Subcategory toggle. |
 | Ask | Questions about your money in plain English, answered from your own data by an agent (see [Ask](#ask) below). Ignores the sidebar: the dates come from the question. |
+| Budget | Monthly budgets per spending category: a fixed 0–100% bar for each, with over-budget spending in red and labelled, a pace line, suggestions for categories without one, a six-month chart, and the Telegram settings (see [Budgets](#budgets)). |
 | Over Time | Average-per-period stat cards; a Savings & Investing chart (Savings Rate %, Investment Rate %, and Actual Savings £ together); standalone Invested and Saved trend charts; Spending Over Time / Income Over Time sections with per-category and per-subcategory monthly trend lines (each with a Total line and a 3-month rolling average overlaid); a Monthly Totals table (collapsed by default) with a tooltip on every column header. |
 | Transactions | Full filterable table with a few "fun fact" stat cards up top (unique merchants, biggest transaction, busiest day, etc). Category and Subcategory are edited via dropdowns restricted to your existing taxonomy, so labels stay consistent; Date and Context are also editable; Merchant and Description are read-only. |
 | Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved — Invested/Saved already net deposits against withdrawals; Transferred/Excluded splits into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
@@ -469,32 +494,42 @@ at any point using a new taxonomy and it will classify correctly every time.
 ```
 ├── src/
 │   ├── server/                # FastAPI server (runs in Docker on the server)
-│   │   ├── main.py            # Webhooks, Telegram callbacks, the server's dashboard
+│   │   ├── main.py            # Webhooks, Telegram callbacks and commands (/ask, /budget), the server's dashboard
+│   │   ├── ask_tg.py          # /ask on Telegram: the finance agent's conversations and budget proposals
+│   │   ├── telegram.py        # Telegram bot logic (messages, photos, the typing indicator)
 │   │   ├── check_rules.py     # Rule matching logic
-│   │   ├── telegram.py        # Telegram bot logic
 │   │   ├── follow_up_tg.py    # Follow-ups, and sending the cards for new proposals
 │   │   ├── monzo_oauth.py     # Monzo API access, refreshed automatically
 │   │   └── server_db.py       # The server's database functions (psycopg)
 │   ├── pipeline/              # The pipeline's runs (the server's worker container; can be run by hand)
 │   │   ├── worker.py          # Runs process.py hourly, 08:00–22:00 London time
-│   │   ├── process.py         # The run: classify, act on decisions, send summaries
-│   │   ├── llm_labelling.py   # LLM classification (Claude) — Passes 0-3
+│   │   ├── process.py         # The run: classify, act on decisions, send summaries and budget messages
+│   │   ├── llm_labelling.py   # LLM classification (Claude): the models per pass are set in JOBS
+│   │   ├── llm_calls.py       # Every call to Claude: recorded, costed, and retried
 │   │   ├── placement_judge.py # The second look at each placement
 │   │   ├── category_proposals.py  # Real-time new-category approval (holds transactions behind a Telegram card)
 │   │   ├── taxonomy_review.py # Monthly taxonomy review (cluster detection + Telegram cards)
 │   │   ├── rule_suggestions.py    # Spots patterns worth a rule
-│   │   ├── weekly_summary.py, monthly_summary.py  # Telegram summaries
-│   │   ├── alerts.py          # Telegram alerts when something fails
+│   │   ├── weekly_summary.py, monthly_summary.py  # Telegram summaries (with budget lines and charts)
+│   │   ├── budgets.py         # Budgets: what's spent, the pace, alerts, and the settings for the budget message
+│   │   ├── budget_messages.py # The budget message, its alerts, and /budget
+│   │   ├── telegram_charts.py # Charts drawn as images for Telegram (matplotlib)
+│   │   ├── finance_agent.py   # The Ask agent: answers questions from the database, with its tools
+│   │   ├── agent_eval.py      # How accurate the Ask agent is, on your own data (manual, costs API credit)
+│   │   ├── model_eval.py      # Compares classifier models on labelled history (manual, costs API credit)
+│   │   ├── alerts.py          # Telegram messages and alerts, including photos
+│   │   ├── activity.py        # Warnings and errors into the database, for the Activity page
 │   │   ├── judge_backlog.py   # Manual: a second look at older history
 │   │   └── database_functions.py  # The database library, shared with the dashboard — includes a CLI (run the file directly) to print stats/transactions
 │   └── dashboard/             # The Streamlit dashboard, on your own machine
-│       ├── dashboard.py       # Entry point: loads the data, the sidebar's filters, the page navigation
-│       ├── views/             # One script per page: overview, over_time, transactions, drill_down, merchants, subscriptions, rules, settings
+│       ├── dashboard.py       # Entry point: loads the data, the sidebar's filters, the page navigation (Ask and Budget in the top bar)
+│       ├── views/             # One script per page: ask, budget, overview, over_time, transactions, drill_down, merchants, subscriptions, queue, payment, rules, settings, activity, ai
 │       ├── ui.py              # Shared drawing helpers: money formatting, metric cards
 │       ├── page_context.py    # Hands the sidebar's filtered data to the open page
+│       ├── payment_actions.py # Labels for the activity log and the AI page
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/rule/chart helpers) — unit tested standalone
 ├── sql/
-│   └── postgres/schema.sql    # The database: tables, views (applied by the server on every start)
+│   └── postgres/schema.sql    # The database: tables, views and grants (applied by the server on every start)
 ├── config/
 │   └── .env.example           # Environment variable template
 ├── Dockerfile                 # The server and worker image (src/server + src/pipeline, not the dashboard)
@@ -510,7 +545,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | Reverse proxy | Caddy (automatic HTTPS) |
 | Notifications | Telegram Bot API |
 | Database | Postgres 18 on a separate data box; the server and worker reach it on the cloud's private network, the dashboard over WireGuard |
-| LLM classification | Anthropic Claude (Sonnet) |
+| LLM | Anthropic Claude: Haiku 5.5 for matching existing categories, the placement judge and the Ask agent; Sonnet 4.6 for picking and suggesting categories. Chosen by the accuracy evals (`agent_eval.py`, `model_eval.py`) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |
 | CI/CD | GitHub Actions — tests (with coverage, which must stay at 80% or more) and server-image build/smoke tests run on every PR; Dependabot proposes dependency updates weekly; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
