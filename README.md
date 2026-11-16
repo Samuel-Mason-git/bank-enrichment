@@ -567,7 +567,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | Server | Python, FastAPI, psycopg |
 | Reverse proxy | Caddy (automatic HTTPS) |
 | Notifications | Telegram Bot API |
-| Database | Postgres 18 on a separate host that the server and your machine reach privately (the author uses WireGuard) |
+| Database | Postgres 18, on any host the server can reach (and your machine, for the dashboard) |
 | LLM | Anthropic Claude: Haiku 5.5 for matching existing categories, the placement judge and the Ask agent; Sonnet 4.6 for picking and suggesting categories. Chosen by the accuracy evals (`agent_eval.py`, `model_eval.py`) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |

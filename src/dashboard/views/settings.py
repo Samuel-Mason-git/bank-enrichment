@@ -452,8 +452,8 @@ with st.expander(
     + (f" — last {backup_label(_backups[0])}" if _backups else " — none yet")
 ):
     st.caption(
-        "The database is backed up every night wherever it lives (for this setup, the "
-        "data box). This is only a copy you take yourself before trying something: every "
+        "Back up the database however you run it; this project doesn't include backups. "
+        "This is only a copy you take yourself before trying something: every "
         f"table saved as a Parquet file in a folder under `{backup_dir()}` (set BACKUP_DIR "
         f"to change it). The most recent {BACKUPS_KEPT} are kept, and any can be deleted below. "
         "Nothing here is ever taken automatically — and every change to a transaction is "

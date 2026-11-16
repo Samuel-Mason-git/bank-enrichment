@@ -123,7 +123,7 @@ st.header("Ask")
 
 if not fa.is_configured():
     st.info("The Ask page needs the agent's own read-only database login: add AGENT_DB_USER and "
-            "AGENT_DB_PASSWORD to config/.env (made with data-vault's new_reader.sh), then restart the dashboard.")
+            "AGENT_DB_PASSWORD to config/.env (see SETUP.md for creating the role), then restart the dashboard.")
     st.stop()
 if not os.getenv("CLAUDE_SECRET"):
     st.info("The Ask page needs CLAUDE_SECRET in config/.env.")
