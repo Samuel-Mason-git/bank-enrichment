@@ -33,7 +33,6 @@ STATE_COLOUR = {"over": RED, "near": AMBER, "pace": AMBER, "ok": GREEN}
 STATE_LABEL = {"over": "🔴 Over", "near": "🟠 Nearly used", "pace": "🟠 Off pace", "ok": "🟢 On track"}
 CARD = "rgba(31, 58, 95, 0.12)"
 MUTED = "#8a94a0"
-FREQUENCY_LABELS = {"off": "Off", "daily": "Every morning", "weekly": "Mondays"}
 ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (from day 7)"}
 
 
@@ -148,21 +147,35 @@ def _edit_budgets(mb: bg.MonthBudgets) -> None:
 
 
 def _telegram_settings(mb_now: bg.MonthBudgets) -> None:
-    st.caption("Sent by the worker after its runs. Its first run each day is at 08:00, so the morning message is "
+    st.caption("Sent by the worker after its runs. Its first run each day is at 08:00, so a morning message is "
                "there when you wake up. Each alert comes at most once per category per month. Nothing is sent "
                "while there are no budgets.")
-    frequency = bg.digest_frequency()
+    current = bg.digest_settings()
     with st.form("budget_telegram_form"):
-        choice = st.radio("How often to get the budget message (text and a chart of bars)",
-                          list(FREQUENCY_LABELS), format_func=FREQUENCY_LABELS.get,
-                          index=list(FREQUENCY_LABELS).index(frequency), horizontal=True, key="budget_frequency")
+        mode = st.selectbox("How often to get the budget message (text and a chart of bars)",
+                            list(bg.DIGEST_MODES), format_func=bg.DIGEST_MODES.get,
+                            index=list(bg.DIGEST_MODES).index(current["mode"]), key="budget_mode")
+        days, monthday = [], current["monthday"]
+        if mode == "days":
+            day_names = st.multiselect("On these days", bg.WEEKDAYS,
+                                       default=[bg.WEEKDAYS[d] for d in current["days"]] or [bg.WEEKDAYS[0]],
+                                       key="budget_days")
+            days = [bg.WEEKDAYS.index(n) for n in day_names]
+        elif mode == "monthly":
+            monthday = st.number_input("On this day of the month (1 to 28, e.g. your payday)", min_value=1,
+                                       max_value=28, value=int(current["monthday"]), step=1, key="budget_monthday")
         wanted = st.multiselect("Instant alerts", list(ALERT_LABELS), default=sorted(bg.alerts_wanted()),
                                 format_func=ALERT_LABELS.get, key="budget_alert_kinds")
         if st.form_submit_button("Save", type="primary"):
-            bg.set_digest_frequency(choice)
-            bg.set_alerts_wanted(wanted)
-            st.success(f"Budget message: {FREQUENCY_LABELS[choice].lower()}. Alerts: "
-                       + (", ".join(ALERT_LABELS[k].lower() for k in wanted) or "none") + ".")
+            try:
+                bg.set_digest(mode, days=days, monthday=int(monthday))
+                bg.set_alerts_wanted(wanted)
+                st.success("Saved: " + bg.DIGEST_MODES[mode].lower()
+                           + (f" ({', '.join(bg.WEEKDAYS[d] for d in sorted(days))})" if mode == "days" else "")
+                           + (f" on day {int(monthday)}" if mode == "monthly" else "")
+                           + ". Alerts: " + (", ".join(ALERT_LABELS[k].lower() for k in wanted) or "none") + ".")
+            except bg.BudgetError as e:
+                st.error(str(e))
     if st.button("Send me the budget message now", key="budget_send_now", disabled=not mb_now.statuses):
         if budget_messages.send_digest(mb_now):
             st.success("Sent to Telegram. It doesn't count as today's message, so the usual one still comes.")

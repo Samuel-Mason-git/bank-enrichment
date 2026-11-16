@@ -117,19 +117,44 @@ def test_history_is_spend_in_budgeted_categories_against_todays_budgets(shop):
 
 # ── how often, and which alerts ───────────────────────────────────────────────
 
-def test_the_digest_is_due_once_a_day_or_once_on_mondays(shop):
+def test_the_digest_is_due_on_the_chosen_days_once_a_day(shop):
     monday_8am = datetime(2026, 10, 12, 8, 0, tzinfo=bg.LONDON)
     tuesday = datetime(2026, 10, 13, 8, 0, tzinfo=bg.LONDON)
-    assert bg.digest_frequency() == "weekly"                          # until chosen
+    assert bg.digest_settings() == {"mode": "days", "days": [0], "monthday": 1}   # Mondays, until changed
     assert bg.digest_due(monday_8am) and not bg.digest_due(tuesday)
     bg.digest_sent(monday_8am)
-    assert not bg.digest_due(monday_8am.replace(hour=9))              # not twice the same day
-    bg.set_digest_frequency("daily")
+    assert not bg.digest_due(monday_8am.replace(hour=9))                       # not twice the same day
+    bg.set_digest("daily")
     assert bg.digest_due(tuesday)
-    bg.set_digest_frequency("off")
+    bg.set_digest("off")
     assert not bg.digest_due(tuesday)
     with pytest.raises(bg.BudgetError):
-        bg.set_digest_frequency("hourly")
+        bg.set_digest("hourly")
+
+
+@pytest.mark.parametrize("mode, days, monthday, day, expect", [
+    ("weekdays", (), 1, date(2026, 10, 12), True),        # Monday
+    ("weekdays", (), 1, date(2026, 10, 17), False),       # Saturday
+    ("days", (0, 3), 1, date(2026, 10, 15), True),        # twice a week: Thursday
+    ("days", (0, 3), 1, date(2026, 10, 14), False),       # Wednesday
+    ("monthly", (), 15, date(2026, 10, 15), True),        # payday
+    ("monthly", (), 15, date(2026, 10, 16), False),
+    ("monthly", (), 28, date(2026, 2, 28), True),         # the 28th always exists
+])
+def test_each_timing_is_due_on_its_own_days(shop, mode, days, monthday, day, expect):
+    bg.set_digest(mode, days=days, monthday=monthday)
+    assert bg.due_today(bg.digest_settings(), day) is expect
+
+
+def test_timing_choices_are_checked_and_old_values_still_read(shop):
+    with pytest.raises(bg.BudgetError, match="at least one day"):
+        bg.set_digest("days", days=())
+    with pytest.raises(bg.BudgetError, match="1 to 28"):
+        bg.set_digest("monthly", monthday=31)
+    dbf.set_setting(bg.DIGEST_SETTING, "weekly")                              # saved by an earlier version
+    assert bg.digest_settings()["mode"] == "days" and bg.digest_settings()["days"] == [0]
+    dbf.set_setting(bg.DIGEST_SETTING, "daily")
+    assert bg.digest_settings()["mode"] == "daily"
 
 
 def test_alerts_are_the_wanted_ones_once_per_category_per_month(shop):
@@ -186,7 +211,7 @@ def test_a_failed_send_is_tried_again_next_run(shop, monkeypatch):
     monkeypatch.setattr(bg, "today_london", lambda: date(2026, 10, 12))
     monkeypatch.setattr(budget_messages, "send_telegram", lambda t: False)
     bg.set_budget(_pid(shop, "Shopping"), 50)
-    bg.set_digest_frequency("daily")
+    bg.set_digest("daily")
     assert budget_messages.run(datetime(2026, 10, 12, 8, 0, tzinfo=bg.LONDON)) == {"digest": False, "alerts": 0}
     assert bg.digest_due(datetime(2026, 10, 12, 9, 0, tzinfo=bg.LONDON))
     assert bg.alerts_due(bg.month_budgets(today=date(2026, 10, 12)))
