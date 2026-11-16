@@ -41,6 +41,10 @@
 │       ├── page_context.py    # Hands the sidebar's filtered data to the open page
 │       ├── payment_actions.py # Labels for the activity log and the AI page
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/rule/chart helpers) — unit tested standalone
+├── scripts/
+│   ├── run_dashboard_wsl.sh   # Runs the dashboard in WSL (launch_dashboard.bat calls it)
+│   ├── run_process_wsl.sh     # Runs the pipeline once, by hand, in WSL
+│   └── setup_swap.sh          # Adds swap to the server (rerunnable)
 ├── sql/
 │   └── postgres/schema.sql    # The database: tables, views and grants (applied by the server on every start)
 ├── config/

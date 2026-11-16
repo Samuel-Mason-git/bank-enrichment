@@ -32,7 +32,7 @@ cd bank-enrichment
 **On a small instance (e.g. Oracle's free 1GB-RAM AMD Micro), add a swapfile too.** With no swap, any brief memory spike — a burst of webhooks, a dependency update, Caddy renewing a certificate — gets a container killed outright mid-request. Swap turns that into a moment of slowness instead. From the repo root:
 
 ```bash
-sudo ./setup_swap.sh        # 2G by default; pass a size to change it, e.g. sudo ./setup_swap.sh 1G
+sudo ./scripts/setup_swap.sh        # 2G by default; pass a size to change it, e.g. sudo ./scripts/setup_swap.sh 1G
 ```
 
 It creates `/swapfile`, adds it to `/etc/fstab` so it survives reboots, and sets `vm.swappiness=10` so the system only swaps under real memory pressure rather than leaning on it day to day. It's safe to re-run — anything already in place is left alone. Check with `free -h`: the `Swap:` line should show the size you chose.
@@ -245,7 +245,7 @@ reaches the database through the Windows tunnel — nothing to set up inside WSL
 > 1. `wsl --install -d Ubuntu-24.04` (one-time; needs a reboot the first time WSL itself is installed)
 > 2. Inside the WSL shell: install Poetry and run `poetry install` there, against this same repo at its `/mnt/c/...`
 >    path — you don't need a second clone.
-> 3. Use `run_dashboard_wsl.sh` (dashboard) and `run_process_wsl.sh` (pipeline only) instead of calling `poetry run`
+> 3. Use `scripts/run_dashboard_wsl.sh` (dashboard) and `scripts/run_process_wsl.sh` (pipeline only) instead of calling `poetry run`
 >    directly — both just `cd` into the project and call Poetry's WSL install. Step 6 below shows how
 >    `launch_dashboard.bat` calls the first.
 > 4. A Windows-side Poetry install (`poetry env info --executable`) can still be pointed at from an editor for
@@ -335,7 +335,7 @@ binary but allow running it as a Python module. This alone won't help if Smart A
 itself — see below.)
 
 **Windows, routing through WSL:** double-click `launch_dashboard.bat` (or the desktop shortcut below) — it opens a
-console window running `run_dashboard_wsl.sh` in WSL, then opens your browser once the dashboard is actually ready.
+console window running `scripts/run_dashboard_wsl.sh` in WSL, then opens your browser once the dashboard is actually ready.
 Closing the console window stops it.
 
 It opens in your browser automatically. Tabs:
