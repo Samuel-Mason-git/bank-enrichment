@@ -2,7 +2,7 @@
 
 [← Back to the README](../../README.md)
 
-A payment that no rule settles, and that Claude can't place with confidence, arrives in Telegram with a one-line question while you still remember it: one tap files it, a sentence explains it, or you skip it. Payments a rule settles never reach Telegram. Follow-ups and the rest of the flow are in [How it works](how-it-works.md).
+A payment that no rule settles arrives in Telegram with a one-line question while you still remember it: one tap files it, a sentence explains it, or you skip it. Your answer, or a tap, is the context Claude classifies from. Payments a rule settles never reach Telegram. Follow-ups and the rest of the flow are in [How it works](how-it-works.md).
 
 ## Why context at the point of purchase
 
@@ -10,7 +10,7 @@ Traditional budgeting tools ask you to categorise transactions at the end of
 the month. By then, you've forgotten why you spent £12 at a service station or 
 what that random Amazon charge was.
 
-When a payment needs context the system can't supply itself, it sends you a Telegram question the moment it happens 
+Every payment a rule doesn't cover sends you a Telegram question the moment it happens 
 and asks for one sentence of context. That's it. Thirty seconds while the memory 
 is still there.
 

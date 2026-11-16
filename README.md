@@ -1,15 +1,15 @@
 # Bank Enrichment
 
-**Self-hosted personal finance that learns your categories as you go.** Rules and Claude file each payment; when one needs context, Telegram asks with a one-line question and quick taps. Budgets, summaries and a local dashboard sit on top.
+**Self-hosted personal finance that learns your categories as you go.** Rules file the payments you've already settled. For the rest, Telegram asks a one-line question, and your answer is the context Claude classifies from. Budgets, summaries and a local dashboard sit on top.
 
 [![CI](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-Most budgeting tools ask you to sort last month's transactions in one go, by which point you've forgotten why you spent £12 at a service station. Bank Enrichment asks about the payments that need it, while you still remember, and keeps what it learns.
+Most budgeting tools ask you to sort last month's transactions in one go, by which point you've forgotten why you spent £12 at a service station. Bank Enrichment asks about the payments rules don't cover, while you still remember, and keeps what it learns.
 
 ## What it does
 
-- **📲 Asks only when it needs context.** A payment that no rule settles and Claude can't place with confidence arrives in Telegram with a one-line question and quick taps for the merchants you pay most. [Details](docs/capture/point-of-purchase.md)
+- **📲 Asks about what rules don't cover.** A payment no rule settles arrives in Telegram with a one-line question and quick taps for the merchants you pay most. Your answer, or a tap, is the context Claude classifies from. [Details](docs/capture/point-of-purchase.md)
 - **📐 Rules.** Match a payment and it's filed, enriched or skipped without asking, and never reaches Telegram. [Rules](docs/capture/rules.md)
 - **🧠 Learns your categories.** Claude classifies every payment, proposes new categories for you to approve, and takes a second look at its own placements. [Classification](docs/classification/classification.md), [new categories](docs/classification/new-categories.md), [second look](docs/classification/second-look.md)
 - **🔁 Subscriptions.** Recurring payments are spotted automatically. [Subscriptions](docs/capture/subscriptions.md)
