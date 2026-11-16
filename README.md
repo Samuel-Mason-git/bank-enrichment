@@ -1,6 +1,6 @@
 # Bank Enrichment
 
-**Self-hosted personal finance that works out what your transactions meant, not just their category.**
+**Self-hosted personal finance that works out what your transactions meant, with an agent you can ask about your money from Telegram, and budgets that report to you there.**
 
 [![CI](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
