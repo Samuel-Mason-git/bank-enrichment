@@ -88,7 +88,7 @@ logging.getLogger("uvicorn.access").addFilter(_RedactWebhookTokens())
 # Shared secrets proving an inbound webhook really came from Telegram/Monzo --
 # both endpoints are otherwise open to anyone who knows the URL. Optional so a
 # deploy never breaks an install that hasn't set them yet (deploys happen
-# automatically on merge), but startup warns loudly until both are set.
+# automatically on merge), and startup refuses to run until both are set.
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 MONZO_WEBHOOK_SECRET = os.getenv("MONZO_WEBHOOK_SECRET")
 
@@ -155,6 +155,13 @@ async def _skip_timeout(chat_id: int, message_id: int):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot
+    unset = _unset_webhook_secrets()
+    if unset:
+        # Refuse to start rather than run with a webhook anyone can call.
+        raise RuntimeError(
+            f"{' and '.join(unset)} not set in config/.env. The server won't start without both, since "
+            "its webhooks would accept requests from anyone who knows their URL. See SETUP.md steps 4, 8 and 9."
+        )
     init_db()
     activity.attach("server", get_con)
     # The Ask agent's cost records and daily limit (pipeline code) go through
@@ -166,21 +173,6 @@ async def lifespan(app: FastAPI):
         log.info("Telegram bot initialised")
     except ValueError as e:
         log.warning(f"Telegram bot not initialised: {e}")
-    unset = _unset_webhook_secrets()
-    if unset:
-        log.warning(
-            f"{' and '.join(unset)} not set -- the matching webhook endpoint accepts requests from "
-            "anyone who knows its URL. See SETUP.md steps 4, 8 and 9."
-        )
-        if bot and os.getenv("TELEGRAM_CHAT_ID"):
-            try:
-                bot.send_alert(
-                    int(os.getenv("TELEGRAM_CHAT_ID")), "Webhooks aren't secured yet",
-                    f"{' and '.join(unset)} not set, so anyone who knows your server's URL can send it "
-                    "fake transactions or fake button taps. See SETUP.md steps 4, 8 and 9.",
-                )
-            except Exception as e:
-                log.warning(f"Could not send the webhook-secret alert: {e}")
     task = asyncio.create_task(requester_loop(bot))
     log.info("Requester loop started")
     monzo_task = asyncio.create_task(monzo_refresh_loop(bot))

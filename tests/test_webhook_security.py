@@ -174,6 +174,21 @@ class TestUnsetSecretsAreReported:
         monkeypatch.setattr(main, "MONZO_WEBHOOK_SECRET", "y")
         assert main._unset_webhook_secrets() == []
 
+    def test_the_server_refuses_to_start_without_them(self, monkeypatch):
+        import asyncio
+        monkeypatch.setattr(main, "TELEGRAM_WEBHOOK_SECRET", "x")
+        monkeypatch.setattr(main, "MONZO_WEBHOOK_SECRET", None)
+        init = MagicMock()
+        monkeypatch.setattr(main, "init_db", init)
+
+        async def start():
+            async with main.lifespan(main.app):
+                pass
+
+        with pytest.raises(RuntimeError, match="MONZO_WEBHOOK_SECRET not set"):
+            asyncio.run(start())
+        init.assert_not_called()   # refused before touching the database
+
 
 @pytest.fixture
 def _clean_oauth_state():
