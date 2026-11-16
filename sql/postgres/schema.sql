@@ -1,4 +1,4 @@
--- bank-enrichment's tables in Postgres: the design in docs/server-move.md §4.
+-- bank-enrichment's tables in Postgres.
 --
 -- Three kinds of table:
 --   history   transactions_raw, context_events, label_events. Only ever added
@@ -657,7 +657,7 @@ FROM per_merchant WHERE n <= 3;
 -- ── The finance agent's read-only login ───────────────────────────────────────
 
 -- The Ask page's agent queries through its own login, bank_enrichment_agent
--- (made on the data box by data-vault's new_reader.sh), which can read only
+-- (created by you, see SETUP.md), which can read only
 -- what is granted here: the money view it answers from, and the subscriptions,
 -- categories and budgets behind its other tools. Not the raw tables behind the view,
 -- not llm_calls, rules or proposals. Granted on every start, after the views

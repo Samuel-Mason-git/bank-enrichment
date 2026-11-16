@@ -1,5 +1,5 @@
 """The pipeline's and the dashboard's side of the one Postgres database (the
-data box's `vault`, schema `bank_enrichment` -- see docs/server-move.md).
+project's Postgres database, schema `bank_enrichment`).
 
 Transactions are read through the `transactions` view, under the column names
 the old table had. Writes to a transaction are history, not updates: a label is
@@ -1148,8 +1148,8 @@ def get_rule_test_transactions() -> list[dict]:
 
 # ── "Back up now" ─────────────────────────────────────────────────────────────
 #
-# Looking after the data is the database's job, not the app's (the data box
-# backs it up every night). This is only a manual "save a copy of everything
+# Looking after the data is the database's job, not the app's (back it up
+# however you run it). This is only a manual "save a copy of everything
 # before I try something", from the Settings page: every table as a Parquet
 # file in a folder of its own, under BACKUP_DIR. It is never run automatically.
 

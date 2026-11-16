@@ -1,5 +1,5 @@
-"""The server's side of the one Postgres database (the data box's `vault`,
-schema `bank_enrichment` -- see docs/server-move.md).
+"""The server's side of the one Postgres database (the project's
+Postgres database, schema `bank_enrichment`).
 
 History is only ever added to: a transaction arriving, its context being given
 or asked for, a label being set are each a new row (transactions_raw,
@@ -33,7 +33,7 @@ def _connect() -> psycopg.Connection:
 
 
 def get_con() -> psycopg.Connection:
-    """The shared connection. Reopened if it has dropped -- the data box
+    """The shared connection. Reopened if it has dropped -- the database
     restarting, a network blip -- so one hiccup doesn't need a server restart."""
     global _con
     if _con is None:

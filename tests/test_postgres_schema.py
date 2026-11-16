@@ -1,4 +1,4 @@
-"""sql/postgres/schema.sql: the new tables (docs/server-move.md §4).
+"""sql/postgres/schema.sql: the new tables.
 
 The views stand in for the old tables, so these check they give the same
 answers the old ones did: the transactions view reads a payload the way the
