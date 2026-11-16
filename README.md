@@ -59,7 +59,7 @@ context sentences tell it exactly what each transaction was.
 ## How It Works
 
 1. Monzo transaction fires a webhook
-2. Always-on server stores the raw payload in the Postgres database (on a separate data box, backed up nightly)
+2. Always-on server stores the raw payload in the Postgres database
 3. Server checks your rules — if a rule matches, the transaction is auto-enriched and/or marked as skipped, and Telegram is skipped entirely
 4. Otherwise, a Telegram notification is sent to your phone with transaction details
 5. You reply with one sentence of context, tap a quick-category button if one's shown, or tap Skip to dismiss
@@ -257,7 +257,7 @@ A budget is a monthly amount for one spending category, for example Food & Drink
 
 **The Ask agent** can read budgets ("am I on track?"), and can suggest a budget for you to confirm. Its suggestion shows a **Set it / Dismiss** card on the Ask page, and two buttons on Telegram. Nothing changes until you press Set it. A Telegram suggestion expires after 30 minutes.
 
-**Where it's kept.** The `budgets` table is one of the settings the data box backs up nightly once data-vault's snapshot of it is merged (see data-vault). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
+**Where it's kept.** Budgets live in the `budgets` table, so they're in any backup of the database (see Backups). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
 
 ## LLM Classification
 
@@ -481,9 +481,7 @@ it used, what it asked for and what came back, so any figure can be checked.
 
 ### Backups
 
-The database is backed up every night wherever it lives — for this setup, by the data box
-(see the data-vault repo) — and every change to a transaction is kept in its history anyway,
-so nothing here is needed to stay safe.
+The database is yours to back up, however you run it: this project doesn't include backups. Every change to a transaction is kept in its history anyway.
 
 **Back up now** in the Settings page takes a copy of your own before you try something: every
 table saved as a Parquet file, in a folder named `<timestamp>_<reason>` under `BACKUP_DIR`
@@ -569,7 +567,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | Server | Python, FastAPI, psycopg |
 | Reverse proxy | Caddy (automatic HTTPS) |
 | Notifications | Telegram Bot API |
-| Database | Postgres 18 on a separate data box; the server and worker reach it on the cloud's private network, the dashboard over WireGuard |
+| Database | Postgres 18 on a separate host that the server and your machine reach privately (the author uses WireGuard) |
 | LLM | Anthropic Claude: Haiku 5.5 for matching existing categories, the placement judge and the Ask agent; Sonnet 4.6 for picking and suggesting categories. Chosen by the accuracy evals (`agent_eval.py`, `model_eval.py`) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |

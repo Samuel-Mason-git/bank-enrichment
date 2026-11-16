@@ -2,11 +2,10 @@
 
 - A Monzo account with developer access enabled at [developers.monzo.com](https://developers.monzo.com)
 - A server with a public IP address and Docker installed (e.g. Oracle Cloud free tier)
-- A Postgres database for it — this setup uses a second free-tier box running the
-  [data-vault](https://github.com/your-username/data-vault) repo, which also backs it up
-  nightly and runs the WireGuard VPN your local machine reaches it through. Its
-  `new_project.sh` makes this project's schema and login (`DB_*` below), and its
-  `wg_add_device.sh` makes your local machine's VPN config.
+- A Postgres 18 database that the server and your own machine can both reach. The author runs
+  theirs on a second free-tier box, reached over WireGuard, but any host works as long as the
+  connection is private. Create an empty database and a login for this project (`DB_*` below);
+  the server creates the tables itself on first start. Back it up however you run it.
 - A free [DuckDNS](https://www.duckdns.org) subdomain pointing at your server IP (required for HTTPS)
 - Python 3.11+ and [Poetry](https://python-poetry.org/docs/#installation) installed on your local machine
 - Git installed on both your local machine and the server
@@ -76,8 +75,8 @@ Then open `config/.env` and fill in all values:
 | `DASHBOARD_PASSWORD` | Server | Password for that login |
 | `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login, which data-vault's `new_project.sh` prints and saves on the data box. `DB_HOST` is the data box's private address, which the server reaches inside the cloud network and your local machine through the VPN |
-| `AGENT_DB_USER`, `AGENT_DB_PASSWORD` | Both | The finance agent's own **read-only** login, made on the data box with data-vault's `./new_reader.sh bank_enrichment_agent bank_enrichment`. It can read only what `sql/postgres/schema.sql` grants it (the `transaction_roles` view, subscriptions and categories) and never writes. Without it the Ask page is off; it never uses the main login. Same host, port and database as above. Kept in the same `config/.env` on both machines like everything else: after adding them locally, copy the file to the server (step below) and recreate the containers |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login you created for this project. `DB_HOST` is the database's address: the server reaches it over the cloud network's private addresses, and your local machine through the VPN |
+| `AGENT_DB_USER`, `AGENT_DB_PASSWORD` | Both | The finance agent's own **read-only** login, a second login you create for the role `bank_enrichment_agent` (the grants in `sql/postgres/schema.sql` are for that name). It can read only what `sql/postgres/schema.sql` grants it (the `transaction_roles` view, subscriptions and categories) and never writes. Without it the Ask page is off; it never uses the main login. Same host, port and database as above. Kept in the same `config/.env` on both machines like everything else: after adding them locally, copy the file to the server (step below) and recreate the containers |
 | `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies — default `~/bank-enrichment-backups` |
 | `LOG_DIR` | Local (optional) | Where the pipeline's log files go — default `logs/` in the repo |
 | `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
@@ -133,7 +132,7 @@ The containers restart automatically on failure and on server reboot.
 
 On every start the server brings the database up to date by applying `sql/postgres/schema.sql`
 (it only ever adds tables, columns and views), so there's nothing to set up by hand beyond the
-login. If it can't reach the database, check the data box allows this server in its `pg_hba.conf`
+login. If it can't reach the database, check the database host allows this server to connect (for Postgres, in `pg_hba.conf`)
 and its security list (port 5432 from the server's private address).
 
 A `data/` directory is created automatically containing:
@@ -230,10 +229,9 @@ A follow-up notification system automatically re-sends Telegram reminders at 1 h
 
 The pipeline runs on the server: Docker Compose starts a `worker` container next to the server, which
 runs it every hour from 08:00 to 22:00 London time (see step 5). Your own machine is for the dashboard, and
-for running the pipeline by hand when you want to. Both reach the same database over the data box's
-WireGuard VPN. Import the config data-vault's
-`wg_add_device.sh` made for this machine into the WireGuard app and switch it on; it only routes
-the data box's addresses, so the rest of your traffic is unaffected. (On Windows with WSL, WSL
+for running the pipeline by hand when you want to. Both reach the same database over a private VPN (the
+author uses WireGuard). Import the VPN config made for this machine into the WireGuard app and switch
+it on; it should route only the database's addresses, so the rest of your traffic is unaffected. (On Windows with WSL, WSL
 reaches the database through the Windows tunnel — nothing to set up inside WSL.)
 
 > **Windows note — Smart App Control:** Windows 11's Smart App Control can block pandas' compiled binaries from
