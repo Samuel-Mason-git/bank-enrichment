@@ -103,25 +103,21 @@ def spent_by_category(first: date, last: date, con=None) -> dict[str, float]:
 def suggestions(month: date, con=None) -> dict[int, float]:
     """A starting budget per spend category: the average of the full months
     before `month` (up to three), rounded up to the next £10. Categories with
-    no spending then get no suggestion."""
+    no spending then get no suggestion. Two queries in all: the spend totals,
+    and how many of those months had any transactions."""
     con = con or get_con()
     first = add_months(month_start(month), -SUGGEST_MONTHS)
     last = month_start(month) - timedelta(days=1)
-    rows = _rows(con, f"""
-        WITH spend AS ({_SPEND_PARENTS})
-        SELECT s.id, COALESCE(-SUM(t.amount) FILTER (WHERE t.role = 'spend' AND t.amount < 0), 0) AS spent,
-               (SELECT COUNT(DISTINCT date_trunc('month', created_at)) FROM transaction_roles
-                 WHERE created_at >= %s AND created_at < %s::date + 1) AS months
-        FROM spend s
-        LEFT JOIN transaction_roles t ON t.llm_category = s.name AND NOT t.skipped
-             AND t.created_at >= %s AND t.created_at < %s::date + 1
-        GROUP BY s.id""", [first, last, first, last])
+    spent = spent_by_category(first, last, con)
+    months = max(int(_rows(con, """SELECT COUNT(DISTINCT date_trunc('month', created_at)) AS n
+                                   FROM transaction_roles WHERE NOT skipped
+                                    AND created_at >= %s AND created_at < %s::date + 1""",
+                           [first, last])[0]["n"] or 0), 1)
     out = {}
-    for r in rows:
-        months = max(int(r["months"] or 0), 1)
-        avg = float(r["spent"]) / months
+    for c in spend_categories(con):
+        avg = spent.get(c["name"], 0.0) / months
         if avg > 0:
-            out[r["id"]] = float(max(10, math.ceil(avg / 10) * 10))
+            out[c["id"]] = float(max(10, math.ceil(avg / 10) * 10))
     return out
 
 
@@ -229,18 +225,29 @@ def month_budgets(month: date | None = None, today: date | None = None, con=None
 
 def history(months: int = 6, today: date | None = None, con=None) -> list[dict]:
     """Spend in budgeted categories per month, the last `months` up to this one,
-    against today's budgets (budgets aren't kept per month)."""
+    against today's budgets (budgets aren't kept per month). One query for all
+    the months together."""
     con = con or get_con()
     today = today or today_london()
     budgets = {r["name"]: float(r["monthly_amount"]) for r in _rows(con, """
         SELECT p.name, b.monthly_amount FROM budgets b JOIN parent_categories p ON p.id = b.parent_id
         WHERE p.archived_at IS NULL""")}
+    first = add_months(month_start(today), -(months - 1))
+    last = month_end(month_start(today))
+    rows = _rows(con, """
+        SELECT date_trunc('month', created_at)::date AS m, llm_category AS category,
+               COALESCE(-SUM(amount) FILTER (WHERE role = 'spend' AND amount < 0), 0) AS spent
+        FROM transaction_roles
+        WHERE NOT skipped AND llm_category IS NOT NULL AND created_at >= %s AND created_at < %s::date + 1
+        GROUP BY 1, 2""", [first, last])
+    by_month: dict[date, float] = {}
+    for r in rows:
+        if r["category"] in budgets:
+            by_month[r["m"]] = by_month.get(r["m"], 0.0) + float(r["spent"])
     out = []
-    for i in range(months - 1, -1, -1):
-        first = add_months(month_start(today), -i)
-        spent = spent_by_category(first, month_end(first), con)
-        out.append({"month": first, "spent": round(sum(spent.get(n, 0.0) for n in budgets), 2),
-                    "budget": round(sum(budgets.values()), 2)})
+    for i in range(months):
+        m = add_months(first, i)
+        out.append({"month": m, "spent": round(by_month.get(m, 0.0), 2), "budget": round(sum(budgets.values()), 2)})
     return out
 
 
