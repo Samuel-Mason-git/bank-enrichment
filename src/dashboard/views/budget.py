@@ -15,6 +15,19 @@ import budget_messages
 import budgets as bg
 from ui import _card_rows, _fmt
 
+# The budget maths reads the whole ledger, so the page keeps its answers for a
+# minute (and they're cleared when a budget is saved), rather than redoing them
+# on every click.
+@st.cache_data(ttl=60, show_spinner=False)
+def _standing(month: date) -> bg.MonthBudgets:
+    return bg.month_budgets(month=month)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _history() -> list[dict]:
+    return bg.history(6)
+
+
 GREEN, AMBER, RED, TRACK, PACE = "#2e9d5b", "#e0a526", "#d64545", "rgba(128,128,128,0.18)", "#1f3a5f"
 STATE_COLOUR = {"over": RED, "near": AMBER, "pace": AMBER, "ok": GREEN}
 STATE_LABEL = {"over": "🔴 Over", "near": "🟠 Nearly used", "pace": "🟠 Off pace", "ok": "🟢 On track"}
@@ -60,7 +73,7 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
 
 
 def _history_chart() -> None:
-    points = bg.history(6)
+    points = _history()
     if not any(p["spent"] for p in points):
         return
     labels = [p["month"].strftime("%b %Y") for p in points]
@@ -122,6 +135,7 @@ def _edit_budgets(mb: bg.MonthBudgets) -> None:
             for p in problems:
                 st.error(p)
             if not problems:
+                st.cache_data.clear()
                 st.session_state["budget_saved"] = changed
                 st.rerun()
     if "budget_saved" in st.session_state:
@@ -159,8 +173,8 @@ st.caption("A monthly spending budget per category. Spent counts as the Overview
 today = bg.today_london()
 months = [bg.add_months(bg.month_start(today), -i) for i in range(12)]
 month = st.selectbox("Month", months, format_func=lambda d: d.strftime("%B %Y"), key="budget_month")
-mb = bg.month_budgets(month=month)
-mb_now = mb if mb.current else bg.month_budgets()
+mb = _standing(month)
+mb_now = mb if mb.current else _standing(bg.month_start(today))
 
 if mb.statuses:
     left = mb.budgeted - mb.spent
