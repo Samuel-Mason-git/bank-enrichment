@@ -1,17 +1,27 @@
 # Bank Enrichment
 
-**Self-hosted personal finance that asks you about each payment the moment it happens**, learns your categories with Claude, and tracks your budgets through Telegram and a local dashboard.
+**Self-hosted personal finance that works out what your transactions meant, with an agent you can ask about your money from Telegram, and budgets that report to you there.**
 
 [![CI](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-Most budgeting tools ask you to sort last month's transactions in one go, by which point you've forgotten why you spent £12 at a service station. Bank Enrichment asks while you still remember, and keeps what it learns.
+## What is this?
+
+Most financial tools answer one question: *what category was this transaction?* Bank Enrichment answers a different one: *what did this transaction actually mean?*
+
+A transaction like `TESCO £43.20` is almost meaningless on its own. But `weekly shop, ingredients for a dinner party, plus impulse snacks` is something you can reason about, now and in ten years' time. So the app captures that context at the moment of purchase, while you still remember it, and keeps it apart from the categories.
+
+Categories will change, so the context is the record and the labels are derived from it.
+
+It learns as it goes, and it doesn't trust its own first answer. Claude places each payment in passes: first it checks for an existing subcategory the payment clearly fits, then it picks a parent and a subcategory, and only for what doesn't fit cleanly does it offer alternatives. A payment that needs a new category is held and sent to Telegram with up to three candidate placements, and nothing is created until you pick one. Every placement into an existing category then gets a second look from a separate Claude call, the placement judge, which uses the amounts and rhythm of what that subcategory already holds. If it objects, you decide on Telegram. If the check can't reach a verdict, the payment waits rather than being saved unreviewed. Once a month, a review looks for subcategories that have quietly grown a coherent cluster that doesn't belong, and proposes a split.
+
+Merchants are learned too. Each merchant's usual categories feed the quick taps, and when a merchant has always landed in the same category, the app suggests a rule that files it automatically, but only after a second Claude check that it's a single-purpose merchant rather than a general retailer. Rules file the payments you've already settled. For the rest, Telegram asks one question, quick taps offer the categories you use for each merchant, and your answer is the context Claude classifies from. Because the context is stored separately from the labels, you can reclassify everything under a new set of categories without losing anything.
 
 ## What it does
 
-- **📲 Asks at the point of purchase.** Each payment arrives in Telegram with a one-line question. [Details](docs/capture/point-of-purchase.md)
-- **📐 Rules.** Match a payment and it's filed, enriched or skipped without asking. [Rules](docs/capture/rules.md)
-- **🧠 Learns your categories.** Claude classifies every payment, proposes new categories for you to approve, and takes a second look at its own placements. [Classification](docs/classification/classification.md), [new categories](docs/classification/new-categories.md), [second look](docs/classification/second-look.md)
+- **📲 Asks about what rules don't cover.** A payment no rule settles arrives in Telegram with a one-line question and quick taps for the merchants you pay most. Your answer, or a tap, is the context Claude classifies from. [Details](docs/capture/point-of-purchase.md)
+- **📐 Rules.** Match a payment and it's filed, enriched or skipped without asking, and never reaches Telegram. [Rules](docs/capture/rules.md)
+- **🧠 Learns your categories.** It remembers the categories you use for each merchant, and Claude classifies every payment. New categories need your approval, a second look (the placement judge) checks each placement, and a monthly review proposes splits. [Classification](docs/classification/classification.md), [new categories](docs/classification/new-categories.md), [second look](docs/classification/second-look.md)
 - **🔁 Subscriptions.** Recurring payments are spotted automatically. [Subscriptions](docs/capture/subscriptions.md)
 - **🎯 Budgets per category.** Monthly limits with Telegram messages, alerts, `/budget` on demand and charts. [Budgets](docs/money/budgets.md)
 - **💬 Ask your money.** Plain-English questions answered by a read-only agent that shows its workings, on the dashboard or with `/ask` on Telegram. [Ask](docs/money/ask.md)
