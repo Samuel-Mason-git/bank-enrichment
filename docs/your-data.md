@@ -2,9 +2,14 @@
 
 [← Back to the README](../README.md)
 
-Every transaction is kept. A webhook for a transaction already stored is ignored — some
-merchants (e.g. Aldi, Lidl) only fire when the transaction settles, days after the purchase,
-and that must not become a second transaction.
+## Every transaction is kept
+
+A webhook for a transaction already stored is ignored. Some merchants (e.g. Aldi, Lidl) only
+fire when the transaction settles, days after the purchase, and that must not become a second
+transaction.
+
+## Why store context separately from labels
+
 Labels change. The categories you care about today won't be the same in five 
 years. By storing your raw context separately from any classification layer, 
 you can re-run labelling at any point using a new taxonomy — without losing 
@@ -26,5 +31,3 @@ A Postgres database (schema `bank_enrichment`) of every transaction:
 Every time is stored in UTC and shown in London time, so a day, a week or a month is
 counted the way you live it: a payment at 00:30 in summer belongs to that day, not the one before.
 
-Because context is stored separately from classification, you can re-run labelling 
-at any point using a new taxonomy and it will classify correctly every time.

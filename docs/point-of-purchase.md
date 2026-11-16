@@ -22,7 +22,7 @@ Telegram notification for a matching merchant shows up to 3 one-tap buttons for
 that merchant's usual categories, or 5 general ones if the merchant hasn't built up enough 
 history yet, alongside the usual Enrich and Skip buttons. Tapping one instantly saves that
 category as your context — no typing required, and the next pipeline run files it there
-(after the second look below). Each button names its category by id, so a card tapped
+(after the [second look](second-look.md)). Each button names its category by id, so a card tapped
 days later still files exactly what it said, even if the buttons have changed since.
 
 The per-merchant personalization depends on Monzo actually sending a `merchant` name on new

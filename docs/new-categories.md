@@ -20,7 +20,7 @@ a single unusual transaction is reason enough to ask.
 Once a month, the pipeline separately reviews subcategories with at least 8 transactions, 
 looking for a coherent cluster inside one that the subcategory name actively misdescribes 
 (the kind of pattern that only becomes obvious once several transactions have accumulated — 
-Pass 0-3 above only ever see one batch at a time). Proposals are held to a stricter bar 
+Passes 0–3 in [Classification](classification.md) only ever see one batch at a time). Proposals are held to a stricter bar 
 than real-time proposals — a cluster must be a real, sizeable share of its parent, not 
 a rename or a one-off — and go out as their own Telegram cards, capped at 2 per month. 
 Nothing changes until you approve one.

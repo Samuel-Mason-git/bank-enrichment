@@ -60,5 +60,5 @@
 | Database | Postgres 18, on any host the server can reach (and your machine, for the dashboard) |
 | LLM | Anthropic Claude: Haiku 5.5 for matching existing categories, the placement judge and the Ask agent; Sonnet 4.6 for picking and suggesting categories. Chosen by the accuracy evals (`agent_eval.py`, `model_eval.py`) |
 | Local dashboard | Streamlit, Plotly |
-| Deployment | Docker Compose: the server, the daily worker, and Caddy |
+| Deployment | Docker Compose: the server, the hourly worker, and Caddy |
 | CI/CD | GitHub Actions — tests (with coverage, which must stay at 80% or more) and server-image build/smoke tests run on every PR; Dependabot proposes dependency updates; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |

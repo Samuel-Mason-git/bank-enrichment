@@ -2,8 +2,6 @@
 
 [← Back to the README](../README.md)
 
-Every category has a role, which decides what counts as income or spend in the figures.
-
 Every category has a **Role** — Income, Spend, Investment, Saving, Transfer, or Excluded —
 set from the Settings page, at the parent level (subcategories inherit it, or can override it
 individually, e.g. a "Refunds" subcategory under "Income" is Excluded rather than Income).

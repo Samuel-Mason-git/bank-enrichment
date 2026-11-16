@@ -20,4 +20,4 @@ A budget is a monthly amount for one spending category, for example Food & Drink
 
 **The Ask agent** can read budgets ("am I on track?"), and can suggest a budget for you to confirm. Its suggestion shows a **Set it / Dismiss** card on the Ask page, and two buttons on Telegram. Nothing changes until you press Set it. A Telegram suggestion expires after 30 minutes.
 
-**Where it's kept.** Budgets live in the `budgets` table, so they're in any backup of the database (see Backups). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
+**Where it's kept.** Budgets live in the `budgets` table, so they're in any backup of the database (see [Backups](backups.md)). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
