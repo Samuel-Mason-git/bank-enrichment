@@ -17,6 +17,7 @@ from database_functions import init_db, get_con, apply_quick_tap_classifications
 from llm_labelling import run as run_classifier, regenerate_category_proposals, make_placement_reviewer
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
+from budget_messages import run as run_budget_messages
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
 from category_proposals import collect_decisions as collect_category_decisions
 from rule_suggestions import sync_candidates as sync_rule_candidates
@@ -199,6 +200,15 @@ def _steps() -> None:
             run_weekly_summary()
         except Exception as e:
             log.error(f"Weekly summary run failed: {e}", exc_info=True)
+
+    # Last, so everything classified this run counts against the budgets.
+    with _timed("budget_messages"):
+        try:
+            sent = run_budget_messages()
+            if sent["digest"] or sent["alerts"]:
+                log.info(f"Budget messages: digest {'sent' if sent['digest'] else 'not due'}, {sent['alerts']} alert(s)")
+        except Exception as e:
+            log.error(f"Budget messages failed: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

@@ -213,8 +213,11 @@ def test_run_tool_turns_problems_into_readable_errors(money):
 
 
 def test_every_tool_has_a_definition_and_a_label():
-    assert {t["name"] for t in fa.TOOLS} == set(fa.TOOL_FUNCTIONS)
-    assert set(fa.TOOL_LABELS) == set(fa.TOOL_FUNCTIONS) | {fa.CHART_TOOL["name"]}
+    # propose_budget is handled in the loop (it attaches a proposal), so it has
+    # a definition and a label but no plain function; show_chart likewise.
+    offered = {t["name"] for t in fa.TOOLS + fa.BUDGET_TOOLS + [fa.CHART_TOOL]}
+    assert offered == set(fa.TOOL_FUNCTIONS) | {"propose_budget", "show_chart"}
+    assert set(fa.TOOL_LABELS) == offered
 
 
 # ── the loop ──────────────────────────────────────────────────────────────────
@@ -270,7 +273,7 @@ def test_each_call_is_recorded_with_tool_names_only(money):
     fa.FinanceAgent(FakeClient([tool_use("list_categories", {}), reply("ok")]), daily_limit_usd=1).ask("q")
     rows = money.execute("SELECT job, params->'tools', cost_usd FROM llm_calls ORDER BY call_id").fetchall()
     assert len(rows) == 2 and rows[0][0] == "finance_agent"
-    assert rows[0][1] == [t["name"] for t in fa.TOOLS + [fa.CHART_TOOL]]
+    assert rows[0][1] == [t["name"] for t in fa.TOOLS + fa.BUDGET_TOOLS + [fa.CHART_TOOL]]
     assert fa.spent_today() == pytest.approx(sum(float(r[2]) for r in rows))
 
 

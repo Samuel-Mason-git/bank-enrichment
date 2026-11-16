@@ -12,6 +12,7 @@ import anthropic
 import plotly.express as px
 import streamlit as st
 
+import budgets as bg
 import finance_agent as fa
 
 STARTERS = [
@@ -75,6 +76,36 @@ def _new_chat() -> None:
     st.session_state["ask_history"] = []
 
 
+def _proposals(entry: dict, key: str) -> None:
+    """Budget proposals from the agent, each waiting for you: setting one
+    writes it through the dashboard's own login (the agent's can't write)."""
+    for i, p in enumerate(entry.get("proposals") or []):
+        change = (f"from £{p['current']:,.0f} to £{p['amount']:,.0f}" if p.get("current")
+                  else f"at £{p['amount']:,.0f}")
+        with st.container(border=True):
+            st.markdown(_md(f"**Budget for {p['category']}** {change} a month"
+                            + (f"  \n{p['reason']}" if p.get("reason") else "")))
+            status = p.get("status")
+            if status == "set":
+                st.success(_md(f"Set: {p['category']} now has a £{p['amount']:,.0f} monthly budget."))
+            elif status == "dismissed":
+                st.caption("Dismissed: nothing changed.")
+            elif status:
+                st.warning(_md(status))
+            else:
+                yes, no, _ = st.columns([1, 1, 3])
+                if yes.button("Set it", key=f"ask_prop_set_{key}_{i}", type="primary", width="stretch"):
+                    try:
+                        bg.set_budget(p["parent_id"], p["amount"])
+                        p["status"] = "set"
+                    except bg.BudgetError as e:
+                        p["status"] = f"Not set: {e}"
+                    st.rerun()
+                if no.button("Dismiss", key=f"ask_prop_no_{key}_{i}", width="stretch"):
+                    p["status"] = "dismissed"
+                    st.rerun()
+
+
 def _render(entry: dict, key: str) -> None:
     with st.chat_message(entry["role"]):
         if entry.get("error"):
@@ -82,6 +113,7 @@ def _render(entry: dict, key: str) -> None:
             return
         st.markdown(_md(entry["text"]) if entry["role"] == "assistant" else entry["text"])
         _charts(entry.get("charts"), key)
+        _proposals(entry, key)
         _workings(entry.get("steps") or [])
         if entry.get("caption"):
             st.caption(_md(entry["caption"]))
@@ -160,9 +192,10 @@ if question:
             caption = (f"This answer {_usd(answer.cost_usd)} · this chat {_usd(agent.cost_usd)} · "
                        f"today {_usd(fa.spent_today())} of the {_usd(agent.daily_limit_usd)} daily limit")
             entry = {"role": "assistant", "text": answer.text, "steps": answer.steps, "caption": caption,
-                     "charts": answer.charts}
+                     "charts": answer.charts, "proposals": answer.proposals}
             history.append(entry)
             st.markdown(_md(answer.text))
             _charts(answer.charts, str(len(history) - 1))
+            _proposals(entry, str(len(history) - 1))
             _workings(answer.steps)
             st.caption(_md(caption))

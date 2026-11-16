@@ -725,6 +725,11 @@ async def recieve_telegram(request: Request):
                 return {"ok": True}
             bot.send_message(chat_id, f"✅ Saved as {category} → {subcategory_name}")
 
+        elif cq.data and cq.data.startswith("budgetprop:"):
+            # budgetprop:set|no:<token> -- a budget the /ask agent proposed (ask_tg.py).
+            _, action, token = cq.data.split(":", 2)
+            bot.send_message(chat_id, ask_chats.resolve(chat_id, token, action))
+
         elif cq.data == "skip_cancel":
             if chat_id in _pending_skips:
                 _pending_skips[chat_id].get("timeout_task") and _pending_skips[chat_id]["timeout_task"].cancel()
