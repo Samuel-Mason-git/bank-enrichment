@@ -68,7 +68,8 @@ context sentences tell it exactly what each transaction was.
 8. Every hour from 08:00 to 22:00 a worker on the server runs the LLM classifier and the rest of the pipeline against the same database — nothing needs your PC to be on
 9. LLM classifier (Claude) assigns each transaction a parent category and subcategory using a living taxonomy it builds and refines over time — a genuinely new category is never created silently; it's proposed with a Telegram approval card first (see [New Category Approval](#new-category-approval) below)
 10. Every Monday, a weekly summary is sent to your Telegram — spend, income, net, and a breakdown by category for the week just ended. A monthly summary follows at the end of each month. Once a month, the pipeline also reviews your existing taxonomy for subcategories that have quietly grown a coherent cluster of mislabelled transactions inside them, and proposes a split or move (see [Monthly Taxonomy Review](#monthly-taxonomy-review) below).
-11. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, and track subscriptions
+11. Budgets are checked after each run: a budget message in the morning (on the days you choose), an instant alert when a category is near or over, and `/budget` on demand (see [Budgets](#budgets))
+12. Local Streamlit dashboard lets you explore your spending, view charts, correct labels, track subscriptions and budgets, and ask questions of your data (see [Ask](#ask))
 
 ## The Dashboard
 
@@ -163,15 +164,13 @@ of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") a
 gone through each, set that subcategory's Role to **Saving** in the Settings page — see
 [Category Roles & Standard vs Actual](#category-roles--standard-vs-actual).
 
-### Creating a Rule From an Existing Transaction
+### Checking Rules Against Payments
 
-Picking a transaction from the dropdown above the Add Rule form pre-fills it for you —
-merchant name if present, else counterparty name, else description (the same fallback
-order used throughout), plus that transaction's existing context if it has one.
-**Test this rule** runs the not-yet-saved rule against the last 30 days of transactions
-and lists exactly which ones it would catch, with their status and current context, right under the form — so you see its
-real reach before saving, not just that it matches the transaction you built it from.
-The form stays filled in afterwards.
+The Rules page shows what a rule would catch while you're still typing it: every payment
+ever received that it matches, and whether an earlier rule would take it first (the first
+match wins). Saving a rule only affects new payments; the preview shows the history it
+would have changed. The **Payment** selector at the top of the page shows which rules catch
+any one payment, which is the quickest way to see why a payment was filed where it was.
 
 ### Rule Suggestions
 
@@ -258,7 +257,7 @@ A budget is a monthly amount for one spending category, for example Food & Drink
 
 **The Ask agent** can read budgets ("am I on track?"), and can suggest a budget for you to confirm. Its suggestion shows a **Set it / Dismiss** card on the Ask page, and two buttons on Telegram. Nothing changes until you press Set it. A Telegram suggestion expires after 30 minutes.
 
-**Where it's kept.** The `budgets` table is backed up nightly with the other settings (see the data box in data-vault). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
+**Where it's kept.** The `budgets` table is one of the settings the data box backs up nightly once data-vault's snapshot of it is merged (see data-vault). The alerts already sent are kept in `budget_alerts`, so an alert isn't repeated.
 
 ## LLM Classification
 
@@ -430,7 +429,7 @@ Nothing changes until you approve one.
 The pages are grouped in the top bar: **Ask** and **Budget** on their own, then three menus: **Your money** (overview, trends, transactions, drill-downs, merchants, subscriptions), **Manage** (queue, payment details, rules, settings) and **Behind the scenes** (activity, AI usage).
 
 A Streamlit dashboard runs on your machine and reads the shared database directly, over the VPN.
-Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
+Most tabs respect a shared sidebar (Ask ignores it, and Budget works on its own month): a quick date-range preset or custom range, parent/subcategory
 filters, a text search across merchant/description/context, toggles for skipped/unclassified
 transactions, and an **Exclude** block for hiding noise — pick merchants/counterparties from a
 dropdown, or paste transaction IDs for one-offs that have no name to match on. Exclusions apply to
@@ -574,7 +573,7 @@ at any point using a new taxonomy and it will classify correctly every time.
 | LLM | Anthropic Claude: Haiku 5.5 for matching existing categories, the placement judge and the Ask agent; Sonnet 4.6 for picking and suggesting categories. Chosen by the accuracy evals (`agent_eval.py`, `model_eval.py`) |
 | Local dashboard | Streamlit, Plotly |
 | Deployment | Docker Compose: the server, the daily worker, and Caddy |
-| CI/CD | GitHub Actions — tests (with coverage, which must stay at 80% or more) and server-image build/smoke tests run on every PR; Dependabot proposes dependency updates weekly; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
+| CI/CD | GitHub Actions — tests (with coverage, which must stay at 80% or more) and server-image build/smoke tests run on every PR; Dependabot proposes dependency updates; merging to `main` auto-deploys over SSH, but only when something the server or the worker is built from changed (`src/server/`, `src/pipeline/`, `sql/postgres/schema.sql`, the Dockerfile/compose/Caddy files, `pyproject.toml`, `poetry.lock`) — dashboard changes don't restart it. Deploys never overlap. |
 
 ## Setup
 
