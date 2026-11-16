@@ -1,11 +1,17 @@
 # Bank Enrichment
 
-**Self-hosted personal finance that learns your categories as you go.** Rules file the payments you've already settled. For the rest, Telegram asks a one-line question, and your answer is the context Claude classifies from. Budgets, summaries and a local dashboard sit on top.
+**Self-hosted personal finance that works out what your transactions meant, not just their category.**
 
 [![CI](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-Most budgeting tools ask you to sort last month's transactions in one go, by which point you've forgotten why you spent £12 at a service station. Bank Enrichment asks about the payments rules don't cover, while you still remember, and keeps what it learns.
+## What is this?
+
+Most financial tools answer one question: *what category was this transaction?* Bank Enrichment answers a different one: *what did this transaction actually mean?*
+
+A transaction like `TESCO £43.20` is almost meaningless on its own. But `weekly shop, ingredients for a dinner party, plus impulse snacks` is something you can reason about, now and in ten years' time. So the app captures that context at the moment of purchase, while you still remember it, and keeps it apart from the categories.
+
+Categories will change, so the context is the record and the labels are derived from it. Rules file the payments you've already settled. For the rest, Telegram asks one question, quick taps offer the categories you use for each merchant, and your answer is the context Claude classifies from. Because the context is stored separately from the labels, you can reclassify everything under a new set of categories without losing anything.
 
 ## What it does
 
