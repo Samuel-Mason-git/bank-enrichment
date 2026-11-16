@@ -77,31 +77,35 @@ def send_charts(*pngs) -> int:
     return sent
 
 
+CAPTION_LIMIT = 1024   # Telegram's limit on a photo's caption
+
+
 def send_digest(mb: bg.MonthBudgets) -> bool:
-    """The digest's text, then its chart (best-effort: the text is what counts)."""
+    """The digest, as the scheduled message and /budget send it. False with no
+    budgets; otherwise True once the text has gone."""
     if not mb.statuses:
         return False
-    if not send_telegram(digest_text(mb)):
-        return False
-    send_digest_chart(mb)
-    return True
+    return send_digest_message(mb)
 
 
-def send_digest_chart(mb: bg.MonthBudgets) -> bool:
-    """The budget bars as a picture. Logged either way, so a missing chart
-    shows in the log rather than silently."""
+def send_digest_message(mb: bg.MonthBudgets) -> bool:
+    """The digest's text and bars. When the text fits a photo's caption, they go
+    as one message. Otherwise the bars come first, then the text. The text is
+    what counts: the result is whether it went, and a missing chart is logged."""
+    text = digest_text(mb)
     try:
         png = charts.budget_bars(mb)
-        if not png:
-            log.warning("Budget chart not drawn: no budgets to chart")
-            return False
-        sent = send_telegram_photo(png)
     except Exception as e:
-        log.warning(f"Budget chart not sent: {type(e).__name__}: {e}")
-        return False
-    if not sent:
+        log.warning(f"Budget chart not drawn: {type(e).__name__}: {e}")
+        png = None
+    if png and len(text) <= CAPTION_LIMIT:
+        if send_telegram_photo(png, caption=text):
+            return True
+        log.warning("Budget chart not sent with its text: sending the text on its own")
+        return send_telegram(text)
+    if png and not send_telegram_photo(png):
         log.warning("Budget chart not sent: Telegram refused the image")
-    return sent
+    return send_telegram(text)
 
 
 def report() -> bool:
@@ -109,10 +113,7 @@ def report() -> bool:
     mb = bg.month_budgets()
     if not mb.statuses:
         return send_telegram("No budgets are set yet. Set them on the Budget page of your dashboard.")
-    if not send_telegram(digest_text(mb)):
-        return False
-    send_digest_chart(mb)
-    return True
+    return send_digest_message(mb)
 
 
 def run(now: datetime | None = None) -> dict:
