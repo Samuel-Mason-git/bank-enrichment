@@ -37,6 +37,7 @@ sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
 import activity  # noqa: E402
 import database_functions  # noqa: E402
 import ask_tg  # noqa: E402  (imports the pipeline's finance_agent)
+import budget_messages  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -739,6 +740,11 @@ async def recieve_telegram(request: Request):
     elif update.message and update.message.text:
         msg = update.message
         chat_id = msg.chat.id
+
+        # /budget: this month's budgets, sent as text and a chart (budget_messages.report).
+        if re.match(r"^/budget(?:@\w+)?\s*$", (msg.text or "").strip(), re.IGNORECASE):
+            asyncio.create_task(asyncio.to_thread(budget_messages.report))
+            return {"ok": True}
 
         # /ask goes to the finance agent, answered in the background so this
         # returns at once. Anything else is a transaction's description, as before.

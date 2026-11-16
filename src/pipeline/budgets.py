@@ -29,6 +29,7 @@ PACE_OVER = 1.10       # off pace when heading for more than this much of the bu
 PACE_FROM_DAY = 7      # too early before this to call a pace
 MIN_BUDGET, MAX_BUDGET = 1, 100_000
 SUGGEST_MONTHS = 3
+OVER_SHOWN = 0.5      # how far past the budget a red 'over' extension is drawn (as a share of the budget)
 
 # Settings (app_settings), changed on the Budget page.
 DIGEST_SETTING = "budget_digest"                 # "off" | "daily" | "weekly"

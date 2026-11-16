@@ -3,6 +3,7 @@
 confirm flows for a budget it proposes -- on the Ask page and on Telegram."""
 import asyncio
 import json
+from pathlib import Path
 from datetime import date, datetime
 from unittest.mock import MagicMock
 
@@ -324,3 +325,78 @@ def test_the_webhook_hands_a_proposal_tap_to_ask_chats():
         bot = tap(None, "budgetprop:set:tok123")
     chats.resolve.assert_called_once_with(12345, "tok123", "set")
     assert replies(bot) == ["✅ done"]
+
+
+# ── /budget, over-budget bars, and the six-month history ─────────────────────
+
+def test_budget_command_sends_the_standing_as_text_and_a_chart(shop, telegram, monkeypatch):
+    monkeypatch.setattr(bg, "today_london", lambda: date(2026, 10, 15))
+    bg.set_budget(_pid(shop, "Shopping"), 50)
+    assert budget_messages.report() is True
+    assert telegram["text"][0].startswith("📊 <b>Budgets, October</b>")
+    assert telegram["photos"] and telegram["photos"][0].startswith(b"\x89PNG")
+
+
+def test_budget_command_without_budgets_says_where_to_set_them(shop, telegram):
+    assert budget_messages.report() is True
+    assert "No budgets are set yet" in telegram["text"][0]
+    assert telegram["photos"] == []
+
+
+@pytest.mark.parametrize("text, match", [("/budget", True), ("/budget@MyBot", True), ("/budget please", False),
+                                          ("/ask /budget", False), ("weekly shop", False)])
+def test_only_a_bare_budget_is_the_command(text, match):
+    import re
+    assert bool(re.match(r"^/budget(?:@\w+)?\s*$", text.strip(), re.IGNORECASE)) is match
+
+
+def test_the_webhook_answers_budget_without_touching_a_waiting_transaction(monkeypatch):
+    from unittest.mock import patch
+    import main
+    msg = MagicMock(text="/budget")
+    msg.chat.id = 12345
+    update = MagicMock(callback_query=None, message=msg)
+    request = MagicMock()
+
+    async def _body():
+        return b"{}"
+
+    request.body = _body
+    request.headers = {"x-telegram-bot-api-secret-token": "test-secret"}
+    with patch.object(main, "TELEGRAM_WEBHOOK_SECRET", "test-secret"), \
+         patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "12345"}), \
+         patch.object(main.TelegramUpdate, "model_validate_json", return_value=update), \
+         patch.object(main, "ask_chats") as chats, \
+         patch.object(main, "record_context") as record_context, \
+         patch("budget_messages.report") as report:
+        main._sessions[12345] = {"transaction_id": "tx_1", "timeout_task": None}
+        try:
+            asyncio.run(main.recieve_telegram(request))
+        finally:
+            main._sessions.pop(12345, None)
+    chats.start.assert_not_called()
+    record_context.assert_not_called()
+
+
+def test_an_over_budget_bar_keeps_the_budget_length_and_shows_how_far_over(shop):
+    bg.set_budget(_pid(shop, "Shopping"), 50)                # 60 spent: 120% used
+    mb = bg.month_budgets(today=MID_OCT)
+    png = charts.budget_bars(mb)
+    assert png and png.startswith(b"\x89PNG")
+    assert bg.OVER_SHOWN == 0.5                              # the red extension is capped, not the bar
+
+
+def test_the_budget_page_draws_the_six_months_and_the_bars(db, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from tests.test_dashboard_apptest import _seed
+    import streamlit as st
+    st.cache_data.clear(); st.cache_resource.clear()
+    _seed(db)
+    # Spend in the current month, so the six-month chart has something to draw.
+    insert_transaction(db, "tx_now", amount=-42, created_at=f"{date.today().isoformat()} 12:00:00",
+                       llm_category="Food & Drink", llm_subcategory="Groceries", merchant_name="Tesco")
+    db.execute("INSERT INTO budgets (parent_id, monthly_amount) SELECT id, 300 FROM parent_categories WHERE name = 'Food & Drink'")
+    at = AppTest.from_file(str(Path(__file__).parent.parent / "src" / "dashboard" / "dashboard.py"), default_timeout=30)
+    at.switch_page("views/budget.py").run()
+    assert not at.exception
+    assert len(at.get("plotly_chart")) >= 2                  # the bars and the six months

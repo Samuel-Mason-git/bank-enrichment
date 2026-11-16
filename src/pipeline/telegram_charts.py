@@ -33,29 +33,38 @@ def _colour(state: str) -> str:
     return {"over": RED, "near": AMBER, "pace": AMBER}.get(state, GREEN)
 
 
+OVER_SHOWN = 0.5   # how far past the budget the red extension runs, as a share of the budget
+
+
 def budget_bars(mb, title: str | None = None) -> bytes | None:
-    """One bar per budgeted category: the budget as the track, filled as far as
-    it's been spent (green, amber from 80% or when off pace, red when over),
-    with a marker where spending 'on pace' would be as of now. None with no
-    budgets."""
+    """One row per budgeted category, every bar the same length: the full
+    length is the budget. Spending fills it (green, amber from 80% or when off
+    pace, red when over). Anything over the budget continues in red past the
+    end, with the overspend as a percentage, so a bar stays comparable across
+    categories. The dark marker is where on-pace spending would be now.
+    None with no budgets."""
     statuses = mb.statuses
     if not statuses:
         return None
     rows = list(reversed(statuses))          # most used at the top
-    height = 1.0 + 0.48 * len(rows)
+    height = 1.0 + 0.62 * len(rows)
     fig, ax = plt.subplots(figsize=(WIDTH, height))
-    limit = max(1.0, min(1.6, max(s.used for s in rows) + 0.05))
+    right = 1.0 + OVER_SHOWN + 0.04
     for i, s in enumerate(rows):
         ax.barh(i, 1.0, color=TRACK, height=0.62, zorder=1)
-        ax.barh(i, min(s.used, limit), color=_colour(s.state), height=0.62, zorder=2)
-        ax.text(limit * 1.02, i, f"{_money(s.spent)} of {_money(s.budget)}  ({s.used:.0%})",
-                va="center", fontsize=8.5, color=INK)
+        ax.barh(i, min(s.used, 1.0), color=_colour(s.state), height=0.62, zorder=2)
+        if s.used > 1.0:
+            over = min(s.used - 1.0, OVER_SHOWN)
+            ax.barh(i, over, left=1.0, color=RED, height=0.62, zorder=2, hatch="////", edgecolor="white", linewidth=0)
+            ax.text(1.0 + over + 0.02, i, f"+{s.used - 1.0:.0%} over", va="center", fontsize=8.5,
+                    color=RED, fontweight="bold")
         if mb.current:
             ax.plot([mb.pace, mb.pace], [i - 0.38, i + 0.38], color=PACE, linewidth=1.6, zorder=3)
     ax.axvline(1.0, color=MUTED, linewidth=0.8, linestyle=":", zorder=0)
-    ax.set_yticks(range(len(rows)), [s.category for s in rows], fontsize=9)
-    ax.set_xlim(0, limit)
-    ax.xaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
+    labels = [f"{s.category}\n{_money(s.spent)} of {_money(s.budget)} · {s.used:.0%}" for s in rows]
+    ax.set_yticks(range(len(rows)), labels, fontsize=9)
+    ax.set_xlim(0, right)
+    ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0], ["0%", "25%", "50%", "75%", "budget"])
     ax.tick_params(axis="x", labelsize=8, colors=MUTED)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
