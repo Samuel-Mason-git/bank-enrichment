@@ -184,7 +184,8 @@ def test_unwanted_alerts_and_past_months_send_nothing(shop):
 def telegram(monkeypatch):
     sent = {"text": [], "photos": []}
     monkeypatch.setattr(budget_messages, "send_telegram", lambda t: sent["text"].append(t) or True)
-    monkeypatch.setattr(budget_messages, "send_telegram_photo", lambda p, caption="": sent["photos"].append(p) or True)
+    monkeypatch.setattr(budget_messages, "send_telegram_photo",
+                        lambda p, caption="": sent["photos"].append((p, caption)) or True)
     return sent
 
 
@@ -199,16 +200,18 @@ def test_the_digest_and_alerts_go_once(shop, telegram, monkeypatch):
     bg.set_budget(_pid(shop, "Food & Drink"), 400)
     monday = datetime(2026, 10, 12, 8, 0, tzinfo=bg.LONDON)
     assert budget_messages.run(monday) == {"digest": True, "alerts": 1}
-    digest, alert = telegram["text"]
+    (photo, digest), = telegram["photos"]   # the digest is the photo's caption
+    alert, = telegram["text"]
     assert "📊 <b>Budgets, October</b> · day 12 of 31" in digest
     assert "🔴 <b>Shopping</b>: £60 of £50 · £10 over" in digest and "🟢 <b>Food &amp; Drink</b>" in digest
     assert alert.startswith("🔴 <b>Shopping is over budget</b>")
-    assert telegram["photos"][0].startswith(b"\x89PNG")
+    assert photo.startswith(b"\x89PNG")
     assert budget_messages.run(monday.replace(hour=9)) == {"digest": False, "alerts": 0}
 
 
 def test_a_failed_send_is_tried_again_next_run(shop, monkeypatch):
     monkeypatch.setattr(bg, "today_london", lambda: date(2026, 10, 12))
+    monkeypatch.setattr(budget_messages, "send_telegram_photo", lambda p, caption="": False)
     monkeypatch.setattr(budget_messages, "send_telegram", lambda t: False)
     bg.set_budget(_pid(shop, "Shopping"), 50)
     bg.set_digest("daily")
@@ -354,12 +357,26 @@ def test_the_webhook_hands_a_proposal_tap_to_ask_chats():
 
 # ── /budget, over-budget bars, and the six-month history ─────────────────────
 
-def test_budget_command_sends_the_standing_as_text_and_a_chart(shop, telegram, monkeypatch):
+def test_budget_command_sends_the_standing_as_one_photo_with_the_text(shop, telegram, monkeypatch):
     monkeypatch.setattr(bg, "today_london", lambda: date(2026, 10, 15))
     bg.set_budget(_pid(shop, "Shopping"), 50)
     assert budget_messages.report() is True
-    assert telegram["text"][0].startswith("📊 <b>Budgets, October</b>")
-    assert telegram["photos"] and telegram["photos"][0].startswith(b"\x89PNG")
+    # short enough for a photo's caption: one message
+    assert telegram["text"] == []
+    photo, caption = telegram["photos"][0]
+    assert photo.startswith(b"\x89PNG")
+    assert caption.startswith("📊 <b>Budgets, October</b>")
+
+
+def test_a_digest_too_long_for_a_caption_sends_the_chart_then_the_text(shop, telegram, monkeypatch):
+    monkeypatch.setattr(bg, "today_london", lambda: date(2026, 10, 15))
+    bg.set_budget(_pid(shop, "Shopping"), 50)
+    monkeypatch.setattr(budget_messages, "CAPTION_LIMIT", 10)
+    order = []
+    monkeypatch.setattr(budget_messages, "send_telegram", lambda t: order.append("text") or True)
+    monkeypatch.setattr(budget_messages, "send_telegram_photo", lambda p, caption="": order.append("photo") or True)
+    assert budget_messages.report() is True
+    assert order == ["photo", "text"]
 
 
 def test_budget_command_without_budgets_says_where_to_set_them(shop, telegram):
