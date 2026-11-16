@@ -83,10 +83,35 @@ def send_digest(mb: bg.MonthBudgets) -> bool:
         return False
     if not send_telegram(digest_text(mb)):
         return False
+    send_digest_chart(mb)
+    return True
+
+
+def send_digest_chart(mb: bg.MonthBudgets) -> bool:
+    """The budget bars as a picture. Logged either way, so a missing chart
+    shows in the log rather than silently."""
     try:
-        send_telegram_photo(charts.budget_bars(mb))
+        png = charts.budget_bars(mb)
+        if not png:
+            log.warning("Budget chart not drawn: no budgets to chart")
+            return False
+        sent = send_telegram_photo(png)
     except Exception as e:
         log.warning(f"Budget chart not sent: {type(e).__name__}: {e}")
+        return False
+    if not sent:
+        log.warning("Budget chart not sent: Telegram refused the image")
+    return sent
+
+
+def report() -> bool:
+    """/budget: this month's standing on demand -- the text and the bars."""
+    mb = bg.month_budgets()
+    if not mb.statuses:
+        return send_telegram("No budgets are set yet. Set them on the Budget page of your dashboard.")
+    if not send_telegram(digest_text(mb)):
+        return False
+    send_digest_chart(mb)
     return True
 
 

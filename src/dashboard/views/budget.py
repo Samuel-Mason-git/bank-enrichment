@@ -24,22 +24,34 @@ ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (fr
 
 
 def _fill_chart(mb: bg.MonthBudgets) -> None:
+    """Every bar is the same length: the full length is the budget. Spending
+    fills it; anything over continues in red past the end, labelled with the
+    percentage over. Same design as the Telegram chart (telegram_charts.py)."""
     rows = list(reversed(mb.statuses))
-    names = [s.category for s in rows]
-    limit = max(1.0, min(1.6, max(s.used for s in rows) + 0.05))
+    labels = [f"{s.category}  ·  {_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows]
+    right = 1.0 + bg.OVER_SHOWN + 0.04
     fig = go.Figure()
-    fig.add_bar(y=names, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip", showlegend=False)
-    fig.add_bar(y=names, x=[min(s.used, limit) for s in rows], orientation="h",
+    fig.add_bar(y=labels, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip",
+                showlegend=False)
+    fig.add_bar(y=labels, x=[min(s.used, 1.0) for s in rows], orientation="h",
                 marker_color=[STATE_COLOUR[s.state] for s in rows], showlegend=False,
-                text=[f"{_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows], textposition="outside",
                 customdata=[s.note for s in rows],
-                hovertemplate="%{y}<br>%{text}<br>%{customdata}<extra></extra>")
+                hovertemplate="%{y}<br>%{customdata}<extra></extra>")
+    over_rows = [(i, s) for i, s in enumerate(rows) if s.used > 1.0]
+    if over_rows:
+        fig.add_bar(y=[labels[i] for i, _ in over_rows],
+                    x=[min(s.used - 1.0, bg.OVER_SHOWN) for _, s in over_rows],
+                    base=[1.0] * len(over_rows), orientation="h", marker_color=RED, showlegend=False,
+                    text=[f"+{s.used - 1.0:.0%} over" for _, s in over_rows], textposition="outside",
+                    hoverinfo="skip")
     if mb.current:
         for i in range(len(rows)):
             fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.4, y1=i + 0.4,
                           line={"color": PACE, "width": 3})
-    fig.update_layout(barmode="overlay", height=90 + 46 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 10},
-                      xaxis={"range": [0, limit * 1.35], "tickformat": ".0%", "showgrid": False},
+    fig.update_layout(barmode="overlay", height=110 + 52 * len(rows), margin={"t": 10, "b": 10, "l": 10, "r": 10},
+                      xaxis={"range": [0, right], "tickvals": [0, 0.25, 0.5, 0.75, 1.0],
+                             "ticktext": ["0%", "25%", "50%", "75%", "budget"], "tickformat": ".0%",
+                             "showgrid": False},
                       yaxis={"showgrid": False})
     st.plotly_chart(fig, width="stretch", key="budget_fill")
     if mb.current:
@@ -172,11 +184,12 @@ else:
     st.info("No budgets yet. Set some below: the suggestions are a good start. You can also ask on the Ask page or "
             "with /ask on Telegram, and confirm what the agent proposes.")
 
+st.subheader("Telegram messages and alerts")
+_telegram_settings(mb_now)
+
 st.subheader("Set budgets")
 _edit_budgets(mb)
 
 st.subheader("The last six months")
 _history_chart()
 
-st.subheader("Telegram")
-_telegram_settings(mb_now)
