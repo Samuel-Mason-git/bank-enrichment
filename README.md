@@ -1,20 +1,35 @@
 # Bank Enrichment
 
-## What Is This?
+**Self-hosted personal finance that asks you about each payment the moment it happens**, learns your categories with Claude, and tracks your budgets through Telegram and a local dashboard.
 
-Most financial tools answer one question: *what category was this transaction?*
+[![CI](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/Samuel-Mason-git/bank-enrichment/actions/workflows/ci.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-This project answers a different question: *what did this transaction actually mean?*
+Most budgeting tools ask you to sort last month's transactions in one go, by which point you've forgotten why you spent £12 at a service station. Bank Enrichment asks while you still remember, and keeps what it learns.
 
-Bank Enrichment is a personal financial intelligence pipeline that captures 
-real-time transaction context at the moment of purchase — while it's still 
-fresh — and builds a structured, enriched dataset that can be analysed, 
-queried, and reprocessed over time.
+## What it does
 
-The core insight is that a transaction like `TESCO £43.20` is almost meaningless 
-in isolation. But `weekly shop, bought ingredients for a dinner party, plus 
-impulse snacks` is a datapoint you can actually reason about — now and in ten 
-years time.
+- **📲 Asks at the point of purchase.** Each payment arrives in Telegram with a one-line question: what was this? One tap files it, a sentence explains it.
+- **🧠 Learns your categories.** Claude classifies every payment, proposes new categories for you to approve, and takes a second look at its own placements.
+- **🎯 Budgets per category.** A monthly limit for each, with Telegram messages (daily, weekdays, chosen days, or monthly), alerts when you're near or over, `/budget` on demand, and charts that show how full each one is. See [Budgets](#budgets).
+- **💬 Ask your money.** Plain-English questions answered by a read-only agent that shows its workings, on the dashboard or with `/ask` on Telegram. See [Ask](#ask).
+- **📊 A local dashboard.** Overview, trends, drill-downs, merchants, subscriptions, budgets, and an AI usage page showing what every Claude call cost.
+- **🗄️ Your data, on your box.** Postgres on a server you control, every raw webhook kept exactly as Monzo sent it, nightly backups, and written restore steps.
+
+## Who it's for
+
+One person's Monzo account, self-hosted on a small cloud server (it runs on Oracle's free tier). It isn't a hosted product and there's no sign-up. It's shared as a working example of an LLM-backed pipeline that's been run for real every day, with the warts left in.
+
+## What you need
+
+A Monzo account with developer access, a Telegram bot, an Anthropic API key, a server with Docker, and a domain for HTTPS (DuckDNS is free). The [SETUP guide](SETUP.md) walks through each step.
+
+## Quick links
+
+- [How it works](#how-it-works), and [Setup](SETUP.md)
+- [Budgets](#budgets) and [Ask](#ask)
+- [Backups and restore](#backups)
+- [LLM classification](#llm-classification), and the [new-category approval](#new-category-approval) flow
 
 ## Why Context at the Point of Purchase?
 
