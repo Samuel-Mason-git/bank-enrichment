@@ -41,10 +41,10 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
     """Scaled to the budget: 100% is the budget line. Spending fills each bar to
     that line in its status colour; anything over is red past it, so an
     overspend shows in proportion. The scale grows to fit the biggest overspend,
-    up to BAR_CAP (200% of budget). Same design as the Telegram chart."""
+    to fit the worst overspend. Same design as the Telegram chart."""
     rows = list(reversed(mb.statuses))
     labels = [f"{s.category}  ·  {_fmt(s.spent)} of {_fmt(s.budget)} ({s.used:.0%})" for s in rows]
-    top = min(max(1.0, max(s.used for s in rows)) * 1.08, bg.BAR_CAP)
+    top = max(1.0, max(s.used for s in rows)) * 1.08
     fig = go.Figure()
     fig.add_bar(y=labels, x=[1.0] * len(rows), orientation="h", marker_color=TRACK, hoverinfo="skip",
                 showlegend=False)
@@ -54,15 +54,15 @@ def _fill_chart(mb: bg.MonthBudgets) -> None:
     over = [(label, s) for label, s in zip(labels, rows) if s.used > 1.0]
     if over:
         fig.add_bar(y=[label for label, _ in over],
-                    x=[min(s.used, bg.BAR_CAP) - 1.0 for _, s in over],
+                    x=[s.used - 1.0 for _, s in over],
                     base=[1.0] * len(over), orientation="h", marker_color=RED, showlegend=False,
-                    text=[f"+{s.used - 1.0:.0%} over" + (" (cut off)" if s.used > bg.BAR_CAP else "") for _, s in over],
+                    text=[f"+{s.used - 1.0:.0%} over" for _, s in over],
                     textposition="outside", cliponaxis=False, hoverinfo="skip")
     if mb.current:
         for i in range(len(rows)):
             fig.add_shape(type="line", x0=mb.pace, x1=mb.pace, y0=i - 0.45, y1=i + 0.45,
                           line={"color": PACE, "width": 3})
-    ticks = [t for t in (0, 0.5, 1.0, 1.5, 2.0) if t <= top + 1e-9]
+    ticks = [t for t in (0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0) if t <= top + 1e-9]
     fig.add_shape(type="line", x0=1.0, x1=1.0, y0=-0.6, y1=len(rows) - 0.4,
                   line={"color": MUTED, "width": 1, "dash": "dash"})
     # Legend entries, drawn as empty traces so the lines above get a key.

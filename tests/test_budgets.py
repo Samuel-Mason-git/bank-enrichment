@@ -383,7 +383,7 @@ def test_an_over_budget_bar_keeps_the_budget_length_and_shows_how_far_over(shop)
     mb = bg.month_budgets(today=MID_OCT)
     png = charts.budget_bars(mb)
     assert png and png.startswith(b"\x89PNG")
-    assert bg.BAR_CAP == 2.0                                 # the scale tops out at 200%, beyond it a cut-off label
+    assert not hasattr(bg, "BAR_CAP")                        # the scale grows to fit the worst category
 
 
 def test_the_budget_page_draws_the_six_months_and_the_bars(db, monkeypatch):

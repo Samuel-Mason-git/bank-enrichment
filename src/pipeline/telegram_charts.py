@@ -14,7 +14,6 @@ from matplotlib.ticker import FuncFormatter, PercentFormatter  # noqa: E402
 
 GREEN, AMBER, RED = "#2e9d5b", "#e0a526", "#d64545"
 TRACK, INK, MUTED, PACE = "#e9ecef", "#222222", "#6c757d", "#1f3a5f"
-BAR_CAP = 2.0    # the budget bars' scale tops out at 200% of budget
 WITHIN = "#5b7bb0"   # an over-budget bar fills up to the budget in this; only the overspend is red
 WIDTH = 7.2      # inches, at DPI: wide enough for a phone screen held upright
 DPI = 160
@@ -42,24 +41,23 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
     line. Spending fills each bar to that line in its status colour (green,
     amber from 80% or when off pace); anything over the budget continues in
     red, so an overspend is visible in proportion. The scale grows to fit the
-    biggest overspend, up to BAR_CAP (200% of budget); a bar past the cap is
-    cut there and labelled with its true percentage. The dark marker is where
-    on-pace spending would be now. None with no budgets."""
+    biggest overspend. The dark marker is where on-pace spending would be
+    now. None with no budgets."""
     statuses = mb.statuses
     if not statuses:
         return None
     rows = list(reversed(statuses))          # most used at the top
     height = 1.0 + 0.62 * len(rows)
     fig, ax = plt.subplots(figsize=(WIDTH, height))
-    top = min(max(1.0, max(s.used for s in rows)) * 1.08, BAR_CAP)
+    top = max(1.0, max(s.used for s in rows)) * 1.08
     for i, s in enumerate(rows):
         ax.barh(i, 1.0, color=TRACK, height=0.62, zorder=1)
         ax.barh(i, min(s.used, 1.0), color=WITHIN if s.state == "over" else _colour(s.state), height=0.62, zorder=2)
         if s.used > 1.0:
-            over = min(s.used, BAR_CAP) - 1.0
+            over = s.used - 1.0
             ax.barh(i, over, left=1.0, color=RED, height=0.62, zorder=2)
-            end = min(s.used, BAR_CAP)
-            label = f"+{s.used - 1.0:.0%} over" + (" (cut off)" if s.used > BAR_CAP else "")
+            end = s.used
+            label = f"+{s.used - 1.0:.0%} over"
             ax.text(end + 0.02 * top, i, label, va="center", ha="left", fontsize=8.5, color=RED, fontweight="bold")
         if mb.current:
             ax.plot([mb.pace, mb.pace], [i - 0.45, i + 0.45], color=PACE, linewidth=2.6, zorder=3,
@@ -68,7 +66,7 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
     ax.text(1.0, len(rows) - 0.35, "budget", ha="center", va="bottom", fontsize=8, color=MUTED)
     labels = [f"{s.category}\n{_money(s.spent)} of {_money(s.budget)} · {s.used:.0%}" for s in rows]
     ax.set_yticks(range(len(rows)), labels, fontsize=9)
-    ticks = [t for t in (0, 0.5, 1.0, 1.5, 2.0) if t <= top + 1e-9]
+    ticks = [t for t in (0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0) if t <= top + 1e-9]
     ax.set_xlim(0, top + 0.12 * top)
     ax.set_xticks(ticks, [f"{t:.0%}" for t in ticks])
     ax.tick_params(axis="x", labelsize=8, colors=MUTED)

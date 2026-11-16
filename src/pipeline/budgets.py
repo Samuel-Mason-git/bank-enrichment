@@ -29,7 +29,6 @@ PACE_OVER = 1.10       # off pace when heading for more than this much of the bu
 PACE_FROM_DAY = 7      # too early before this to call a pace
 MIN_BUDGET, MAX_BUDGET = 1, 100_000
 SUGGEST_MONTHS = 3
-BAR_CAP = 2.0          # the bars' scale tops out at this share of the budget (200%); beyond it, cut off and labelled
 
 # Settings (app_settings), changed on the Budget page.
 DIGEST_SETTING = "budget_digest"                 # "off" | "daily" | "weekly"
