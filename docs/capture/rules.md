@@ -1,6 +1,6 @@
 # Rules
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 Rules are matched against each incoming transaction before the Telegram notification fires. 
 If a rule matches, the transaction is auto-enriched with the rule's context and the 
@@ -61,7 +61,7 @@ rules, both matching **Payment scheme** `exact` `uk_retail_pot`, with a second c
 of **Amount** `amount_negative` on one (Auto Context "Moved into savings pot") and
 `amount_positive` on the other ("Moved out of savings pot"). Once a few transactions have
 gone through each, set that subcategory's Role to **Saving** in the Settings page — see
-[Category Roles & Standard vs Actual](categories-and-roles.md).
+[Category Roles & Standard vs Actual](../classification/categories-and-roles.md).
 
 ### Checking Rules Against Payments
 

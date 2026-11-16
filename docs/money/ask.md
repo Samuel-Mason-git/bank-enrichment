@@ -1,6 +1,6 @@
 # Ask
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 Ask anything about your spending, income, savings or subscriptions — on the dashboard's **Ask** tab,
 or from your phone by sending the Telegram bot `/ask` and your question (`/ask how much have I spent

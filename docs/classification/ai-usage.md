@@ -1,6 +1,6 @@
 # AI usage
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 The **AI usage** page on the dashboard shows what the calls to Claude cost and did: spend by day,
 job, model and prompt version; each call's tokens, cost, response and thinking; and how good the

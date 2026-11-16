@@ -1,6 +1,6 @@
 # Classification
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 A multi-pass classification system runs every hour through the day on the server, against the shared database:
 

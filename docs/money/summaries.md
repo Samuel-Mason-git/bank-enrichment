@@ -1,6 +1,6 @@
 # Weekly and monthly summaries
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 The pipeline sends two kinds of Telegram summary, automatically.
 

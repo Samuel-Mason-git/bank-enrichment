@@ -1,6 +1,6 @@
 # Failure alerts
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 Every Anthropic error the pipeline catches — most importantly **running out of credit** —
 also sends you a Telegram alert, with the same bot, so it doesn't 

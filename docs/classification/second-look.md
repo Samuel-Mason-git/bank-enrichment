@@ -1,6 +1,6 @@
 # Second look
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 New Category Approval only fires when a *new* name is needed, so a confidently wrong 
 placement into an existing category (a holding deposit filed under Rent, a dentist 

@@ -1,6 +1,6 @@
 # New categories
 
-[← Back to the README](../README.md)
+[← Back to the README](../../README.md)
 
 ## New Category Approval
 
