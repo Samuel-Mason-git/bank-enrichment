@@ -64,6 +64,10 @@ A Monzo payment fires a webhook. The server stores it, then either applies a rul
 | [Security](docs/data/security.md) | Who can reach what |
 | [Architecture](docs/data/architecture.md) | Project structure, tech stack and CI/CD |
 
+## Disclaimer
+
+Bank Enrichment isn't affiliated with, endorsed by or sponsored by Monzo, Telegram or Anthropic. It isn't financial advice, and it comes with no warranty (see [LICENSE](LICENSE)). It reads your bank data through Monzo's API and keeps it in a database you run, so securing the database, the server and the secrets is up to you. See [Security](docs/data/security.md) and [SECURITY.md](SECURITY.md).
+
 ## Setup
 
 See [SETUP.md](SETUP.md) for full setup instructions.

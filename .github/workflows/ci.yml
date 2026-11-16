@@ -12,7 +12,7 @@ jobs:
 
     # A throwaway Postgres, started empty for this run and gone afterwards. The
     # Postgres tests (the `pg` fixture) build their own tables in it; it never
-    # sees real data. Same major version as the data box.
+    # sees real data. Same major version as the database the server runs on.
     services:
       postgres:
         image: postgres:18
