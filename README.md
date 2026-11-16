@@ -427,6 +427,8 @@ Nothing changes until you approve one.
 
 ## Local Dashboard
 
+The pages are grouped in the top bar: **Ask** and **Budget** on their own, then three menus: **Your money** (overview, trends, transactions, drill-downs, merchants, subscriptions), **Manage** (queue, payment details, rules, settings) and **Behind the scenes** (activity, AI usage).
+
 A Streamlit dashboard runs on your machine and reads the shared database directly, over the VPN.
 Every tab respects a shared sidebar: a quick date-range preset or custom range, parent/subcategory
 filters, a text search across merchant/description/context, toggles for skipped/unclassified
@@ -446,7 +448,12 @@ excluding something hides it from view, it does not delete or reclassify it.
 | Category Drill-Down | Pick any parent category to see role-based metric cards (Income/Spend/Invested/Saved — Invested/Saved already net deposits against withdrawals; Transferred/Excluded splits into separate Outgoing/Incoming cards whenever a category has both), subcategory breakdown charts, and a Subcategory Summary table with average transaction size, last-seen date, and % of category. |
 | Top Merchants | Ranks merchants by Total Spend or Frequency (toggle), with search, a Top-N selector, and stat cards (merchant count, total spend, average per merchant, top merchant). Matches on merchant name or counterparty name, so direct debits and bank transfers that never populate a merchant name are still included. |
 | Subscriptions | Auto-detected recurring payments — matches by merchant name *or* counterparty name (many direct debits only populate the latter), requires more supporting occurrences before suggesting a fast-cadence (weekly/fortnightly) pattern, and ignores patterns whose last occurrence is stale relative to their cadence. Confirmed subscriptions auto-deactivate if no matching transaction has landed in the last 2 months. |
+| Queue | Payments still waiting for something: an answer from you, or a category from the classifier. Shows how long each has waited and how often you've been asked. Pick one to answer, skip or delete it. |
+| Payment details | One payment in full: every field Monzo sent, what it has now, everything that's happened to it (arriving, questions, answers, labels, reviews), and the raw payload. Answer, skip or delete it from here. |
+| Rules | Every rule, against every payment ever received rather than recent ones. Shows what a rule would catch as you type it, what each saved rule has caught, and which rules catch a given payment. |
 | Settings | Stat cards (parent categories, subcategories, % classified). Tree view of all categories with a Role selector per parent (and per-subcategory override) driving the Standard vs Actual figures elsewhere. Add, rename, move, and delete categories — renaming keeps a category's custom Role, and a clear error is shown if a rename would collide with an existing category name. Click any subcategory to view its transactions or bulk-reassign them. Wipe labels per category to force re-classification, or wipe the entire taxonomy structure from the Danger Zone at the bottom (heavily guarded — requires typing a confirmation phrase). Also holds the Ask page's daily spending limit and the Backups section (see below). |
+| Activity | What the app did on any day: each hourly run (and any it missed), every warning and error from the server and the worker, and everything that happened to your payments. |
+| AI usage | What the calls to Claude cost and did: spend by day, job, model and prompt version; each call's tokens, cost, response and thinking; and how good the answers were (how often you corrected the classifier, and what the placement judge caught). |
 
 ### Ask
 
