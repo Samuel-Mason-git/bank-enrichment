@@ -44,7 +44,7 @@ The system sends push notifications via a Telegram bot when a transaction arrive
 1. Open Telegram and search for **@BotFather**
 2. Send `/newbot` and follow the prompts to choose a name and username
 3. BotFather will give you a token like `123456789:ABCdef...` — this is your `TELEGRAM_API` key
-4. Optional: send BotFather `/setcommands`, pick your bot, and send `ask - Ask about your money` and `budget - This month's budgets` (one per line), so `/ask` and `/budget` are offered as you type. It works without this; it's only the suggestion.
+4. Optional: send BotFather `/setcommands`, pick your bot, and send `ask - Ask about your money`, `budget - This month's budgets` and `help - What the bot can do` (one per line), so `/ask`, `/budget` and `/help` are offered as you type. It works without this; it's only the suggestion.
 
 **Get your chat ID:**
 

@@ -37,6 +37,7 @@ sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
 import activity  # noqa: E402
 import database_functions  # noqa: E402
 import ask_tg  # noqa: E402  (imports the pipeline's finance_agent)
+import bot_help  # noqa: E402
 import budget_messages  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
@@ -732,6 +733,11 @@ async def recieve_telegram(request: Request):
     elif update.message and update.message.text:
         msg = update.message
         chat_id = msg.chat.id
+
+        # /help: what the bot understands (bot_help.py).
+        if bot_help.is_help(msg.text):
+            bot.send_message(chat_id, bot_help.HELP)
+            return {"ok": True}
 
         # /budget: this month's budgets, sent as text and a chart (budget_messages.report).
         if re.match(r"^/budget(?:@\w+)?\s*$", (msg.text or "").strip(), re.IGNORECASE):
