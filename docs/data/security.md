@@ -14,3 +14,13 @@ start unless both are set, since without one of them that webhook would accept r
 who knows its URL. On top of that, the bot only acts on updates from your own `TELEGRAM_CHAT_ID`,
 so someone who finds it can't use it. `/oauth/start` is behind the login in `MONZO_LOGIN_USER` and
 `MONZO_LOGIN_PASSWORD`, and the callback only completes an authorization the server issued itself.
+
+## Where the secrets are kept
+
+The keys and tokens live in `config/.env`, and nowhere else: not in the database, and not in the
+settings that go into bronze. The setup command writes it, and keeps the old file beside it as a
+timestamped copy. Both are private from the moment they exist: owner-only (mode 0600) on macOS and
+Linux, and on Windows an access list that keeps out everyone but your user. The command refuses to
+finish if that can't be set. `config/` should stay out of anything you share or commit (it's in
+`.gitignore`).
+

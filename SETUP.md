@@ -59,6 +59,15 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
 
 ### 4. Configure Environment Variables
 
+Easier: run the setup command, which asks each of these, checks each one, registers the Telegram webhook and writes the file for you:
+
+```bash
+poetry run python src/pipeline/setup_wizard.py
+```
+
+It only writes `config/.env` once every check passes, and keeps the old file beside it. Both files are private: readable only by your user on macOS and Linux, and given an access list that keeps out everyone else on Windows (where the check runs `icacls`). Keep `config/` out of anything you share. The steps below are what it does, and the fallback if you'd rather edit the file yourself.
+
+
 `config/.env` is a single file that is used by both the server (loaded by Docker Compose) and your local machine (loaded automatically by the processing script). Fill it in once locally, then copy it to the server.
 
 On your **local machine**, from the project root:
