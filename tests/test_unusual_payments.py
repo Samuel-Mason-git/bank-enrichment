@@ -33,7 +33,7 @@ def test_far_above_the_usual_is_alerted_once(db, alert_post):
 
 def test_close_to_the_usual_is_not_alerted(db, alert_post):
     _history(db, "Corner Pharmacy", [20, 22, 18, 21, 19])
-    _payment(db, 30)                          # 1.5 times the usual, and only £10 more
+    _payment(db, 30)                          # about 1.5 times the usual: within normal variation
     assert up.run() == 0
     assert alert_post.call_count == 0
 
@@ -68,4 +68,19 @@ def test_a_failed_send_is_tried_again(db, alert_post):
 def test_the_usual_is_the_median_not_the_mean():
     # one big past payment doesn't move the bar: the median is what counts
     assert up.unusual(80, [20, 20, 20, 20, 500]) is not None
-    assert up.unusual(35, [20, 20, 20, 20, 500]) is None
+    assert up.unusual(30, [20, 20, 20, 20, 500]) is None
+
+
+def test_a_small_merchant_is_judged_in_proportion_not_in_pounds():
+    # a £3 coffee that usually costs £3: £10 is more than three times that, so it's an outlier
+    coffee = [3, 2.8, 3.2, 3, 2.9]
+    assert up.unusual(10, coffee) is not None
+    # a £150 shop usually costs £150: £200 is only about a third more, so it isn't
+    shop = [140, 150, 160, 145, 155]
+    assert up.unusual(200, shop) is None
+    assert up.unusual(400, shop) is not None
+
+
+def test_the_pound_gap_stops_pence_alerts():
+    # £2 against £1: four times the usual, but only £1 more, so not an alert
+    assert up.unusual(2, [1, 1.05, 0.95, 1, 1]) is None
