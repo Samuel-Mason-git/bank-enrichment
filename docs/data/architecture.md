@@ -26,6 +26,10 @@
 │   │   ├── weekly_summary.py, monthly_summary.py  # Telegram summaries (with budget lines and charts)
 │   │   ├── budgets.py         # Budgets: what's spent, the pace, alerts, and the settings for the budget message
 │   │   ├── budget_messages.py # The budget message, its alerts, and /budget
+│   │   ├── alert_settings.py  # The alert settings (unusual payments, subscriptions), with ranges and defaults
+│   │   ├── ask_settings.py    # The Ask settings (page, Telegram, model, effort, timeouts)
+│   │   ├── unusual_payments.py    # Telegram alert for a payment that's an outlier for its merchant
+│   │   ├── subscription_alerts.py # Telegram alerts for a changed subscription price or a missed payment
 │   │   ├── telegram_charts.py # Charts drawn as images for Telegram (matplotlib)
 │   │   ├── finance_agent.py   # The Ask agent: answers questions from the database, with its tools
 │   │   ├── agent_eval.py      # How accurate the Ask agent is, on your own data (manual, costs API credit)
