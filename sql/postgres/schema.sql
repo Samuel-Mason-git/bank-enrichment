@@ -238,6 +238,11 @@ CREATE TABLE IF NOT EXISTS budget_alerts (
     PRIMARY KEY (parent_id, month, kind)
 );
 
+-- The halfway alert ('early') was added later. The check is widened on every start, so a database
+-- made before it gets it too.
+ALTER TABLE budget_alerts DROP CONSTRAINT IF EXISTS budget_alerts_kind_check;
+ALTER TABLE budget_alerts ADD CONSTRAINT budget_alerts_kind_check CHECK (kind IN ('early', 'near', 'over', 'pace'));
+
 -- Subscription alerts sent on Telegram (subscription_alerts.py): a price that
 -- changed, keyed by the payment that showed it; a missed payment, keyed by the
 -- last payment seen. Each is sent once.

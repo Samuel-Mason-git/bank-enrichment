@@ -18,6 +18,7 @@ from dashboard_helpers import (
 from ui import _query, _card_rows
 import finance_agent as fa
 import alert_settings as AS
+import app_settings
 import app_config
 import ask_settings as ASK
 import classifier_settings as CLS
@@ -56,7 +57,15 @@ tax_parents = [
 ]
 tax_parent_names = [p["name"] for p in tax_parents]
 
-ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (from day 7)"}
+def _alert_labels(th: dict) -> dict:
+    """The instant alerts, named with the thresholds in use."""
+    return {
+        "early": f"Halfway ({round(th['early'] * 100)}% used)",
+        "near": f"Nearly used up ({round(th['near'] * 100)}% used)",
+        "over": "Over budget",
+        "pace": f"Off pace (from day {th['pace_from']}, heading for {round(th['pace_over'] * 100)}% of the budget)",
+        "week": (f"This week over £{th['week_limit']:,.0f}" if th["week_limit"] else "This week over a limit (set below)"),
+    }
 
 
 def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
@@ -77,17 +86,50 @@ def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
         elif mode == "monthly":
             monthday = st.number_input("On this day of the month (1 to 28, e.g. your payday)", min_value=1,
                                        max_value=28, value=int(current["monthday"]), step=1, key="budget_monthday")
-        wanted = st.multiselect("Instant alerts", list(ALERT_LABELS), default=sorted(bg.alerts_wanted()),
-                                format_func=ALERT_LABELS.get, key="budget_alert_kinds")
+        th = bg.thresholds()
+        labels = _alert_labels(th)
+        wanted = st.multiselect("Instant alerts", list(labels), default=sorted(bg.alerts_wanted()),
+                                format_func=labels.get, key="budget_alert_kinds")
+        c1, c2, c3 = st.columns(3)
+        early_pct = c1.number_input("Halfway warning at (%)", min_value=10, max_value=90,
+                                    value=round(th["early"] * 100), step=5, key="budget_early")
+        near_pct = c2.number_input("Nearly used up at (%)", min_value=50, max_value=100,
+                                   value=round(th["near"] * 100), step=5, key="budget_near")
+        pace_over = c3.number_input("Off pace when heading for (% of budget)", min_value=100, max_value=200,
+                                    value=round(th["pace_over"] * 100), step=5, key="budget_pace_over")
+        c4, c5 = st.columns(2)
+        pace_from = c4.number_input("Pace alerts start on day", min_value=1, max_value=28,
+                                    value=int(th["pace_from"]), step=1, key="budget_pace_from")
+        week_limit = c5.number_input("Weekly limit across the budgets (£, 0 = off)", min_value=0,
+                                     max_value=100_000, value=int(th["week_limit"]), step=10, key="budget_week_limit")
+        q1, q2 = st.columns(2)
+        quiet_from = q1.selectbox("Quiet from", list(range(24)), index=int(th["quiet_from"]),
+                                  format_func=lambda h: f"{h:02d}:00", key="budget_quiet_from")
+        quiet_to = q2.selectbox("Until", list(range(24)), index=int(th["quiet_to"]),
+                                format_func=lambda h: f"{h:02d}:00", key="budget_quiet_to")
+        st.caption("Alerts wait during quiet hours and go out at the first run after them. The worker runs "
+                   "08:00 to 22:00, so a 22:00 to 08:00 window holds them until morning. The same hour for both "
+                   "means no quiet hours.")
+        budgeted = {s_.parent_id: s_.category for s_ in mb_now.statuses}
+        muted_now = bg.muted_parents()
+        muted_names = st.multiselect("Categories with no alerts", list(budgeted.values()),
+                                     default=[budgeted[p] for p in budgeted if p in muted_now],
+                                     key="budget_muted")
         if st.form_submit_button("Save", type="primary"):
             try:
                 bg.set_digest(mode, days=days, monthday=int(monthday))
                 bg.set_alerts_wanted(wanted)
+                bg.set_muted_parents([p for p, name in budgeted.items() if name in muted_names])
+                for setting, value in [(bg.EARLY_PCT, early_pct), (bg.NEAR_PCT, near_pct),
+                                       (bg.PACE_OVER_PCT, pace_over), (bg.PACE_FROM, pace_from),
+                                       (bg.WEEK_LIMIT, week_limit), (bg.QUIET_FROM, quiet_from),
+                                       (bg.QUIET_TO, quiet_to)]:
+                    app_settings.save(setting, int(value))
                 st.success("Saved: " + bg.DIGEST_MODES[mode].lower()
                            + (f" ({', '.join(bg.WEEKDAYS[d] for d in sorted(days))})" if mode == "days" else "")
                            + (f" on day {int(monthday)}" if mode == "monthly" else "")
-                           + ". Alerts: " + (", ".join(ALERT_LABELS[k].lower() for k in wanted) or "none") + ".")
-            except bg.BudgetError as e:
+                           + ". Alerts: " + (", ".join(labels[k].lower() for k in wanted) or "none") + ".")
+            except (bg.BudgetError, ValueError) as e:
                 st.error(str(e))
     if st.button("Send me the budget message now", key="budget_send_now", disabled=not mb_now.statuses):
         if budget_messages.send_digest(mb_now):
@@ -97,7 +139,7 @@ def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
 
 
 tab_categories, tab_storage, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
-    ["Categories", "Storage", "Classification", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
+    ["Categories", "Storage", "Classification", "Budgets", "Alerts", "Ask", "Backups", "⚠️ Danger zone"]
 )
 
 with tab_categories:
@@ -481,6 +523,49 @@ with tab_categories:
                 else:
                     st.info("No transactions assigned to this subcategory.")
 
+def _folder_browser(current) -> None:
+    """Pick a backup folder by clicking through the folders on this machine. Starts at the
+    current folder, goes up or into a sub-folder, can make a new one, and saves the one you're in."""
+    key = "backup_browse"
+    if key not in st.session_state:
+        st.session_state[key] = str(current)
+    here = Path(st.session_state[key])
+    st.caption(f"Browsing `{here}`. Click a folder to open it, then press **Use this folder**.")
+    up_col, use_col = st.columns(2)
+    if up_col.button("⬆ Up one folder", key="backup_browse_up", disabled=here.parent == here):
+        st.session_state[key] = str(here.parent)
+        st.rerun()
+    try:
+        subfolders = sorted(p for p in here.iterdir() if p.is_dir() and not p.name.startswith("."))[:200]
+    except OSError:
+        subfolders = []
+        st.warning("This folder can't be read.")
+    cols = st.columns(3)
+    for i, sub in enumerate(subfolders):
+        if cols[i % 3].button(f"📁 {sub.name}", key=f"backup_browse_into_{sub}"):
+            st.session_state[key] = str(sub)
+            st.rerun()
+    new_col, make_col = st.columns([4, 1])
+    new_name = new_col.text_input("New folder name", key="backup_browse_new", label_visibility="collapsed",
+                                  placeholder="New folder name")
+    if make_col.button("Create", key="backup_browse_create", disabled=not new_name.strip()):
+        try:
+            (here / new_name.strip()).mkdir(parents=True, exist_ok=False)
+        except OSError as e:
+            st.error(f"Couldn't create it: {e.strerror or e}")
+        else:
+            st.session_state[key] = str(here / new_name.strip())
+            st.rerun()
+    if use_col.button("Use this folder", type="primary", key="backup_browse_use"):
+        try:
+            saved = set_backup_dir(str(here))
+        except BackupDirError as e:
+            st.error(str(e))
+        else:
+            st.success(f"Backups will be saved to {saved}.")
+            st.rerun()
+
+
 @st.cache_data(show_spinner=False)
 def _backup_zip_cached(path: str, modified: float) -> bytes:
     """A backup as a zip, built once per backup. The modification time is in the key,
@@ -664,18 +749,8 @@ with tab_backups:
             "drive is /mnt/c/... (for example /mnt/c/Users/you/Backups), and it shows up in Explorer."
         )
         st.write(f"Saving to `{backup_dir()}`")
-        loc_col, save_col, default_col = st.columns([4, 1, 1])
-        loc = loc_col.text_input("Folder", key="backup_dir_input", placeholder=str(default_backup_dir()),
-                                 label_visibility="collapsed")
-        if save_col.button("Save folder", key="backup_dir_save"):
-            try:
-                saved = set_backup_dir(loc)
-            except BackupDirError as e:
-                st.error(str(e))
-            else:
-                st.success(f"Backups will be saved to {saved}.")
-                st.rerun()
-        if default_col.button("Use the default", key="backup_dir_default"):
+        _folder_browser(backup_dir())
+        if st.button("Use the default folder", key="backup_dir_default"):
             reset_backup_dir()
             st.rerun()
         st.caption(
@@ -751,6 +826,14 @@ with tab_backups:
             # Deleting a backup throws away a safety net, so it gets the same
             # two-step confirm the rest of the app uses for destructive actions
             # rather than a single click next to a table.
+            st.markdown("**Download a backup** as a zip, to keep it somewhere else.")
+            for _p in _backups:
+                _c1, _c2 = st.columns([5, 1])
+                _c1.write(f"{backup_label(_p)} · {backup_reason(_p)}")
+                _c2.download_button("Download", data=_backup_zip_cached(str(_p), _p.stat().st_mtime),
+                                    file_name=f"{_p.name}.zip", mime="application/zip",
+                                    key=f"dl_{_p.name}")
+
             st.divider()
             if "confirm_del_backup" not in st.session_state:
                 st.session_state.confirm_del_backup = None
@@ -787,17 +870,11 @@ with tab_backups:
                         st.session_state.confirm_del_backup = None
                         st.rerun()
 
-    st.markdown("**Download a backup**")
-    st.caption("Download a backup as a zip, to keep it somewhere else.")
-    if _backups:
-        pick = st.selectbox("Backup to download", _backups, format_func=lambda p: p.name, key="backup_pick")
-        st.download_button("Download as a zip", data=_backup_zip_cached(str(pick), pick.stat().st_mtime),
-                           file_name=f"{pick.name}.zip",
-                           mime="application/zip", key="backup_download")
 
 with tab_danger:
     # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────
-    with st.expander("⚠️ Danger Zone"):
+    with st.expander("⚠️ Danger zone: the actions below can't be undone"):
+        st.error("**Danger zone.** What's below can't be undone. Read each warning before you confirm.")
         st.markdown("**Wipe entire taxonomy**")
 
         st.warning(

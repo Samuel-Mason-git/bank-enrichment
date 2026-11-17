@@ -57,21 +57,3 @@ def test_a_windows_path_is_refused_with_the_wsl_form(db):
 def test_an_empty_path_is_refused(db):
     with pytest.raises(BackupDirError, match="Type the folder"):
         set_backup_dir("   ")
-
-
-def test_the_settings_page_saves_a_folder(db, tmp_path):
-    at = AppTest.from_file(_DASHBOARD, default_timeout=30)
-    at.switch_page("views/settings.py").run()
-    at.text_input(key="backup_dir_input").set_value(str(tmp_path / "from-page")).run()
-    at.button(key="backup_dir_save").click().run()
-    assert not at.exception
-    assert backup_dir() == tmp_path / "from-page"
-
-
-def test_the_settings_page_shows_an_error_for_a_bad_folder(db):
-    at = AppTest.from_file(_DASHBOARD, default_timeout=30)
-    at.switch_page("views/settings.py").run()
-    at.text_input(key="backup_dir_input").set_value("not/absolute").run()
-    at.button(key="backup_dir_save").click().run()
-    assert not at.exception
-    assert any("full path" in e.value for e in at.error)

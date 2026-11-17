@@ -15,8 +15,9 @@ subcategory, reassign them, or wipe a category's labels so they're classified ag
 ## Budgets
 
 When the budget message comes to Telegram (off, every morning, weekdays only, chosen days of the week, or monthly on a day
-you pick), and which instant alerts you get: 80% used, over budget, and off pace. The budgets themselves are set on the
-Budget page. See [Budgets](budgets.md).
+you pick). Which instant alerts you get: halfway, nearly used up, over budget, off pace, and a weekly total. The points they
+fire at (the halfway and nearly-used-up percentages, the pace rule, the weekly limit), the quiet hours, and which categories
+get no alerts are all set here too. The budgets themselves are set on the Budget page. See [Budgets](budgets.md).
 
 ## Alerts
 
