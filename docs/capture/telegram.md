@@ -11,6 +11,7 @@ The bot talks only to your own chat (`TELEGRAM_CHAT_ID`). Anyone else who messag
 | `/ask <question>` | Asks the Ask agent about your money, e.g. `/ask how much did I spend this week?`. A follow-up within the chat timeout carries on the conversation. See [Ask](../money/ask.md). |
 | `/ask` on its own | Starts a fresh chat. |
 | `/budget` | This month's budgets: the text, and a chart of the bars in one message when the text fits a photo caption (1,024 characters). Otherwise the chart comes first, then the text. See [Budgets](../money/budgets.md). |
+| `/health` | Is the app working: the server answers, the database is reachable, when the last Monzo payment arrived, how the last worker run went, and whether the Claude key is set. It never calls Claude or Monzo, so it costs nothing. A line starts with ⚠️ when something needs a look. |
 | `/help` | The commands, and what a plain message does. |
 
 `/ask` and `/budget` can be switched off, or their timings changed, on the Settings page's Ask and Budgets tabs.
@@ -30,4 +31,4 @@ A plain message (anything that isn't a command) answers the payment the bot has 
 
 ## Setting it up
 
-The BotFather step in [SETUP.md](../../SETUP.md) makes `/ask`, `/budget` and `/help` appear as you type.
+The BotFather step in [SETUP.md](../../SETUP.md) makes `/ask`, `/budget`, `/health` and `/help` appear as you type.

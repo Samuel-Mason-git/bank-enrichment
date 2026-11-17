@@ -49,7 +49,7 @@ A Monzo payment fires a webhook. The server stores it, then either applies a rul
 | [Point of purchase](docs/capture/point-of-purchase.md) | Telegram questions, quick categories and skipping |
 | [Rules](docs/capture/rules.md) | Fixed categories, auto-context, auto-skip and rule suggestions |
 | [Subscriptions](docs/capture/subscriptions.md) | Recurring payments, spotted automatically, and alerts when a price changes or a payment is missed |
-| [Telegram](docs/capture/telegram.md) | The commands (`/ask`, `/budget`, `/help`) and the messages the bot sends you |
+| [Telegram](docs/capture/telegram.md) | The commands (`/ask`, `/budget`, `/health`, `/help`) and the messages the bot sends you |
 | [Classification](docs/classification/classification.md) | How Claude places each payment, and the default taxonomy |
 | [Categories and roles](docs/classification/categories-and-roles.md) | Income, spend, investment and saving, and Standard vs Actual |
 | [New categories](docs/classification/new-categories.md) | Approving new categories, and the monthly taxonomy review |

@@ -7,7 +7,7 @@
 ```
 ├── src/
 │   ├── server/                # FastAPI server (runs in Docker on the server)
-│   │   ├── main.py            # Webhooks, Telegram callbacks and commands (/ask, /budget), the server's dashboard
+│   │   ├── main.py            # Webhooks, Telegram callbacks and commands (/ask, /budget, /health), the server's dashboard
 │   │   ├── ask_tg.py          # /ask on Telegram: the finance agent's conversations and budget proposals
 │   │   ├── telegram.py        # Telegram bot logic (messages, photos, the typing indicator)
 │   │   ├── check_rules.py     # Rule matching logic
@@ -26,6 +26,7 @@
 │   │   ├── weekly_summary.py, monthly_summary.py  # Telegram summaries (with budget lines and charts)
 │   │   ├── budgets.py         # Budgets: what's spent, the pace, alerts, and the settings for the budget message
 │   │   ├── budget_messages.py # The budget message, its alerts, and /budget
+│   │   ├── bot_health.py      # /health: the app's status, sent to Telegram
 │   │   ├── alert_settings.py  # The alert settings (unusual payments, subscriptions), with ranges and defaults
 │   │   ├── ask_settings.py    # The Ask settings (page, Telegram, model, effort, timeouts)
 │   │   ├── unusual_payments.py    # Telegram alert for a payment that's an outlier for its merchant
