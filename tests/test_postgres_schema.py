@@ -95,7 +95,7 @@ def test_exactly_the_planned_tables_and_views(pg):
 
 def test_the_schema_can_be_applied_twice(pg):
     from tests.conftest import _PG_SCHEMA_PATH
-    pg.execute(_PG_SCHEMA_PATH.read_text())
+    pg.execute(_PG_SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def test_a_database_from_before_declined_gets_it_and_keeps_its_rows(pg):
@@ -107,7 +107,7 @@ def test_a_database_from_before_declined_gets_it_and_keeps_its_rows(pg):
                "CHECK (status IN ('pending', 'approved', 'denied'))")
     pg.execute("""INSERT INTO rule_suggestions (id, match_field, match_value, category, subcategory, status, proposed_at)
                   VALUES (1, 'merchant_name', 'EE', 'Bills', 'Phone', 'denied', NOW())""")
-    pg.execute(_PG_SCHEMA_PATH.read_text())
+    pg.execute(_PG_SCHEMA_PATH.read_text(encoding="utf-8"))
     pg.execute("""INSERT INTO rule_suggestions (id, match_field, match_value, category, subcategory, status, proposed_at)
                   VALUES (2, 'merchant_name', 'Lidl', 'Food', 'Groceries', 'declined', NOW())""")
     assert pg.execute("SELECT id, status FROM rule_suggestions ORDER BY id").fetchall() == [(1, "denied"), (2, "declined")]

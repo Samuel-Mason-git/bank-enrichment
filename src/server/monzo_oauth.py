@@ -54,7 +54,7 @@ def _save_tokens(response: dict) -> None:
         "expires_at": time.time() + response.get("expires_in", 0),
     }
     os.makedirs(os.path.dirname(TOKENS_PATH), exist_ok=True)
-    with open(TOKENS_PATH, "w") as f:
+    with open(TOKENS_PATH, "w", encoding="utf-8") as f:
         json.dump(record, f)
     os.chmod(TOKENS_PATH, 0o600)
 
@@ -62,7 +62,7 @@ def _save_tokens(response: dict) -> None:
 def _load_tokens() -> dict | None:
     if not os.path.exists(TOKENS_PATH):
         return None
-    with open(TOKENS_PATH) as f:
+    with open(TOKENS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 

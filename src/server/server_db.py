@@ -50,7 +50,7 @@ def init_db() -> None:
     if missing, and the views (which store nothing) are made again."""
     global _con
     _con = _connect()
-    with open(SCHEMA_PATH) as f:
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
         _con.execute(f.read())
 
 

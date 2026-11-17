@@ -18,6 +18,7 @@ from ui import _query, _card_rows
 import finance_agent as fa
 import alert_settings as AS
 import ask_settings as ASK
+import classifier_settings as CLS
 import budget_messages
 import budgets as bg
 from page_context import shared
@@ -90,11 +91,11 @@ def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
         if budget_messages.send_digest(mb_now):
             st.success("Sent to Telegram. It doesn't count as today's message, so the usual one still comes.")
         else:
-            st.error("Telegram didn't take it: check TELEGRAM_API and TELEGRAM_CHAT_ID in config/.env.")
+            st.error("Telegram didn't take it: check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in config/.env.")
 
 
-tab_categories, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
-    ["Categories", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
+tab_categories, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
+    ["Categories", "Classification", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
 )
 
 with tab_categories:
@@ -477,6 +478,25 @@ with tab_categories:
                     st.caption(f"{len(txns)} transaction(s)")
                 else:
                     st.info("No transactions assigned to this subcategory.")
+
+with tab_classification:
+    st.subheader("Classification")
+    st.caption(
+        "The model that places each payment in a category (passes 1 to 3). The match against existing "
+        "categories and the placement judge always use Haiku. Check a different model against your own "
+        "history before you rely on it: model_eval.py compares them."
+    )
+    c_models = list(CLS.MODELS)
+    c_saved = CLS.get(CLS.MODEL)
+    c_model = st.selectbox("Model for placing payments", c_models, index=c_models.index(c_saved),
+                           format_func=CLS.MODELS.get, key="classifier_model")
+    if st.button("Save classification settings", key="classifier_save"):
+        try:
+            CLS.save(CLS.MODEL, c_model)
+        except ValueError as e:
+            st.error(str(e))
+        else:
+            st.success("Saved. The next classification run uses it.")
 
 with tab_budgets:
     st.caption("When you get budget messages and alerts on Telegram. The budgets themselves are set on the Budget page.")

@@ -30,7 +30,7 @@ class TestExchangeCodeForTokens:
         with patch("monzo_oauth.requests.post", return_value=_response(
                 access_token="a", refresh_token="r", expires_in=21600)):
             assert monzo_oauth.exchange_code_for_tokens("some-code", "https://example.test/oauth/callback") is True
-        saved = json.loads(_tokens_path.read_text())
+        saved = json.loads(_tokens_path.read_text(encoding="utf-8"))
         assert saved["access_token"] == "a"
         assert saved["refresh_token"] == "r"
 
@@ -50,12 +50,12 @@ class TestRefreshTokens:
         _tokens_path.write_text(json.dumps({
             "access_token": "old-access", "refresh_token": "old-refresh",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         with patch("monzo_oauth.requests.post", return_value=_response(
                 access_token="new-access", refresh_token="new-refresh", expires_in=21600)) as mock_post:
             assert monzo_oauth.refresh_tokens() is True
         assert mock_post.call_args.kwargs["data"]["refresh_token"] == "old-refresh"
-        saved = json.loads(_tokens_path.read_text())
+        saved = json.loads(_tokens_path.read_text(encoding="utf-8"))
         assert saved["refresh_token"] == "new-refresh"
         assert saved["access_token"] == "new-access"
 
@@ -63,10 +63,10 @@ class TestRefreshTokens:
         _tokens_path.write_text(json.dumps({
             "access_token": "old-access", "refresh_token": "old-refresh",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
             assert monzo_oauth.refresh_tokens() is False
-        saved = json.loads(_tokens_path.read_text())
+        saved = json.loads(_tokens_path.read_text(encoding="utf-8"))
         assert saved["refresh_token"] == "old-refresh"
 
 
@@ -80,7 +80,7 @@ class TestPing:
         _tokens_path.write_text(json.dumps({
             "access_token": "my-access", "refresh_token": "r",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         with patch("monzo_oauth.requests.get", return_value=_response(status_code=200)) as mock_get:
             assert monzo_oauth.ping() is True
         assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer my-access"
@@ -106,7 +106,7 @@ class TestRunMonzoRefresh:
         _tokens_path.write_text(json.dumps({
             "access_token": "a", "refresh_token": "r",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         bot = MagicMock()
         with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
             monzo_oauth.run_monzo_refresh(bot)
@@ -118,7 +118,7 @@ class TestRunMonzoRefresh:
         _tokens_path.write_text(json.dumps({
             "access_token": "a", "refresh_token": "r",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         bot = MagicMock()
         with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
             monzo_oauth.run_monzo_refresh(bot)
@@ -130,7 +130,7 @@ class TestRunMonzoRefresh:
         _tokens_path.write_text(json.dumps({
             "access_token": "a", "refresh_token": "r",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         bot = MagicMock()
         with patch("monzo_oauth.requests.post", return_value=_response(status_code=401)):
             monzo_oauth.run_monzo_refresh(bot)
@@ -145,7 +145,7 @@ class TestRunMonzoRefresh:
         _tokens_path.write_text(json.dumps({
             "access_token": "old", "refresh_token": "old-r",
             "obtained_at": time.time(), "expires_at": time.time() + 100,
-        }))
+        }), encoding="utf-8")
         bot = MagicMock()
         with patch("monzo_oauth.requests.post", return_value=_response(
                 access_token="fresh", refresh_token="r2", expires_in=21600)):

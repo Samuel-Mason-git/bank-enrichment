@@ -253,8 +253,8 @@ def test_every_settings_change_is_logged(db):
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
 def test_a_run_records_its_steps_memory_and_calls(db, monkeypatch, tmp_path):
-    (tmp_path / "memory.current").write_text(str(150 * 1_048_576))
-    (tmp_path / "memory.max").write_text(str(350 * 1_048_576))
+    (tmp_path / "memory.current").write_text(str(150 * 1_048_576), encoding="utf-8")
+    (tmp_path / "memory.max").write_text(str(350 * 1_048_576), encoding="utf-8")
     monkeypatch.setattr(activity, "CGROUP", tmp_path)
 
     def steps():

@@ -16,6 +16,7 @@ The webhook hands a question over and returns at once (Telegram retries a
 webhook that takes too long); the answer is sent when it's ready, with the
 "typing…" indicator showing meanwhile."""
 import asyncio
+import app_config
 import html
 import logging
 import os
@@ -89,7 +90,7 @@ def to_html(markdown: str) -> str:
 
 def _default_agent():
     import anthropic
-    return fa.FinanceAgent(anthropic.Anthropic(api_key=os.getenv("CLAUDE_SECRET")), channel="telegram")
+    return fa.FinanceAgent(anthropic.Anthropic(api_key=app_config.anthropic_key()), channel="telegram")
 
 
 async def _typing(bot, chat_id: int) -> None:
@@ -133,7 +134,7 @@ class AskChats:
             self._chats.pop(chat_id, None)
             bot.send_message(chat_id, HELP)
             return
-        if not (fa.is_configured() and os.getenv("CLAUDE_SECRET")):
+        if not (fa.is_configured() and app_config.anthropic_key()):
             bot.send_message(chat_id, NOT_SET_UP)
             return
         chat = self._chats.get(chat_id)

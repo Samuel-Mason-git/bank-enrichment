@@ -17,6 +17,7 @@ logged and dropped, and each kind is sent at most once per run, so a run that
 fails 40 calls in a row sends one message, not 40.
 """
 import html
+import app_config
 import logging
 import os
 import threading
@@ -26,7 +27,7 @@ import anthropic
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # loads config/.env
 
 log = logging.getLogger(__name__)
 
@@ -34,9 +35,9 @@ log = logging.getLogger(__name__)
 def send_telegram(text: str) -> bool:
     """One HTML message to you on Telegram. Never raises: a message that can't
     be sent is logged and dropped. True if Telegram accepted it."""
-    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    token, chat_id = app_config.telegram_token(), os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram message not sent")
+        log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID isn't set -- Telegram message not sent")
         return False
     try:
         response = requests.post(
@@ -57,11 +58,11 @@ def send_telegram_photo(png: bytes | None, caption: str = "") -> bool:
     (Telegram allows 1,024 characters). Never raises, like send_telegram; a
     missing image is simply not sent. Telegram can be slow to take a picture,
     so an upload that times out is tried once more before giving up."""
-    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    token, chat_id = app_config.telegram_token(), os.getenv("TELEGRAM_CHAT_ID")
     if not png:
         return False
     if not token or not chat_id:
-        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram image not sent")
+        log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID isn't set -- Telegram image not sent")
         return False
     for attempt in (1, 2):
         try:

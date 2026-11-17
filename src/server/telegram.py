@@ -1,4 +1,5 @@
 import html
+import app_config
 import os
 import re
 import logging
@@ -30,11 +31,11 @@ class TelegramSendError(Exception):
 
 class TelegramBot:
     def __init__(self):
-        self.api_key = os.getenv("TELEGRAM_API")
+        self.api_key = app_config.telegram_token()
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
         if not self.api_key:
-            raise ValueError("Missing TELEGRAM_API env variable")
+            raise ValueError("Missing TELEGRAM_BOT_TOKEN env variable")
 
         if not self.chat_id:
             raise ValueError("Missing TELEGRAM_CHAT_ID env variable")

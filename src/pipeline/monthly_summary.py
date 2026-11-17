@@ -5,7 +5,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # loads config/.env
 
 import html
 

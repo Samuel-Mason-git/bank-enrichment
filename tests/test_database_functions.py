@@ -664,7 +664,7 @@ class TestBackupManifest:
 
     def test_corrupt_manifest_reads_as_empty(self, db):
         target = database_functions.backup_db("test")
-        (target / database_functions.MANIFEST_NAME).write_text("{not json")
+        (target / database_functions.MANIFEST_NAME).write_text("{not json", encoding="utf-8")
         assert database_functions.read_backup_manifest(target) == {}
 
     def test_size_counts_every_exported_file(self, db):

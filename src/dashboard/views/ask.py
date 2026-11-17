@@ -6,6 +6,7 @@ asked for and what came back -- so any figure can be checked. The agent reads
 through its own read-only database login and ignores the sidebar's filters:
 the dates come from the question. A chat lasts as long as the browser tab."""
 import json
+import app_config
 import os
 
 import anthropic
@@ -73,7 +74,7 @@ def _charts(charts: list, key: str) -> None:
 
 
 def _new_chat() -> None:
-    st.session_state["ask_agent"] = fa.FinanceAgent(anthropic.Anthropic(api_key=os.getenv("CLAUDE_SECRET")))
+    st.session_state["ask_agent"] = fa.FinanceAgent(anthropic.Anthropic(api_key=app_config.anthropic_key()))
     st.session_state["ask_history"] = []
 
 
@@ -131,8 +132,8 @@ if not fa.is_configured():
     st.info("The Ask page needs the agent's own read-only database login: add AGENT_DB_USER and "
             "AGENT_DB_PASSWORD to config/.env (see SETUP.md for creating the role), then restart the dashboard.")
     st.stop()
-if not os.getenv("CLAUDE_SECRET"):
-    st.info("The Ask page needs CLAUDE_SECRET in config/.env.")
+if not app_config.anthropic_key():
+    st.info("The Ask page needs ANTHROPIC_API_KEY in config/.env.")
     st.stop()
 
 if "ask_agent" not in st.session_state:

@@ -297,7 +297,7 @@ def main():
     args = p.parse_args()
 
     if not ll.CLAUDE_SECRET:
-        raise SystemExit("CLAUDE_SECRET not set in config/.env")
+        raise SystemExit("ANTHROPIC_API_KEY not set in config/.env")
     init_db(read_only=True)
     rng = random.Random(args.seed)
     sample = labelled_sample(args.n, rng)

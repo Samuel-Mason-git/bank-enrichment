@@ -119,7 +119,7 @@ def main(argv=None) -> int:
 
     reviewer = make_placement_reviewer()
     if not reviewer.configured:
-        print("The judge is switched off (PLACEMENT_JUDGE=off, no CLAUDE_SECRET, or the server can't show cards).",
+        print("The judge is switched off (PLACEMENT_JUDGE=off, no ANTHROPIC_API_KEY, or the server can't show cards).",
               file=sys.stderr)
         return 1
     if not todo:

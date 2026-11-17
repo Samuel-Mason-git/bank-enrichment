@@ -1,3 +1,6 @@
+[tool.poetry]
+package-mode = false   # an application, not a library: nothing to package, so no --no-root
+
 [project]
 name = "bank-enrichment"
 version = "0.1.0"

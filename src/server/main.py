@@ -6,6 +6,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
+import app_config
 import uvicorn
 import html
 import logging
@@ -110,8 +111,8 @@ def _unset_webhook_secrets() -> list[str]:
 # The login in front of /oauth/start, so only you can link a Monzo account.
 # Named after the web dashboard it used to guard too (gone: the Streamlit
 # dashboard does all of that now); kept so existing .env files still work.
-DASHBOARD_USER = os.getenv("DASHBOARD_USER")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+DASHBOARD_USER = app_config.monzo_login_user()
+DASHBOARD_PASSWORD = app_config.monzo_login_password()
 _sessions: dict = {}
 _pending_skips: dict = {}
 
@@ -120,7 +121,7 @@ security = HTTPBasic()
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=503, detail="Login not configured (DASHBOARD_USER/DASHBOARD_PASSWORD)")
+        raise HTTPException(status_code=503, detail="Login not configured (MONZO_LOGIN_USER/MONZO_LOGIN_PASSWORD)")
     correct_user = secrets.compare_digest(credentials.username, DASHBOARD_USER)
     correct_pass = secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
     if not (correct_user and correct_pass):
@@ -314,6 +315,9 @@ class TelegramUpdate(BaseModel):
     edited_message: Optional[TelegramMessage] = None
     callback_query: Optional[TelegramCallbackQuery] = None
 
+# The correct spelling is what SETUP.md registers. The old spelling stays routed
+# too, so a webhook already registered with it keeps working.
+@app.post('/receive_monzo/')
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     # Monzo doesn't sign webhooks, so the only proof one came from Monzo is the
@@ -476,6 +480,8 @@ def _from_owner(update: "TelegramUpdate") -> bool:
     return False
 
 
+# The old spelling stays routed too, as for /receive_monzo/ above.
+@app.post('/receive_telegram/')
 @app.post('/recieve_telegram/')
 async def recieve_telegram(request: Request):
     # Telegram sends the secret_token set via setWebhook in this header on

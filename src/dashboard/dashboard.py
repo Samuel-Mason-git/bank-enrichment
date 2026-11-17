@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
 # The server's rule matching (check_rules), so the Rules page judges a match
 # exactly as the webhook does. Last on the path: nothing there shadows ours.
 sys.path.append(str(Path(__file__).parent.parent / "server"))
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # loads config/.env
 # Changes made here are recorded as the dashboard's (settings_changes).
 os.environ.setdefault("DB_APP_NAME", "dashboard")
 

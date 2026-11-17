@@ -20,7 +20,7 @@ import psycopg
 from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # loads config/.env
 
 log = logging.getLogger(__name__)
 
@@ -1277,7 +1277,7 @@ def _write_manifest(target: Path, reason: str) -> None:
                 "SELECT COUNT(*) FROM subcategories WHERE archived_at IS NULL").fetchone()[0],
             "subscriptions": con.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0],
         }
-        (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+        (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     except Exception as e:
         log.warning(f"Could not write backup manifest for {target}: {e}")
 
@@ -1286,7 +1286,7 @@ def read_backup_manifest(path: Path) -> dict:
     """Empty dict for a backup without a manifest -- it should still list,
     just without the detail."""
     try:
-        return json.loads((path / MANIFEST_NAME).read_text())
+        return json.loads((path / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 

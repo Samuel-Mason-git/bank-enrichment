@@ -44,7 +44,7 @@ def pg():
     con = psycopg.connect(url, autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"CREATE SCHEMA {schema}")
     con.execute(f"SET search_path TO {schema}")
-    con.execute(_PG_SCHEMA_PATH.read_text())
+    con.execute(_PG_SCHEMA_PATH.read_text(encoding="utf-8"))
     yield con
     con.execute(f"DROP SCHEMA {schema} CASCADE")
     con.close()

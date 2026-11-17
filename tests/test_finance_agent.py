@@ -12,7 +12,7 @@ import finance_agent as fa
 from tests.local_helpers import insert_transaction
 
 AGENT_ROLE = "bank_enrichment_agent"
-_SCHEMA_SQL = (Path(__file__).parent.parent / "sql" / "postgres" / "schema.sql").read_text()
+_SCHEMA_SQL = (Path(__file__).parent.parent / "sql" / "postgres" / "schema.sql").read_text(encoding="utf-8")
 # Exactly what schema.sql runs on every start to grant the agent its tables.
 _GRANTS = _SCHEMA_SQL[_SCHEMA_SQL.index("-- ── The finance agent's read-only login"):]
 

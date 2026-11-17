@@ -85,7 +85,7 @@ def memory() -> dict:
     found = {}
     for key, name in (("current_mb", "memory.current"), ("peak_mb", "memory.peak"), ("limit_mb", "memory.max")):
         try:
-            value = (CGROUP / name).read_text().strip()
+            value = (CGROUP / name).read_text(encoding="utf-8").strip()
             if value != "max":
                 found[key] = round(int(value) / 1_048_576)
         except (OSError, ValueError):
