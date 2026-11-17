@@ -71,7 +71,7 @@ jobs:
           docker run --rm -w /app \
             -e TELEGRAM_API=ci -e TELEGRAM_CHAT_ID=1 \
             bank-enrichment-server \
-            python -c "import os, sys; sys.path.insert(0, 'src/server'); import server_db, telegram, check_rules, follow_up_tg, main; assert os.path.isfile(server_db.SCHEMA_PATH), 'schema.sql is missing from the image'; print('server modules import OK')"
+            python -c "import os, sys; sys.path.insert(0, 'src/server'); sys.path.append('src/pipeline'); import server_db, telegram, check_rules, follow_up_tg, main; assert os.path.isfile(server_db.SCHEMA_PATH), 'schema.sql is missing from the image'; print('server modules import OK')"
 
       # The worker runs the pipeline from the same image: everything it imports
       # has to be there, and the dashboard's heavy dependencies must not be.
