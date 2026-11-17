@@ -93,6 +93,32 @@ def validate(dest: Destination) -> None:
     raise ExportError(f"BRONZE_DESTINATION must be none, folder or s3, not {dest.kind!r}.")
 
 
+def describe(dest: Destination) -> dict:
+    """What the Storage page shows: where the bronze copy goes and when it last did. No secrets."""
+    return {
+        "kind": dest.kind,
+        "folder": dest.folder if dest.kind == "folder" else None,
+        "endpoint": dest.endpoint if dest.kind == "s3" else None,
+        "bucket": dest.bucket if dest.kind == "s3" else None,
+        "prefix": dest.prefix if dest.kind == "s3" else None,
+        "keep": dest.keep,
+        "last_day": get_setting(LAST_DAY_SETTING),
+    }
+
+
+def as_answers(dest: Destination) -> dict:
+    """The same destination in the names the setup command's checks use, so the Storage page can run them."""
+    return {
+        "BRONZE_DESTINATION": dest.kind,
+        "BRONZE_FOLDER": dest.folder or "",
+        "BRONZE_S3_ENDPOINT": dest.endpoint or "",
+        "BRONZE_S3_BUCKET": dest.bucket or "",
+        "BRONZE_S3_PREFIX": dest.prefix or "",
+        "BRONZE_S3_KEY_ID": dest.key_id or "",
+        "BRONZE_S3_SECRET": dest.secret or "",
+    }
+
+
 def _stamp(when: datetime) -> str:
     return f"{when:%Y%m%d-%H%M%S}_export"
 
