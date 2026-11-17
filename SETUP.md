@@ -59,6 +59,15 @@ https://api.telegram.org/bot{YOUR_TOKEN}/getUpdates
 
 ### 4. Configure Environment Variables
 
+Easier: run the setup command, which asks each of these, checks each one, registers the Telegram webhook and writes the file for you:
+
+```bash
+poetry run python src/pipeline/setup_wizard.py
+```
+
+It only writes `config/.env` once every check passes, and keeps the old file beside it. Both files are private: readable only by your user on macOS and Linux, and given an access list that keeps out everyone else on Windows (where the check runs `icacls`). Keep `config/` out of anything you share. The steps below are what it does, and the fallback if you'd rather edit the file yourself.
+
+
 `config/.env` is a single file that is used by both the server (loaded by Docker Compose) and your local machine (loaded automatically by the processing script). Fill it in once locally, then copy it to the server.
 
 On your **local machine**, from the project root:
@@ -481,3 +490,13 @@ data; a change that needs to is a one-off script, run deliberately, after a back
 ```bash
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
+
+**Before you start:** this app needs a PostgreSQL database that you already run and can reach from this machine. It doesn't install one. The setup command asks for its details.
+
+**Optional, bronze:** a raw save of everything the app receives, as plain files. It's kept apart from the database, so it survives if the database does. The app doesn't need it to run, so skip it unless you want that safety copy. The setup command asks where it goes: none (the default), a folder, or a bucket.
+
+### Optional: a bronze copy
+
+The setup command asks this: none (the default), a folder, or a bucket. A folder or bucket gets a copy of
+the data every day, after the worker's first run of the day. See [Backups](docs/data/backups.md#a-daily-copy-somewhere-else)
+for the settings and what's kept.
