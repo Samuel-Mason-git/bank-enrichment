@@ -5,7 +5,7 @@
 The database is yours to back up, however you run it: this project doesn't include backups. Every change to a transaction is kept in its history anyway.
 
 **Back up now** in the Settings page takes a copy of your own before you try something: every
-table saved as a Parquet file, in a folder named `<timestamp>_<reason>` under `BACKUP_DIR`
+table saved as a Parquet file, in a folder named `<timestamp>_<reason>` in the backup folder
 (default `~/bank-enrichment-backups`). Nothing is ever backed up automatically. Read one back
 with DuckDB or pandas, e.g.
 
