@@ -50,13 +50,31 @@ def merge_env(existing: str, updates: dict[str, str]) -> str:
     return "\n".join(out) + "\n"
 
 
+def restrict_to_owner(path: Path) -> None:
+    """Make a file readable only by the user running the setup. On macOS and Linux the
+    0600 mode the file is created with does this. Windows ignores that mode, so its
+    access list is set instead: the folder's inherited permissions are removed, and
+    only the current user is granted access."""
+    if os.name != "nt":
+        return
+    import subprocess
+    user = os.environ.get("USERNAME") or os.environ.get("USER")
+    if not user:
+        raise SetupError("Couldn't tell who you are, so the config file can't be made private.")
+    done = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        raise SetupError(f"Couldn't make {path.name} private: {done.stderr.strip() or 'icacls failed'}")
+
+
 def _private_write(path: Path, text: str) -> None:
     """Write a file that only its owner can read. The mode is set when the file is
-    created, so the secrets are never readable by anyone else, not even for a moment.
-    (On Windows the mode is ignored; the file takes the folder's permissions.)"""
+    created, so on macOS and Linux the secrets are never readable by anyone else, not
+    even for a moment. On Windows the access list is then restricted (restrict_to_owner)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
+    restrict_to_owner(path)
 
 
 def write_env(updates: dict[str, str], path: Path = ENV_PATH) -> Path | None:
@@ -74,6 +92,7 @@ def write_env(updates: dict[str, str], path: Path = ENV_PATH) -> Path | None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(merge_env(existing, updates))
+        restrict_to_owner(Path(tmp_name))
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)

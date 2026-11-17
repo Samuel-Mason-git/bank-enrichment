@@ -198,3 +198,45 @@ def test_no_temporary_file_is_left_behind(tmp_path):
     path = tmp_path / "config" / ".env"
     sw.write_env({"A": "1"}, path)
     assert sorted(p.name for p in path.parent.iterdir()) == [".env"]
+
+
+def test_restricting_is_a_no_op_off_windows(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(sw.os, "name", "posix")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    f = tmp_path / ".env"
+    f.write_text("x", encoding="utf-8")
+    sw.restrict_to_owner(f)
+    assert calls == []
+
+
+def test_on_windows_the_access_list_is_set_to_the_current_user(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setenv("USERNAME", "mason")
+    seen = []
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: seen.append(cmd) or Done())
+    sw.restrict_to_owner(tmp_path / ".env")
+    assert seen[0][:2] == ["icacls", str(tmp_path / ".env")]
+    assert "/inheritance:r" in seen[0] and "mason:F" in seen[0]
+
+
+def test_a_failed_access_change_stops_the_write(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setenv("USERNAME", "mason")
+
+    class Done:
+        returncode = 1
+        stderr = "access denied"
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: Done())
+    with pytest.raises(sw.SetupError, match="access denied"):
+        sw.restrict_to_owner(tmp_path / ".env")
+
