@@ -4,7 +4,8 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 from database_functions import (
-    BACKUPS_KEPT, ROLES, BackupDirError, backup_db, backup_dir, backup_size_bytes, default_backup_dir,
+    BACKUPS_KEPT, ROLES, BackupDirError, backup_db, backup_dir, backup_size_bytes,
+    backup_zip, default_backup_dir,
     delete_backup, delete_parent, reset_backup_dir, set_backup_dir,
     delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
     get_setting, read_backup_manifest, rename_parent, set_parent_role, set_setting, set_subcategory_role, upsert_parent,
@@ -649,6 +650,13 @@ with tab_backups:
                     if st.button("Cancel", key="confirm_del_backup_no"):
                         st.session_state.confirm_del_backup = None
                         st.rerun()
+
+    st.markdown("**Download a backup**")
+    st.caption("Download a backup as a zip, to keep it somewhere else.")
+    if _backups:
+        pick = st.selectbox("Backup to download", _backups, format_func=lambda p: p.name, key="backup_pick")
+        st.download_button("Download as a zip", data=backup_zip(pick), file_name=f"{pick.name}.zip",
+                           mime="application/zip", key="backup_download")
 
 with tab_danger:
     # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────

@@ -4,12 +4,14 @@ project's Postgres database, schema `bank_enrichment`).
 Transactions are read through the `transactions` view, under the column names
 the old table had. Writes to a transaction are history, not updates: a label is
 a new label_events row, a corrected date or context a new context_events row."""
+import io
 import json
 import logging
 import os
 import shutil
 import statistics
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1317,6 +1319,18 @@ def _prune_backups() -> None:
             log.info(f"Pruned old backup {old}")
         except OSError as e:
             log.warning(f"Could not prune old backup {old}: {e}")
+
+
+# ── Download ──────────────────────────────────────────────────────
+
+def backup_zip(path: Path) -> bytes:
+    """One backup folder as a zip, its files at the top level."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(path.iterdir()):
+            if f.is_file():
+                z.write(f, arcname=f.name)
+    return buf.getvalue()
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
