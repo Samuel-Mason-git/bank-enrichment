@@ -14,7 +14,7 @@ def test_the_alerts_tab_saves_off_and_more_sensitive(db):
     assert not at.exception
     at.radio(key="unusual_level").set_value("more").run()
     at.toggle(key="unusual_on").set_value(False).run()
-    at.button(key="unusual_save").click().run()
+    at.button(key="alerts_save").click().run()
     assert not at.exception
     assert get_setting("unusual_payments_on") is False
     assert get_setting("unusual_payments_level") == "more"

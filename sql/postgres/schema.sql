@@ -238,6 +238,17 @@ CREATE TABLE IF NOT EXISTS budget_alerts (
     PRIMARY KEY (parent_id, month, kind)
 );
 
+-- Subscription alerts sent on Telegram (subscription_alerts.py): a price that
+-- changed, keyed by the payment that showed it; a missed payment, keyed by the
+-- last payment seen. Each is sent once.
+CREATE TABLE IF NOT EXISTS subscription_alerts (
+    sub_id  INTEGER     NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE,
+    kind    VARCHAR(8)  NOT NULL CHECK (kind IN ('price', 'missed')),
+    ref     VARCHAR     NOT NULL,
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (sub_id, kind, ref)
+);
+
 -- A payment that was far above its merchant's usual amount, once it's been
 -- sent on Telegram (unusual_payments.py). Keeps it from alerting twice.
 CREATE TABLE IF NOT EXISTS unusual_payment_alerts (
