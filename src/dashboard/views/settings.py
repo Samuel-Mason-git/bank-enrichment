@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 from database_functions import (
-    BACKUPS_KEPT, ROLES, BackupDirError, BackupZipError, add_backup_zip, backup_db, backup_dir, backup_size_bytes,
+    BACKUPS_KEPT, ROLES, BackupDirError, backup_db, backup_dir, backup_size_bytes,
     backup_zip, default_backup_dir,
     delete_backup, delete_parent, reset_backup_dir, set_backup_dir,
     delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
@@ -651,24 +651,12 @@ with tab_backups:
                         st.session_state.confirm_del_backup = None
                         st.rerun()
 
-    st.markdown("**Download or add a backup**")
-    st.caption(
-        "Download a backup as a zip to keep it somewhere else, or add one from a zip (one downloaded here, "
-        "or a copy of its folder). Adding a backup doesn't restore it: it appears in the list above."
-    )
+    st.markdown("**Download a backup**")
+    st.caption("Download a backup as a zip, to keep it somewhere else.")
     if _backups:
         pick = st.selectbox("Backup to download", _backups, format_func=lambda p: p.name, key="backup_pick")
         st.download_button("Download as a zip", data=backup_zip(pick), file_name=f"{pick.name}.zip",
                            mime="application/zip", key="backup_download")
-    upload = st.file_uploader("Add a backup from a zip", type=["zip"], key="backup_upload")
-    if upload is not None and st.button("Add this backup", key="backup_add"):
-        try:
-            added = add_backup_zip(upload.getvalue(), name=Path(upload.name).stem)
-        except BackupZipError as e:
-            st.error(str(e))
-        else:
-            st.success(f"Added {added.name}.")
-            st.rerun()
 
 with tab_danger:
     # ── Danger zone: wipe entire taxonomy ──────────────────────────────────────

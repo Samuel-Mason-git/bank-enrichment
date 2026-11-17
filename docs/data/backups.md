@@ -18,10 +18,7 @@ what's in it: transaction count, how many were classified, taxonomy size, subscr
 the date range covered, and size on disk. The most recent 10 are kept and older ones pruned;
 any can also be deleted by hand from the same section (behind a confirmation).
 
-## Download and upload
+## Download
 
-On the Backups tab you can **download** any backup as a zip, to keep it somewhere else, and **add** a
-backup from a zip. An added backup appears in the list, next to the ones taken here. A zip must hold a
-`manifest.json` and `transactions_raw.parquet`, and nothing but `.parquet` tables. Adding a backup
-doesn't restore it.
-
+On the Backups tab you can **download** any backup as a zip, to keep it somewhere else. The zip holds the
+backup's files at the top level: its `.parquet` tables and `manifest.json`.
