@@ -167,7 +167,7 @@ def test_alerts_are_the_wanted_ones_once_per_category_per_month(shop):
     assert bg.alerts_due(mb) == []
     # An "over" counts as the 80% one too, so a category that jumped past both isn't told twice.
     kinds = {r[0] for r in shop.execute("SELECT kind FROM budget_alerts WHERE parent_id = %s", [_pid(shop, "Shopping")])}
-    assert kinds == {"over", "near"}
+    assert kinds == {"over", "near", "early"}   # a stronger alert covers the weaker ones
 
 
 def test_unwanted_alerts_and_past_months_send_nothing(shop):

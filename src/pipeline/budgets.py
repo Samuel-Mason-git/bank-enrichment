@@ -20,21 +20,68 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import app_settings
 from database_functions import get_con, get_setting, set_setting
 
 LONDON = ZoneInfo("Europe/London")
 
-NEAR = 0.80            # "nearly used up" from here
-PACE_OVER = 1.10       # off pace when heading for more than this much of the budget
-PACE_FROM_DAY = 7      # too early before this to call a pace
+NEAR = 0.80            # the default "nearly used up" point; the Budgets tab sets it
+PACE_OVER = 1.10       # the default: off pace when heading for more than this much of the budget
+PACE_FROM_DAY = 7      # the default: too early before this to call a pace
 MIN_BUDGET, MAX_BUDGET = 1, 100_000
 SUGGEST_MONTHS = 3
 
 # Settings (app_settings), changed on the Budget page.
 DIGEST_SETTING = "budget_digest"   # how the budget message comes: see digest_settings()
 ALERTS_SETTING = "budget_alerts"                 # the kinds of instant alert wanted
-ALERT_KINDS = ("near", "over", "pace")
+ALERT_KINDS = ("early", "near", "over", "pace", "week")
+DEFAULT_ALERT_KINDS = ("near", "over", "pace")   # the halfway and weekly alerts are turned on by you, not by default
 DIGEST_LAST_SENT = "budget_digest_last_sent"     # London date of the last digest
+WEEK_ALERTED = "budget_week_alerted"             # the ISO week the weekly alert was last sent for
+MUTED_SETTING = "budget_alerts_muted"            # parent ids whose alerts are off
+
+# The alert thresholds and quiet hours, as settings with ranges (app_settings.Setting).
+EARLY_PCT = app_settings.Setting("budget_early_percent", 50, 10, 90)
+NEAR_PCT = app_settings.Setting("budget_near_percent", 80, 50, 100)
+PACE_OVER_PCT = app_settings.Setting("budget_pace_over_percent", 110, 100, 200)
+PACE_FROM = app_settings.Setting("budget_pace_from_day", 7, 1, 28)
+WEEK_LIMIT = app_settings.Setting("budget_week_limit", 0, 0, 100_000)
+QUIET_FROM = app_settings.Setting("budget_quiet_from_hour", 22, 0, 23)
+QUIET_TO = app_settings.Setting("budget_quiet_to_hour", 8, 0, 23)
+THRESHOLD_SETTINGS = [EARLY_PCT, NEAR_PCT, PACE_OVER_PCT, PACE_FROM, WEEK_LIMIT, QUIET_FROM, QUIET_TO]
+
+
+def thresholds() -> dict:
+    """The alert thresholds and quiet hours in use: each saved value, or its default."""
+    return {
+        "early": app_settings.get(EARLY_PCT) / 100,
+        "near": app_settings.get(NEAR_PCT) / 100,
+        "pace_over": app_settings.get(PACE_OVER_PCT) / 100,
+        "pace_from": app_settings.get(PACE_FROM),
+        "week_limit": float(app_settings.get(WEEK_LIMIT)),
+        "quiet_from": app_settings.get(QUIET_FROM),
+        "quiet_to": app_settings.get(QUIET_TO),
+    }
+
+
+def in_quiet_hours(hour: int, th: dict) -> bool:
+    """Whether alerts wait at this hour (London). From and to the same hour means no quiet hours.
+    A window across midnight, like 22 to 8, is quiet from 22 until 8 the next morning."""
+    start, end = th["quiet_from"], th["quiet_to"]
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def muted_parents() -> set[int]:
+    value = get_setting(MUTED_SETTING, [])
+    return {int(x) for x in value} if isinstance(value, list) else set()
+
+
+def set_muted_parents(parent_ids) -> None:
+    set_setting(MUTED_SETTING, sorted(int(x) for x in parent_ids))
 
 
 class BudgetError(ValueError):
@@ -158,12 +205,13 @@ class MonthBudgets:
         return self.day / self.days if self.days else 1.0
 
 
-def _state(spent: float, budget: float, projected: float, day: int, current: bool) -> str:
+def _state(spent: float, budget: float, projected: float, day: int, current: bool, th: dict | None = None) -> str:
+    th = th or {"near": NEAR, "pace_over": PACE_OVER, "pace_from": PACE_FROM_DAY}
     if spent > budget:
         return "over"
-    if spent >= budget * NEAR:
+    if spent >= budget * th["near"]:
         return "near"
-    if current and day >= PACE_FROM_DAY and projected > budget * PACE_OVER:
+    if current and day >= th["pace_from"] and projected > budget * th["pace_over"]:
         return "pace"
     return "ok"
 
@@ -197,6 +245,7 @@ def month_budgets(month: date | None = None, today: date | None = None, con=None
     budgets = {r["parent_id"]: float(r["monthly_amount"])
                for r in _rows(con, "SELECT parent_id, monthly_amount FROM budgets")}
     spent = spent_by_category(first, last, con)
+    th = thresholds()
 
     mb = MonthBudgets(month=first, day=day, days=days, current=current)
     for pid, name in sorted(spend.items(), key=lambda kv: kv[1]):
@@ -204,7 +253,7 @@ def month_budgets(month: date | None = None, today: date | None = None, con=None
         if pid in budgets:
             b = budgets[pid]
             projected = round(s / day * days, 2) if current and day else s
-            state = _state(s, b, projected, day, current)
+            state = _state(s, b, projected, day, current, th)
             mb.statuses.append(BudgetStatus(
                 parent_id=pid, category=name, budget=b, spent=s, left=round(b - s, 2),
                 used=round(s / b, 4), projected=projected, state=state,
@@ -346,8 +395,8 @@ def set_digest(mode: str, days=(), monthday: int = 1) -> None:
 
 
 def alerts_wanted() -> set[str]:
-    value = get_setting(ALERTS_SETTING, list(ALERT_KINDS))
-    return {k for k in (value if isinstance(value, list) else ALERT_KINDS) if k in ALERT_KINDS}
+    value = get_setting(ALERTS_SETTING, list(DEFAULT_ALERT_KINDS))
+    return {k for k in (value if isinstance(value, list) else DEFAULT_ALERT_KINDS) if k in ALERT_KINDS}
 
 
 def set_alerts_wanted(kinds) -> None:
@@ -384,30 +433,61 @@ def digest_sent(now: datetime | None = None) -> None:
 # ── Alerts: once per category per month ───────────────────────────────────────
 
 def alerts_due(mb: MonthBudgets, con=None) -> list[tuple[BudgetStatus, str]]:
-    """The alerts this month's standing calls for that haven't been sent yet,
-    and that you want. At most one per category per run: the most serious."""
+    """The alerts this month's standing calls for that haven't been sent yet, that you
+    want, and whose category isn't muted. At most one per category per run: the most serious."""
     if not mb.current:
         return []
     con = con or get_con()
+    th = thresholds()
     wanted = alerts_wanted()
+    muted = muted_parents()
     sent = {(r["parent_id"], r["kind"]) for r in _rows(
         con, "SELECT parent_id, kind FROM budget_alerts WHERE month = %s", [mb.month])}
     due = []
     for s in mb.statuses:
-        for kind in ("over", "near", "pace"):
+        if s.parent_id in muted:
+            continue
+        for kind in ("over", "near", "pace", "early"):
             hit = (kind == "over" and s.state == "over") or \
-                  (kind == "near" and s.state in ("near", "over")) or \
-                  (kind == "pace" and s.state == "pace")
+                  (kind == "near" and s.used >= th["near"]) or \
+                  (kind == "pace" and s.state == "pace") or \
+                  (kind == "early" and s.used >= th["early"])
             if hit and kind in wanted and (s.parent_id, kind) not in sent:
                 due.append((s, kind))
                 break
     return due
 
 
-def alert_sent(status: BudgetStatus, kind: str, month: date, con=None) -> None:
-    """Recorded once sent. An 'over' also counts as the 80% one, so a category
-    that jumps straight past both isn't told twice."""
+def week_alert_due(today: date, con=None) -> float | None:
+    """This week's spend across the budgeted categories, if it's over the weekly limit and the
+    weekly alert hasn't gone for this week yet. None otherwise. Monday to today, London time."""
+    th = thresholds()
+    if "week" not in alerts_wanted() or th["week_limit"] <= 0:
+        return None
     con = con or get_con()
-    for k in ({kind, "near"} if kind == "over" else {kind}):
+    monday = today - timedelta(days=today.weekday())
+    if get_setting(WEEK_ALERTED) == _iso_week(today):
+        return None
+    names = {r["name"] for r in _rows(con, "SELECT p.name FROM parent_categories p JOIN budgets b ON b.parent_id = p.id")}
+    spent = spent_by_category(monday, today, con)
+    total = round(sum(v for k, v in spent.items() if k in names), 2)
+    return total if total > th["week_limit"] else None
+
+
+def mark_week_alerted(today: date) -> None:
+    set_setting(WEEK_ALERTED, _iso_week(today))
+
+
+def _iso_week(day: date) -> str:
+    year, week, _ = day.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def alert_sent(status: BudgetStatus, kind: str, month: date, con=None) -> None:
+    """Recorded once sent. A stronger alert also counts as the weaker ones, so a category that
+    jumps straight past several isn't told about each."""
+    con = con or get_con()
+    covers = {"over": {"over", "near", "early"}, "near": {"near", "early"}}.get(kind, {kind})
+    for k in covers:
         con.execute("""INSERT INTO budget_alerts (parent_id, month, kind) VALUES (%s, %s, %s)
                        ON CONFLICT DO NOTHING""", [status.parent_id, month, k])

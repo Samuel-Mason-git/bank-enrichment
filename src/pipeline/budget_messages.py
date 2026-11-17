@@ -40,9 +40,17 @@ def digest_text(mb: bg.MonthBudgets) -> str:
     return "\n".join(lines)
 
 
+def week_alert_text(total: float, limit: float, today) -> str:
+    return (f"📈 <b>This week's spending is £{total:,.2f}</b>, over your £{limit:,.0f} weekly limit. "
+            f"That's the budgeted categories since Monday, up to {today:%a %d %b}.")
+
+
 def alert_text(s: bg.BudgetStatus, kind: str, mb: bg.MonthBudgets) -> str:
     to_go = mb.days - mb.day
     left = f"{to_go} day{'s' if to_go != 1 else ''} left in {mb.month:%B}"
+    if kind == "early":
+        return (f"🟡 <b>{_e(s.category)} is halfway through its budget</b>\n"
+                f"£{s.spent:,.2f} of £{s.budget:,.0f}: £{s.left:,.2f} left, with {left}.")
     if kind == "over":
         return (f"🔴 <b>{_e(s.category)} is over budget</b>\n"
                 f"£{s.spent:,.2f} of £{s.budget:,.0f}: £{-s.left:,.2f} over, with {left}.")
@@ -117,8 +125,10 @@ def report() -> bool:
 
 
 def run(now: datetime | None = None) -> dict:
-    """The digest if one is due, then any alerts due. Returns what was sent."""
-    mb = bg.month_budgets(today=(now.date() if now else None))
+    """The digest if one is due, then any alerts due. Alerts wait during the quiet hours and go
+    out at the first run after them. Returns what was sent."""
+    when = (now or datetime.now(bg.LONDON)).astimezone(bg.LONDON)
+    mb = bg.month_budgets(today=when.date())
     sent = {"digest": False, "alerts": 0}
     if not mb.statuses:
         return sent
@@ -126,6 +136,13 @@ def run(now: datetime | None = None) -> dict:
         bg.digest_sent(now)
         sent["digest"] = True
         log.info("Sent the budget digest")
+    if bg.in_quiet_hours(when.hour, bg.thresholds()):
+        return sent
+    week = bg.week_alert_due(when.date())
+    if week is not None and send_telegram(week_alert_text(week, bg.thresholds()["week_limit"], when.date())):
+        bg.mark_week_alerted(when.date())
+        sent["alerts"] += 1
+        log.info("Sent the weekly budget alert")
     for status, kind in bg.alerts_due(mb):
         if send_telegram(alert_text(status, kind, mb)):
             bg.alert_sent(status, kind, mb.month)
