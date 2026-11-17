@@ -12,21 +12,18 @@ It only ever proposes: nothing is created or moved until the user approves the
 Telegram card.
 """
 import json
+import app_config
 import logging
-import os
 import time
 from datetime import date
-from pathlib import Path
 
 import anthropic
-from dotenv import load_dotenv
 
 import llm_calls
 from database_functions import get_con, init_db, insert_with_next_id, now
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
+CLAUDE_SECRET = app_config.anthropic_key()
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 2048
 
@@ -432,7 +429,7 @@ def run(today: date | None = None) -> list[dict]:
         log.info(f"Taxonomy review already run for {key} — skipping")
         return []
     if not CLAUDE_SECRET:
-        log.error("CLAUDE_SECRET not set — skipping taxonomy review")
+        log.error("ANTHROPIC_API_KEY not set — skipping taxonomy review")
         return []
     run_start = time.time()
     log.info(f"--- Taxonomy review started ({key}) ---")

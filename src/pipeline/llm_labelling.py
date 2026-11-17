@@ -1,11 +1,9 @@
 import json
+import app_config
 import logging
-import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from dotenv import load_dotenv
 import anthropic
 
 from database_functions import (
@@ -15,14 +13,15 @@ from database_functions import (
     get_subcategory_stats, format_subcategory_stats,
 )
 import alerts
+import app_settings
+import classifier_settings as CS
 import llm_calls
 import category_proposals
 import placement_judge
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
-MODEL = "claude-sonnet-4-6"
+CLAUDE_SECRET = app_config.anthropic_key()
+MODEL = "claude-sonnet-4-6"   # the default; the Settings page's Classification tab sets the one used (classifier_settings)
 # Which model each call uses -- see llm_calls.request_kwargs for the settings.
 # Compare candidates on your own labelled history with model_eval.py before
 # changing one.
@@ -42,6 +41,17 @@ JOBS: dict[str, dict] = {
     "regenerate_options": {"model": MODEL},
     "placement_judge": _HAIKU,
 }
+
+
+CLASSIFY_PASSES = ("classify_parents", "classify_subcategories", "propose_alternatives", "regenerate_options")
+
+
+def job(name: str) -> dict:
+    """A pass's model settings. The classifying passes use the model chosen on the
+    Settings page, read when the pass runs; the others use JOBS as they are."""
+    if name in CLASSIFY_PASSES:
+        return {"model": app_settings.get(CS.MODEL)}
+    return JOBS[name]
 BATCH_SIZE = 15
 # Output tokens are billed per token generated, so a ceiling well above what
 # a batch needs costs nothing -- while hitting it truncates the JSON, fails
@@ -445,7 +455,7 @@ def classify_parents(client: anthropic.Anthropic, transactions: list[dict], pare
     try:
         response = llm_calls.create(
             client, job="classify_parents", prompt_fn=_pass1_prompt, txn_ids=[t["id"] for t in transactions],
-            **llm_calls.request_kwargs(JOBS["classify_parents"], MAX_TOKENS),
+            **llm_calls.request_kwargs(job("classify_parents"), MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 1", len(transactions))
@@ -467,7 +477,7 @@ def classify_subcategories(client: anthropic.Anthropic, transactions: list[dict]
     try:
         response = llm_calls.create(
             client, job="classify_subcategories", prompt_fn=_pass2_prompt, txn_ids=[t["id"] for t in transactions],
-            **llm_calls.request_kwargs(JOBS["classify_subcategories"], MAX_TOKENS),
+            **llm_calls.request_kwargs(job("classify_subcategories"), MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, f"Pass 2 ({parent_name})", len(transactions))
@@ -492,7 +502,7 @@ def propose_alternatives(client: anthropic.Anthropic, groups: list[dict], parent
     try:
         response = llm_calls.create(
             client, job="propose_alternatives", prompt_fn=_pass3_prompt, txn_ids=[tid for g in groups for tid in g.get("txn_ids", [])],
-            **llm_calls.request_kwargs(JOBS["propose_alternatives"], MAX_TOKENS),
+            **llm_calls.request_kwargs(job("propose_alternatives"), MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Pass 3", len(groups))
@@ -517,7 +527,7 @@ def propose_regenerated_options(client: anthropic.Anthropic, previous_options: l
     try:
         response = llm_calls.create(
             client, job="regenerate_options", prompt_fn=_pass_regenerate_prompt, txn_ids=txn_ids,
-            **llm_calls.request_kwargs(JOBS["regenerate_options"], MAX_TOKENS),
+            **llm_calls.request_kwargs(job("regenerate_options"), MAX_TOKENS),
             messages=[{"role": "user", "content": prompt}]
         )
         _warn_if_truncated(response, "Regenerate", 1)
@@ -587,7 +597,7 @@ def regenerate_category_proposals() -> int:
     if not pending:
         return 0
     if not CLAUDE_SECRET:
-        log.error("CLAUDE_SECRET not set -- cannot regenerate category proposals")
+        log.error("ANTHROPIC_API_KEY not set -- cannot regenerate category proposals")
         return 0
 
     client = anthropic.Anthropic(api_key=CLAUDE_SECRET)
@@ -624,7 +634,7 @@ def run():
     log.info("--- LLM Classifier run started ---")
 
     if not CLAUDE_SECRET:
-        log.error("CLAUDE_SECRET not set in config/.env -- nothing classified")
+        log.error("ANTHROPIC_API_KEY not set in config/.env -- nothing classified")
         return
 
     t0 = time.time()
@@ -781,7 +791,7 @@ def run():
             if tag == "P1+2":
                 upsert_subcategory(s_name, parent_id_map[p_name])
             update_classification(t["id"], p_name, s_name, None,
-                                  JOBS["match_existing" if tag == "P0" else "classify_parents"]["model"])
+                                  job("match_existing" if tag == "P0" else "classify_parents")["model"])
             total_classified += 1
             log.info(f"  [{tag}] {t['id']} -> {p_name} / {s_name or '—'}")
 

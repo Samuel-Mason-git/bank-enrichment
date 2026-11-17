@@ -9,22 +9,19 @@ of them -- a merchant that's sometimes Groceries and sometimes Household
 isn't safe to auto-rule, and a one-off coincidence isn't a pattern.
 """
 import logging
-import os
+import app_config
 import re
 from collections import Counter
-from pathlib import Path
 
 import anthropic
-from dotenv import load_dotenv
 
 import alerts
 import llm_calls
 from database_functions import get_con, insert_with_next_id, now
 from llm_labelling import MODEL, _extract_json
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
-CLAUDE_SECRET = os.getenv("CLAUDE_SECRET")
+CLAUDE_SECRET = app_config.anthropic_key()
 
 log = logging.getLogger(__name__)
 
@@ -216,7 +213,7 @@ def sync_candidates() -> int:
     if not candidates:
         return 0
     if not CLAUDE_SECRET:
-        log.warning("CLAUDE_SECRET not set -- skipping rule suggestions until it is")
+        log.warning("ANTHROPIC_API_KEY not set -- skipping rule suggestions until it is")
         return 0
     worth, declined = filter_worth_a_rule(anthropic.Anthropic(api_key=CLAUDE_SECRET), candidates)
     for c in worth:

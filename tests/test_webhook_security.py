@@ -243,3 +243,20 @@ class TestOauthState:
         location = resp.headers["location"]
         assert location.startswith("https://auth.monzo.com/")
         assert "redirect_uri=https%3A%2F%2Fmy-domain.example%2Foauth%2Fcallback" in location
+
+
+class TestCorrectlySpelledRoutes:
+    """SETUP.md registers the correctly spelled routes; the old spelling still works."""
+
+    def test_the_correct_monzo_route_takes_the_secret(self, client, monkeypatch):
+        monkeypatch.setattr(main, "MONZO_WEBHOOK_SECRET", "s3cret")
+        assert client.post("/receive_monzo/?token=guess", json=_monzo_payload()).status_code == 403
+        assert client.post("/receive_monzo/?token=s3cret", json=_monzo_payload()).status_code == 200
+
+    def test_the_old_monzo_route_still_works(self, client, monkeypatch):
+        monkeypatch.setattr(main, "MONZO_WEBHOOK_SECRET", "s3cret")
+        assert client.post("/recieve_monzo/?token=s3cret", json=_monzo_payload()).status_code == 200
+
+    def test_the_correct_telegram_route_checks_the_secret(self, client, monkeypatch):
+        monkeypatch.setattr(main, "TELEGRAM_WEBHOOK_SECRET", "s3cret")
+        assert client.post("/receive_telegram/", json=_tap("skip_do:tx1")).status_code == 403

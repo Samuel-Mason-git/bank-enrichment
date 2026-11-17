@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 patch("dotenv.load_dotenv", return_value=False).start()
 
 # Set all required env vars to safe, test-only values.
-os.environ["CLAUDE_SECRET"] = "test-claude-secret"
-os.environ["TELEGRAM_API"] = "test-telegram-token"
+os.environ["ANTHROPIC_API_KEY"] = "test-claude-secret"
+os.environ["TELEGRAM_BOT_TOKEN"] = "test-telegram-token"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
 _repo = Path(__file__).parent.parent
@@ -44,7 +44,7 @@ def pg():
     con = psycopg.connect(url, autocommit=True, options="-c TimeZone=UTC")
     con.execute(f"CREATE SCHEMA {schema}")
     con.execute(f"SET search_path TO {schema}")
-    con.execute(_PG_SCHEMA_PATH.read_text())
+    con.execute(_PG_SCHEMA_PATH.read_text(encoding="utf-8"))
     yield con
     con.execute(f"DROP SCHEMA {schema} CASCADE")
     con.close()
@@ -90,7 +90,7 @@ def alert_post(monkeypatch):
     once per process). Yields the mocked requests.post so a test can assert on
     what would have been sent."""
     import alerts
-    monkeypatch.setenv("TELEGRAM_API", "test-token")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     alerts._sent.clear()
     with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:

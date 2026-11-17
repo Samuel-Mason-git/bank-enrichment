@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 # The pipeline's database library: the dashboard reads the same database the same way.
@@ -19,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
 # The server's rule matching (check_rules), so the Rules page judges a match
 # exactly as the webhook does. Last on the path: nothing there shadows ours.
 sys.path.append(str(Path(__file__).parent.parent / "server"))
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # noqa: F401  (loads config/.env)
 # Changes made here are recorded as the dashboard's (settings_changes).
 os.environ.setdefault("DB_APP_NAME", "dashboard")
 
@@ -273,6 +272,8 @@ _views = Path(__file__).parent / "views"
 # Grouped, so the top bar holds three menus rather than a dozen tabs -- with
 # Ask and Budget as links of their own beside them (an unnamed section's pages
 # sit in the top bar directly).
+settings_page = st.Page(_views / "settings.py", title="Settings")
+st.session_state["settings_page"] = settings_page
 page = st.navigation({
     "": [
         st.Page(_views / "ask.py", title="Ask", icon="💬"),
@@ -290,7 +291,7 @@ page = st.navigation({
         st.Page(_views / "queue.py", title="Queue"),
         st.Page(_views / "payment.py", title="Payment details"),
         st.Page(_views / "rules.py", title="Rules"),
-        st.Page(_views / "settings.py", title="Settings"),
+        settings_page,
     ],
     "Behind the scenes": [
         st.Page(_views / "activity.py", title="Activity"),

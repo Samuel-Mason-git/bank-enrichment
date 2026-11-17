@@ -4,21 +4,22 @@ project's Postgres database, schema `bank_enrichment`).
 Transactions are read through the `transactions` view, under the column names
 the old table had. Writes to a transaction are history, not updates: a label is
 a new label_events row, a corrected date or context a new context_events row."""
+import io
 import json
 import logging
 import os
 import shutil
 import statistics
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
-from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
+import app_config  # noqa: F401  (loads config/.env)
 
 log = logging.getLogger(__name__)
 
@@ -1166,8 +1167,55 @@ BACKUP_TABLES = [
 ]
 
 
+BACKUP_DIR_SETTING = "backup_dir"
+
+
+class BackupDirError(ValueError):
+    """A backup folder that can't be used, with a message to show."""
+
+
+def default_backup_dir() -> Path:
+    return Path.home() / "bank-enrichment-backups"
+
+
 def backup_dir() -> Path:
-    return Path(os.getenv("BACKUP_DIR") or Path.home() / "bank-enrichment-backups")
+    """Where backups go: the folder chosen on the Settings page, else BACKUP_DIR,
+    else ~/bank-enrichment-backups. A problem reading the choice never stops a backup."""
+    try:
+        chosen = get_setting(BACKUP_DIR_SETTING)
+    except Exception:
+        chosen = None
+    if chosen:
+        return Path(chosen)
+    return Path(os.getenv("BACKUP_DIR") or default_backup_dir())
+
+
+def set_backup_dir(path: str) -> Path:
+    """Save the folder backups go to. It must be a full path on this machine
+    (for WSL, /mnt/c/... or /home/...), and it's created if it's missing. Raises
+    BackupDirError with a message to show if it can't be used."""
+    text = (path or "").strip()
+    if not text:
+        raise BackupDirError("Type the folder's full path first.")
+    folder = Path(text).expanduser()
+    if not folder.is_absolute():
+        raise BackupDirError(
+            "That's not a full path. Start from the root, e.g. /mnt/c/Users/you/Backups for a folder on "
+            "your Windows drive, or /home/you/backups inside WSL.")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".bank-enrichment-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as e:
+        raise BackupDirError(f"Can't write to {folder}: {e.strerror or e}") from e
+    set_setting(BACKUP_DIR_SETTING, str(folder))
+    return folder
+
+
+def reset_backup_dir() -> None:
+    """Back to BACKUP_DIR, or the default folder."""
+    set_setting(BACKUP_DIR_SETTING, None)
 
 
 def list_backups() -> list[Path]:
@@ -1228,7 +1276,7 @@ def _write_manifest(target: Path, reason: str) -> None:
                 "SELECT COUNT(*) FROM subcategories WHERE archived_at IS NULL").fetchone()[0],
             "subscriptions": con.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0],
         }
-        (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+        (target / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     except Exception as e:
         log.warning(f"Could not write backup manifest for {target}: {e}")
 
@@ -1237,7 +1285,7 @@ def read_backup_manifest(path: Path) -> dict:
     """Empty dict for a backup without a manifest -- it should still list,
     just without the detail."""
     try:
-        return json.loads((path / MANIFEST_NAME).read_text())
+        return json.loads((path / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -1270,6 +1318,18 @@ def _prune_backups() -> None:
             log.info(f"Pruned old backup {old}")
         except OSError as e:
             log.warning(f"Could not prune old backup {old}: {e}")
+
+
+# ── Download ──────────────────────────────────────────────────────
+
+def backup_zip(path: Path) -> bytes:
+    """One backup folder as a zip, its files at the top level."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(path.iterdir()):
+            if f.is_file():
+                z.write(f, arcname=f.name)
+    return buf.getvalue()
 
 
 # ── Display ───────────────────────────────────────────────────────────────────

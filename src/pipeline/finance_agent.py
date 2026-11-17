@@ -28,6 +28,7 @@ job's spend stops new questions once it is reached.
 Kept free of pandas: the worker image doesn't have it, and a Telegram /ask
 would run there."""
 import json
+import app_settings
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+import ask_settings as ASK
 import llm_calls
 from database_functions import get_con, get_setting
 
@@ -48,7 +50,14 @@ LONDON = ZoneInfo("Europe/London")
 # The model and its settings (llm_calls.request_kwargs). Haiku with thinking:
 # a question is a few tool calls, and thinking is what lets a small model plan
 # "compare, then explain the difference" -- for fractions of a penny.
-MODEL_SETTINGS = {"model": "claude-haiku-5-5", "effort": "medium", "thinking": True}
+MODEL_SETTINGS = {"model": "claude-haiku-5-5", "effort": "medium", "thinking": True}   # the defaults, also used by the evals
+
+
+def model_settings() -> dict:
+    """The agent's model settings as chosen on the Settings page's Ask tab."""
+    return {"model": app_settings.get(ASK.MODEL), "effort": app_settings.get(ASK.EFFORT), "thinking": True}
+
+
 MAX_TOKENS = 16_000
 # Rounds of tool calls per question before it must answer with what it has.
 MAX_TOOL_ROUNDS = 10
@@ -664,7 +673,7 @@ class FinanceAgent:
         """job names its calls in llm_calls: agent_eval.py uses its own, so an
         eval neither counts against nor is stopped by the Ask page's daily limit."""
         self.client = client
-        self.settings = settings or MODEL_SETTINGS
+        self.settings = settings or model_settings()
         self._daily_limit_usd = daily_limit_usd   # None: the Settings page's, read when asked
         self.messages: list[dict] = []
         self.cost_usd = 0.0

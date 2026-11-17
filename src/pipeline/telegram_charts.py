@@ -10,7 +10,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import FuncFormatter, PercentFormatter  # noqa: E402
+from matplotlib.ticker import FuncFormatter  # noqa: E402
 
 GREEN, AMBER, RED = "#2e9d5b", "#e0a526", "#d64545"
 TRACK, INK, MUTED, PACE = "#e9ecef", "#222222", "#6c757d", "#1f3a5f"

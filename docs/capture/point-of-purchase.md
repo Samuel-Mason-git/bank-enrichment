@@ -38,4 +38,4 @@ uses that merchant's payments over the past year, and needs at least five of the
 amounts on a log scale, so a £3 coffee and a £300 shop are judged by the same measure: how far
 the payment is from the usual, relative to how much that merchant normally varies. It's flagged at
 a modified z-score of 3.5 or more, and the payment has to be at least £5 above the usual. Each
-payment alerts once, and skipped payments are never checked.
+payment alerts once, and skipped payments are never checked. It can be switched off, and tuned (how sensitive it is, how many earlier payments it needs, and the least it has to be above the usual), on the Settings page's Alerts tab.

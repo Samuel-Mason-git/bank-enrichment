@@ -84,3 +84,27 @@ def test_a_small_merchant_is_judged_in_proportion_not_in_pounds():
 def test_the_pound_gap_stops_pence_alerts():
     # £2 against £1: four times the usual, but only £1 more, so not an alert
     assert up.unusual(2, [1, 1.05, 0.95, 1, 1]) is None
+
+
+def test_switched_off_nothing_is_sent(db, alert_post):
+    from database_functions import set_setting
+    set_setting("unusual_payments_on", False)
+    _history(db, "Corner Pharmacy", [20, 22, 18, 21, 19])
+    _payment(db, 80)
+    assert up.run() == 0
+    assert alert_post.call_count == 0
+
+
+def test_more_sensitive_flags_a_payment_the_default_lets_through(db, alert_post):
+    from database_functions import set_setting
+    _history(db, "Corner Pharmacy", [20, 22, 18, 21, 19])
+    _payment(db, 30)                          # about 1.5 times the usual: default lets it through
+    assert up.run() == 0
+    set_setting("unusual_payments_level", "more")
+    assert up.run() == 1
+
+
+def test_the_levels_only_change_the_cut_off():
+    history = [20, 22, 18, 21, 19]
+    assert up.unusual(30, history, z=2.5) is not None
+    assert up.unusual(30, history, z=3.5) is None

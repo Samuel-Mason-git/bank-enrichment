@@ -43,8 +43,8 @@ The system sends push notifications via a Telegram bot when a transaction arrive
 
 1. Open Telegram and search for **@BotFather**
 2. Send `/newbot` and follow the prompts to choose a name and username
-3. BotFather will give you a token like `123456789:ABCdef...` — this is your `TELEGRAM_API` key
-4. Optional: send BotFather `/setcommands`, pick your bot, and send `ask - Ask about your money` and `budget - This month's budgets` (one per line), so `/ask` and `/budget` are offered as you type. It works without this; it's only the suggestion.
+3. BotFather will give you a token like `123456789:ABCdef...` — this is your `TELEGRAM_BOT_TOKEN` key
+4. Optional: send BotFather `/setcommands`, pick your bot, and send `ask - Ask about your money`, `budget - This month's budgets` and `help - What the bot can do` (one per line), so `/ask`, `/budget` and `/help` are offered as you type. It works without this; it's only the suggestion.
 
 **Get your chat ID:**
 
@@ -71,15 +71,16 @@ Then open `config/.env` and fill in all values:
 
 | Key | Used by | Description |
 |---|---|---|
-| `DASHBOARD_USER` | Server | Username for the login in front of `/oauth/start` (linking your Monzo account) |
-| `DASHBOARD_PASSWORD` | Server | Password for that login |
-| `TELEGRAM_API` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
+| `MONZO_LOGIN_USER` | Server | Username for the login in front of `/oauth/start` (linking your Monzo account) |
+| `MONZO_LOGIN_PASSWORD` | Server | Password for that login |
+
+| `TELEGRAM_BOT_TOKEN` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login you created for this project. `DB_HOST` is the database's address as the server and your machine reach it |
 | `AGENT_DB_USER`, `AGENT_DB_PASSWORD` | Both | The finance agent's own **read-only** login, a second login, made with `CREATE ROLE bank_enrichment_agent LOGIN PASSWORD '...'` in the same database. The grants in `sql/postgres/schema.sql` are for that role name, so the server applies them on its next start. It can read only what `sql/postgres/schema.sql` grants it (the `transaction_roles` view, subscriptions and categories) and never writes. Without it the Ask page is off; it never uses the main login. Same host, port and database as above. Kept in the same `config/.env` on both machines like everything else: after adding them locally, copy the file to the server (step below) and recreate the containers |
-| `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies — default `~/bank-enrichment-backups` |
+| `BACKUP_DIR` | Local (optional) | Where the dashboard's **Back up now** saves its copies, if you haven't picked a folder on the Settings page's Backups tab. Default `~/bank-enrichment-backups` (inside WSL, that's under `/home/<you>/`) |
 | `LOG_DIR` | Local (optional) | Where the pipeline's log files go — default `logs/` in the repo |
-| `CLAUDE_SECRET` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
+| `ANTHROPIC_API_KEY` | Local | Your Anthropic API key from [console.anthropic.com](https://console.anthropic.com) — used by the LLM classifier |
 | `MONZO_CLIENT_ID` | Server | OAuth client ID from a **confidential** client registered at [developers.monzo.com](https://developers.monzo.com) — used to silently refresh Monzo API access instead of needing to re-confirm it in the Monzo app |
 | `MONZO_CLIENT_SECRET` | Server | OAuth client secret for the same client — keep this out of anywhere it could be committed |
 | `TELEGRAM_WEBHOOK_SECRET` | Server | A random string Telegram sends with every update, proving it really came from Telegram — generate with `openssl rand -hex 32` |
@@ -87,7 +88,7 @@ Then open `config/.env` and fill in all values:
 
 `config/.env` is gitignored — it will never be committed or overwritten by `git pull`.
 
-**Why the two webhook secrets matter:** `/recieve_telegram/` and `/recieve_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server won't start until both are set: it stops with an error naming the missing one.
+**Why the two webhook secrets matter:** `/receive_telegram/` and `/receive_monzo/` have to be reachable from the internet for Telegram and Monzo to call them, which means anyone else can call them too — and the domain is easy to find (HTTPS certificates are publicly logged). Without the secrets, a stranger could send your server fake transactions, or fake button taps that skip transactions or approve rules. The server won't start until both are set: it stops with an error naming the missing one.
 
 Once filled in, copy it to the server:
 ```bash
@@ -150,15 +151,15 @@ Once the server is running, register your URL with Telegram, including the `secr
 
 ```bash
 set -a && . config/.env && set +a
-curl -s "https://api.telegram.org/bot${TELEGRAM_API}/setWebhook" \
-  -d "url=https://your-name.duckdns.org/recieve_telegram/" \
+curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -d "url=https://your-name.duckdns.org/receive_telegram/" \
   -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 
 You should get back `{"ok":true,"result":true,...}`. Verify with:
 
 ```bash
-curl -s "https://api.telegram.org/bot${TELEGRAM_API}/getWebhookInfo"
+curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 ```
 
 If `last_error_message` there ever says `403 Forbidden`, the secret Telegram has doesn't match `TELEGRAM_WEBHOOK_SECRET` on the server — re-run the `setWebhook` command above.
@@ -171,7 +172,7 @@ Monzo can't send custom headers, so its secret goes in the webhook URL itself. P
 
 ```bash
 set -a && . config/.env && set +a
-echo "https://your-name.duckdns.org/recieve_monzo/?token=${MONZO_WEBHOOK_SECRET}"
+echo "https://your-name.duckdns.org/receive_monzo/?token=${MONZO_WEBHOOK_SECRET}"
 ```
 
 1. Go to the [Monzo API Playground](https://developers.monzo.com/api/playground)
@@ -181,7 +182,7 @@ echo "https://your-name.duckdns.org/recieve_monzo/?token=${MONZO_WEBHOOK_SECRET}
 ```json
 {
     "account_id": "your_account_id_here",
-    "url": "https://your-name.duckdns.org/recieve_monzo/?token=your_monzo_webhook_secret"
+    "url": "https://your-name.duckdns.org/receive_monzo/?token=your_monzo_webhook_secret"
 }
 ```
 
@@ -209,7 +210,7 @@ MONZO_CLIENT_SECRET=your_client_secret
 docker compose up -d
 ```
 
-6. Open `https://your-name.duckdns.org/oauth/start` in your browser and log in with your `DASHBOARD_USER` and `DASHBOARD_PASSWORD`. It sends you to Monzo's login with a single-use link that expires after 10 minutes — the server only accepts the authorization that comes back from a link it issued itself, so nobody else can complete one on your behalf.
+6. Open `https://your-name.duckdns.org/oauth/start` in your browser and log in with your `MONZO_LOGIN_USER` and `MONZO_LOGIN_PASSWORD`. It sends you to Monzo's login with a single-use link that expires after 10 minutes — the server only accepts the authorization that comes back from a link it issued itself, so nobody else can complete one on your behalf.
 
 Log in and approve with your PIN/Face ID. You'll land on a page saying "Monzo authorization complete" — the server exchanges the code for an access/refresh token pair itself and stores it in `data/monzo_oauth.json` (gitignored). From there, a background job refreshes it automatically every 4 hours, comfortably inside Monzo's token lifetime, and alerts you on Telegram if a refresh ever fails.
 
@@ -268,7 +269,7 @@ poetry install
 
 ### 3. Check config/.env
 
-If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` and `CLAUDE_SECRET` — these are the values the local scripts need.
+If you followed Part 1 and filled in `config/.env` locally before copying it to the server, it is already in place. Confirm it contains the `DB_*` values, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `ANTHROPIC_API_KEY` — these are the values the local scripts need.
 
 If you created `config/.env` directly on the server and don't have a local copy, create one now:
 
@@ -276,7 +277,7 @@ If you created `config/.env` directly on the server and don't have a local copy,
 cp config/.env.example config/.env
 ```
 
-Then fill in at minimum the `DB_*` values, `TELEGRAM_API`, `TELEGRAM_CHAT_ID` and `CLAUDE_SECRET` (see the table in step 4 of Part 1).
+Then fill in at minimum the `DB_*` values, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `ANTHROPIC_API_KEY` (see the table in step 4 of Part 1).
 
 ### 4. Run the Pipeline by Hand (optional)
 
@@ -313,7 +314,7 @@ Nothing to set up: `docker compose up -d` (and every deploy) starts the `worker`
 server. It runs the pipeline **every hour on the hour from 08:00 to 22:00 London time**, and not overnight,
 so no card arrives at 3am. A run with nothing new to do makes no Claude calls, so the extra runs cost
 nothing. The weekly and monthly summaries go out in the morning's first run. It uses the same `config/.env` as the server
-(it needs `CLAUDE_SECRET` there too), and is capped at 350 MB of memory so a run can never starve the
+(it needs `ANTHROPIC_API_KEY` there too), and is capped at 350 MB of memory so a run can never starve the
 webhooks.
 
 - **See what it did:** `data/logs/bank_enrichment.log` on the server, or `docker compose logs worker`.

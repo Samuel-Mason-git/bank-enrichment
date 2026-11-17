@@ -6,7 +6,7 @@ bad call from killing a run, but it also means running out of credit produces
 nothing except error lines in a log file. That is easy to miss, and the
 symptom (transactions quietly not being classified) looks like nothing at all.
 
-This sends to Telegram directly, with the same bot the server uses (TELEGRAM_API
+This sends to Telegram directly, with the same bot the server uses (TELEGRAM_BOT_TOKEN
 and TELEGRAM_CHAT_ID in config/.env). Alerts carry a kind, a fix, and counts --
 never transaction text. The exception classes, not their messages, are what get
 reported: a JSON parse error's message quotes the model's output, which can
@@ -17,16 +17,14 @@ logged and dropped, and each kind is sent at most once per run, so a run that
 fails 40 calls in a row sends one message, not 40.
 """
 import html
+import app_config
 import logging
 import os
 import threading
-from pathlib import Path
 
 import anthropic
 import requests
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent.parent / "config" / ".env")
 
 log = logging.getLogger(__name__)
 
@@ -34,9 +32,9 @@ log = logging.getLogger(__name__)
 def send_telegram(text: str) -> bool:
     """One HTML message to you on Telegram. Never raises: a message that can't
     be sent is logged and dropped. True if Telegram accepted it."""
-    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    token, chat_id = app_config.telegram_token(), os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram message not sent")
+        log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID isn't set -- Telegram message not sent")
         return False
     try:
         response = requests.post(
@@ -57,11 +55,11 @@ def send_telegram_photo(png: bytes | None, caption: str = "") -> bool:
     (Telegram allows 1,024 characters). Never raises, like send_telegram; a
     missing image is simply not sent. Telegram can be slow to take a picture,
     so an upload that times out is tried once more before giving up."""
-    token, chat_id = os.getenv("TELEGRAM_API"), os.getenv("TELEGRAM_CHAT_ID")
+    token, chat_id = app_config.telegram_token(), os.getenv("TELEGRAM_CHAT_ID")
     if not png:
         return False
     if not token or not chat_id:
-        log.warning("TELEGRAM_API or TELEGRAM_CHAT_ID isn't set -- Telegram image not sent")
+        log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID isn't set -- Telegram image not sent")
         return False
     for attempt in (1, 2):
         try:
@@ -105,7 +103,7 @@ def classify_error(e: Exception) -> tuple[str, str, str]:
     if isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
         return (
             "auth", "Anthropic API key rejected",
-            "Check CLAUDE_SECRET in config/.env. Nothing is classified until it works; "
+            "Check ANTHROPIC_API_KEY in config/.env. Nothing is classified until it works; "
             "transactions are retried on the next run.",
         )
     detail = type(e).__name__

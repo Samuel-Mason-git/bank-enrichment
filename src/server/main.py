@@ -6,6 +6,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
+import app_config
 import uvicorn
 import html
 import logging
@@ -37,6 +38,7 @@ sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
 import activity  # noqa: E402
 import database_functions  # noqa: E402
 import ask_tg  # noqa: E402  (imports the pipeline's finance_agent)
+import bot_help  # noqa: E402
 import budget_messages  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
@@ -109,8 +111,8 @@ def _unset_webhook_secrets() -> list[str]:
 # The login in front of /oauth/start, so only you can link a Monzo account.
 # Named after the web dashboard it used to guard too (gone: the Streamlit
 # dashboard does all of that now); kept so existing .env files still work.
-DASHBOARD_USER = os.getenv("DASHBOARD_USER")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+DASHBOARD_USER = app_config.monzo_login_user()
+DASHBOARD_PASSWORD = app_config.monzo_login_password()
 _sessions: dict = {}
 _pending_skips: dict = {}
 
@@ -119,7 +121,7 @@ security = HTTPBasic()
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=503, detail="Login not configured (DASHBOARD_USER/DASHBOARD_PASSWORD)")
+        raise HTTPException(status_code=503, detail="Login not configured (MONZO_LOGIN_USER/MONZO_LOGIN_PASSWORD)")
     correct_user = secrets.compare_digest(credentials.username, DASHBOARD_USER)
     correct_pass = secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
     if not (correct_user and correct_pass):
@@ -212,7 +214,7 @@ def _public_base_url(request: Request) -> str:
 @app.get("/oauth/start")
 async def oauth_start(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     """Begin (or redo) Monzo authorization: sends you to Monzo's login with a
-    fresh single-use state. Behind the login (DASHBOARD_USER), so only you can
+    fresh single-use state. Behind the login (MONZO_LOGIN_USER), so only you can
     start a flow whose result gets stored."""
     if not MONZO_CLIENT_ID:
         return HTMLResponse("<p>MONZO_CLIENT_ID isn't set on the server -- see SETUP.md.</p>", status_code=503)
@@ -313,6 +315,9 @@ class TelegramUpdate(BaseModel):
     edited_message: Optional[TelegramMessage] = None
     callback_query: Optional[TelegramCallbackQuery] = None
 
+# The correct spelling is what SETUP.md registers. The old spelling stays routed
+# too, so a webhook already registered with it keeps working.
+@app.post('/receive_monzo/')
 @app.post('/recieve_monzo/')
 async def recieve_monzo(request: Request):
     # Monzo doesn't sign webhooks, so the only proof one came from Monzo is the
@@ -475,6 +480,8 @@ def _from_owner(update: "TelegramUpdate") -> bool:
     return False
 
 
+# The old spelling stays routed too, as for /receive_monzo/ above.
+@app.post('/receive_telegram/')
 @app.post('/recieve_telegram/')
 async def recieve_telegram(request: Request):
     # Telegram sends the secret_token set via setWebhook in this header on
@@ -732,6 +739,11 @@ async def recieve_telegram(request: Request):
     elif update.message and update.message.text:
         msg = update.message
         chat_id = msg.chat.id
+
+        # /help: what the bot understands (bot_help.py).
+        if bot_help.is_help(msg.text):
+            bot.send_message(chat_id, bot_help.HELP)
+            return {"ok": True}
 
         # /budget: this month's budgets, sent as text and a chart (budget_messages.report).
         if re.match(r"^/budget(?:@\w+)?\s*$", (msg.text or "").strip(), re.IGNORECASE):

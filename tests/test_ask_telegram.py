@@ -76,7 +76,7 @@ class Clock:
 def configured(monkeypatch):
     monkeypatch.setenv("AGENT_DB_USER", "bank_enrichment_agent")
     monkeypatch.setenv("AGENT_DB_PASSWORD", "x")
-    monkeypatch.setenv("CLAUDE_SECRET", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
 
 
 def _chats(agents, clock=None):
@@ -102,7 +102,7 @@ def test_a_follow_up_carries_on_but_half_an_hour_later_starts_afresh(configured)
     asyncio.run(chats.answer(bot, 1, "one"))
     clock.now += 60
     asyncio.run(chats.answer(bot, 1, "two"))
-    clock.now += ask_tg.IDLE_SECONDS + 1
+    clock.now += 30 * 60 + 1   # half an hour: the default chat timeout
     asyncio.run(chats.answer(bot, 1, "three"))
     assert first.asked == ["one", "two"] and second.asked == ["three"]
 

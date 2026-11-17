@@ -48,7 +48,8 @@ A Monzo payment fires a webhook. The server stores it, then either applies a rul
 | [How it works](docs/capture/how-it-works.md) | The whole pipeline, from a Monzo payment to a Telegram card |
 | [Point of purchase](docs/capture/point-of-purchase.md) | Telegram questions, quick categories and skipping |
 | [Rules](docs/capture/rules.md) | Fixed categories, auto-context, auto-skip and rule suggestions |
-| [Subscriptions](docs/capture/subscriptions.md) | Recurring payments, spotted automatically |
+| [Subscriptions](docs/capture/subscriptions.md) | Recurring payments, spotted automatically, and alerts when a price changes or a payment is missed |
+| [Telegram](docs/capture/telegram.md) | The commands (`/ask`, `/budget`, `/help`) and the messages the bot sends you |
 | [Classification](docs/classification/classification.md) | How Claude places each payment, and the default taxonomy |
 | [Categories and roles](docs/classification/categories-and-roles.md) | Income, spend, investment and saving, and Standard vs Actual |
 | [New categories](docs/classification/new-categories.md) | Approving new categories, and the monthly taxonomy review |
@@ -57,6 +58,7 @@ A Monzo payment fires a webhook. The server stores it, then either applies a rul
 | [Budgets](docs/money/budgets.md) | Monthly limits, Telegram messages, alerts and charts |
 | [Ask](docs/money/ask.md) | Questions about your money, on the dashboard or Telegram |
 | [Dashboard](docs/money/dashboard.md) | Every page, and the shared filters |
+| [Settings](docs/money/settings.md) | Every setting, by tab: categories, budgets, alerts, Ask, backups |
 | [AI usage](docs/classification/ai-usage.md) | What each Claude call cost, and which models are used |
 | [Failure alerts](docs/classification/failure-alerts.md) | Telegram alerts when Claude calls fail |
 | [Backups](docs/data/backups.md) | Taking a copy of your data from Settings |

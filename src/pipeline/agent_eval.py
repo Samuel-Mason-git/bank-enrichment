@@ -22,7 +22,6 @@ logs/agent_eval-<time>.json (local only: logs/ is gitignored).
 import argparse
 import calendar
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -30,6 +29,7 @@ from datetime import date, datetime, timedelta
 
 import anthropic
 
+import app_config
 import finance_agent as fa
 from database_functions import init_db, log_path
 
@@ -211,7 +211,10 @@ def main():
         print(f"\nNothing sent. Run again with --yes to ask {', '.join(arms)} (hard stop at ${args.budget:.2f}).")
         return
 
-    client = anthropic.Anthropic(api_key=os.environ["CLAUDE_SECRET"])
+    key = app_config.anthropic_key()
+    if not key:
+        raise SystemExit("ANTHROPIC_API_KEY isn't set in config/.env")
+    client = anthropic.Anthropic(api_key=key)
     spent = 0.0
     results = {name: [] for name in arms}
     stopped = False

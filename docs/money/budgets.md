@@ -12,11 +12,11 @@ A budget is a monthly amount for one spending category, for example Food & Drink
 - A bar per category on a fixed 0–100% scale, so they compare directly. A category that's over its budget fills to the line in red and is labelled with how far over and by how much. The solid dark line is where spending would be by now if spread evenly through the month. The dashed line is the budget.
 - A six-month chart of spending against your current budgets.
 
-**Telegram messages.** Set on the Budget page, under the summary:
+**Telegram messages.** Set in Settings → Budgets (the Budget page links there):
 - **The budget message** (text, and a chart of bars): off, every morning, weekdays only, on the days of the week you choose (twice a week is two days), or once a month on a day you pick, e.g. payday. Mondays is the default. The worker sends it at its first run on that day, from 08:00, so a morning message is there when you wake up.
 - **Alerts**, each at most once per category per month, each on or off: 80% used, over budget, and off pace (from day 7, heading for more than 10% over).
 - The weekly summary gets the budget lines and charts for the newest week. The monthly summary gets the budget lines, a spending-by-category chart, and a six-month trend.
-- **`/budget`** sends this month's budgets on demand: the text and the chart. It works only from your own chat.
+- **`/budget`** sends this month's budgets on demand: the text and the chart. When the text fits a photo's caption (1,024 characters), they come as one message; otherwise the chart comes first, then the text. It works only from your own chat. See [Telegram](../capture/telegram.md).
 
 **The Ask agent** can read budgets ("am I on track?"), and can suggest a budget for you to confirm. Its suggestion shows a **Set it / Dismiss** card on the Ask page, and two buttons on Telegram. Nothing changes until you press Set it. A Telegram suggestion expires after 30 minutes.
 

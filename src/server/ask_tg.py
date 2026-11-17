@@ -16,18 +16,19 @@ The webhook hands a question over and returns at once (Telegram retries a
 webhook that takes too long); the answer is sent when it's ready, with the
 "typing…" indicator showing meanwhile."""
 import asyncio
+import app_settings
+import app_config
 import html
 import logging
-import os
 import re
 import secrets
 import time
 
+import ask_settings as ASK
 import finance_agent as fa
 
 log = logging.getLogger(__name__)
 
-IDLE_SECONDS = 30 * 60
 TYPING_EVERY = 4.0
 # Telegram's limit is 4096 characters; the Markdown is cut before it becomes
 # HTML, so a cut can never land inside a tag.
@@ -37,11 +38,11 @@ HELP = ("🆕 New chat. Ask anything about your money, for example:\n\n"
         "<code>/ask how much have I spent this week?</code>\n"
         "<code>/ask what did I spend most on in October?</code>\n\n"
         "Follow up with another /ask within half an hour and it carries on from there.")
-NOT_SET_UP = ("/ask isn't set up on the server: it needs AGENT_DB_USER, AGENT_DB_PASSWORD and CLAUDE_SECRET "
+NOT_SET_UP = ("/ask isn't set up on the server: it needs AGENT_DB_USER, AGENT_DB_PASSWORD and ANTHROPIC_API_KEY "
               "in config/.env (see SETUP.md).")
 FAILED = "Something went wrong answering that. Try again in a moment."
-PROPOSAL_SECONDS = 30 * 60
 EXPIRED = "That suggestion has expired or was already answered. Ask again with /ask."
+OFF = "/ask is switched off. Turn it on in the dashboard: Settings → Ask."
 
 _COMMAND = re.compile(r"^/ask(?:@\w+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
 _TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
@@ -87,7 +88,7 @@ def to_html(markdown: str) -> str:
 
 def _default_agent():
     import anthropic
-    return fa.FinanceAgent(anthropic.Anthropic(api_key=os.getenv("CLAUDE_SECRET")), channel="telegram")
+    return fa.FinanceAgent(anthropic.Anthropic(api_key=app_config.anthropic_key()), channel="telegram")
 
 
 async def _typing(bot, chat_id: int) -> None:
@@ -124,15 +125,18 @@ class AskChats:
         return task
 
     async def answer(self, bot, chat_id: int, question: str) -> None:
+        if not app_settings.get(ASK.TELEGRAM_ON):
+            bot.send_message(chat_id, OFF)
+            return
         if not question:
             self._chats.pop(chat_id, None)
             bot.send_message(chat_id, HELP)
             return
-        if not (fa.is_configured() and os.getenv("CLAUDE_SECRET")):
+        if not (fa.is_configured() and app_config.anthropic_key()):
             bot.send_message(chat_id, NOT_SET_UP)
             return
         chat = self._chats.get(chat_id)
-        if chat is None or self._clock() - chat["last"] > IDLE_SECONDS:
+        if chat is None or self._clock() - chat["last"] > app_settings.get(ASK.CHAT_MINUTES) * 60:
             chat = {"agent": self._make_agent(), "lock": asyncio.Lock()}
             self._chats[chat_id] = chat
         chat["last"] = self._clock()
@@ -165,7 +169,7 @@ class AskChats:
         """A budget proposal, with buttons. It changes nothing until tapped."""
         token = secrets.token_urlsafe(9)
         self._proposals[token] = {"proposal": proposal, "chat_id": chat_id,
-                                  "expires": self._clock() + PROPOSAL_SECONDS}
+                                  "expires": self._clock() + app_settings.get(ASK.PROPOSAL_MINUTES) * 60}
         change = (f"£{proposal['amount']:,.0f} a month (now £{proposal['current']:,.0f})" if proposal.get("current")
                   else f"£{proposal['amount']:,.0f} a month")
         reason = f"\n<i>{html.escape(proposal['reason'], quote=False)}</i>" if proposal.get("reason") else ""
