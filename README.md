@@ -35,7 +35,18 @@ One person's Monzo account, self-hosted. It's light: the server and worker toget
 
 ## What you need
 
-A Monzo account with developer access, a Telegram bot, an Anthropic API key, a server with Docker, and a domain for HTTPS (DuckDNS is free). The [SETUP guide](SETUP.md) walks through each step.
+Bank Enrichment is **UK-only**: it's built for Monzo's UK accounts, and it assumes GBP and London time.
+
+- **Accounts:**
+  - A Monzo account with developer access.
+  - A Telegram account, to create a bot.
+  - An Anthropic API key. It's pay-as-you-go, so it isn't free.
+- **A server:** with Docker, a public address for HTTPS (DuckDNS is free), and about 1 GB of memory with swap.
+- **A PostgreSQL database:** one you already run and can reach from the server. The app doesn't install one.
+- **Your own computer:** for the dashboard, with Python and Poetry, or WSL on Windows.
+- **Optional:** a bronze copy, a raw save of your data to a folder or a bucket. The app runs without it.
+
+The [SETUP guide](SETUP.md) walks through each step.
 
 ## How it works
 
