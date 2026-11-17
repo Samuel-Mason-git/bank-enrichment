@@ -17,3 +17,11 @@ Each copy carries a `manifest.json` recording what it captured, so the Settings 
 what's in it: transaction count, how many were classified, taxonomy size, subscription count,
 the date range covered, and size on disk. The most recent 10 are kept and older ones pruned;
 any can also be deleted by hand from the same section (behind a confirmation).
+
+## Download and upload
+
+On the Backups tab you can **download** any backup as a zip, to keep it somewhere else, and **add** a
+backup from a zip. An added backup appears in the list, next to the ones taken here. A zip must hold a
+`manifest.json` and `transactions_raw.parquet`, and nothing but `.parquet` tables. Adding a backup
+doesn't restore it.
+

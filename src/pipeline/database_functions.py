@@ -4,12 +4,14 @@ project's Postgres database, schema `bank_enrichment`).
 Transactions are read through the `transactions` view, under the column names
 the old table had. Writes to a transaction are history, not updates: a label is
 a new label_events row, a corrected date or context a new context_events row."""
+import io
 import json
 import logging
 import os
 import shutil
 import statistics
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1317,6 +1319,67 @@ def _prune_backups() -> None:
             log.info(f"Pruned old backup {old}")
         except OSError as e:
             log.warning(f"Could not prune old backup {old}: {e}")
+
+
+# ── Download and upload ──────────────────────────────────────────────────────
+
+ZIP_LIMIT_BYTES = 300 * 1024 * 1024   # the most an uploaded backup may hold, uncompressed
+
+
+class BackupZipError(ValueError):
+    """An uploaded backup that can't be used, with a message to show."""
+
+
+def backup_zip(path: Path) -> bytes:
+    """One backup folder as a zip, its files at the top level."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(path.iterdir()):
+            if f.is_file():
+                z.write(f, arcname=f.name)
+    return buf.getvalue()
+
+
+def add_backup_zip(data: bytes, name: str = "uploaded") -> Path:
+    """Add a backup from a zip, as a new backup in the backup folder. It must hold
+    manifest.json and transactions_raw.parquet, and nothing else but .parquet
+    tables: no folders and no paths. Adding one doesn't restore it, and the newest
+    BACKUPS_KEPT are kept as usual."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as e:
+        raise BackupZipError("That isn't a zip file.") from e
+    with z:
+        infos = z.infolist()
+        if sum(i.file_size for i in infos) > ZIP_LIMIT_BYTES:
+            raise BackupZipError("That backup is too big to add.")
+        names = [i.filename for i in infos]
+        for i in infos:
+            n = i.filename
+            plain = n and not i.is_dir() and "/" not in n and "\\" not in n and n not in (".", "..")
+            if not plain or not (n == MANIFEST_NAME or n.endswith(".parquet")):
+                raise BackupZipError(
+                    f"Unexpected file in the zip: {n!r}. A backup holds only its .parquet tables and {MANIFEST_NAME}.")
+        if MANIFEST_NAME not in names or "transactions_raw.parquet" not in names:
+            raise BackupZipError(
+                f"That zip isn't a backup: it needs {MANIFEST_NAME} and transactions_raw.parquet.")
+        try:
+            json.loads(z.read(MANIFEST_NAME))
+        except ValueError as e:
+            raise BackupZipError(f"The {MANIFEST_NAME} in that zip isn't valid.") from e
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in name)[:40] or "uploaded"
+        target = backup_dir() / f"{stamp}_{safe}"
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = backup_dir() / f"{stamp}_{safe}-{suffix}"
+        target.mkdir(parents=True)
+        for i in infos:
+            (target / i.filename).write_bytes(z.read(i))
+    log.info(f"Added a backup from a zip: {target}")
+    _prune_backups()
+    return target
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
