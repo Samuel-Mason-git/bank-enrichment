@@ -14,6 +14,10 @@ services:
       - ./data:/app/data
     env_file:
       - ./config/.env
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
     logging: *default-logging
 
@@ -32,7 +36,33 @@ services:
       LOG_DIR: /app/data/logs
     mem_limit: 350m
     depends_on:
-      - bank-enrichment
+      bank-enrichment:
+        condition: service_started
+      db:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+    logging: *default-logging
+
+  # The live database, if you don't have one: `docker compose --profile local-db up -d db`.
+  # Off unless that profile is asked for, so an existing database is unchanged. Its
+  # settings come from config/db.env (written by the setup command). It's published on
+  # 127.0.0.1 only, so the dashboard reaches it through an SSH tunnel and the internet
+  # can't.
+  db:
+    profiles: ["local-db"]
+    image: postgres:18
+    env_file:
+      - ./config/db.env
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     restart: unless-stopped
     logging: *default-logging
 
@@ -53,3 +83,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  pgdata:

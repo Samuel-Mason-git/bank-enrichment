@@ -301,3 +301,43 @@ def test_a_full_run_writes_the_destination_settings(tmp_path, monkeypatch):
            say=lambda *_: None, s3_factory=lambda dest: _Bucket())
     written = env_path.read_text(encoding="utf-8")
     assert "EXPORT_DESTINATION=s3" in written and "EXPORT_S3_BUCKET=copies" in written
+
+
+# ── the live database: an existing one, or one run here in Docker ───────────
+
+def _local_answers(tmp_path):
+    base = _answers(tmp_path)
+    base.update({"DB_LOCATION": "local", "DB_NAME": "bank_enrichment", "DB_USER": "bank_enrichment",
+                 "DB_PASSWORD": "generated-password"})
+    return base
+
+
+def test_the_local_database_skips_the_checks_that_need_it_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "ENV_PATH", tmp_path / "config" / ".env")
+    monkeypatch.setattr(sw, "first_backup", lambda *a, **k: pytest.fail("no backup before the database runs"))
+    reached = []
+
+    def connect(**kwargs):
+        reached.append(kwargs)
+        raise AssertionError("the database isn't running yet, so it isn't contacted")
+
+    values = sw.run(_local_answers(tmp_path), ok_get, lambda *a: {"ok": True}, connect,
+                    tmp_path / "schema.sql", say=lambda *_: None)
+    assert reached == []
+    assert values["DB_HOST"] == "db" and "DB_LOCATION" not in values
+
+
+def test_the_local_database_gets_its_own_settings_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "ENV_PATH", tmp_path / "config" / ".env")
+    sw.run(_local_answers(tmp_path), ok_get, lambda *a: {"ok": True}, lambda **kw: _Con(),
+           tmp_path / "schema.sql", say=lambda *_: None)
+    db_env = (tmp_path / "config" / "db.env").read_text(encoding="utf-8")
+    assert "POSTGRES_PASSWORD=generated-password" in db_env and "POSTGRES_DB=bank_enrichment" in db_env
+    assert "DB_HOST=db" in (tmp_path / "config" / ".env").read_text(encoding="utf-8")
+
+
+def test_the_compose_file_has_the_database_behind_a_profile_on_localhost():
+    compose = (Path(__file__).parent.parent / "docker-compose.yml").read_text(encoding="utf-8")
+    assert 'profiles: ["local-db"]' in compose
+    assert '"127.0.0.1:5432:5432"' in compose
+    assert "config/db.env" in compose

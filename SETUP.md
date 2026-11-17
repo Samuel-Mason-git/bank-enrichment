@@ -491,6 +491,27 @@ data; a change that needs to is a one-off script, run deliberately, after a back
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
+### Where the live database is
+
+The setup command asks: an existing Postgres you already run, or one run on the server in Docker.
+
+For a database in Docker, on the server:
+
+```bash
+docker compose --profile local-db up -d db
+docker compose up -d
+```
+
+The database's settings are in `config/db.env` (private, like `.env`). It's published on `127.0.0.1` only, so nothing on the internet can reach it. The dashboard on your own machine reaches it through an SSH tunnel:
+
+```bash
+ssh -N -L 5432:127.0.0.1:5432 your-user@your-server
+```
+
+and then points `DB_HOST` at `localhost` in your local `config/.env`. The server creates the tables when it starts.
+
+A database in Docker has no nightly dump of its own. Turn on the daily copy (below) or keep your own backups of the `pgdata` volume.
+
 ### Where the daily copy goes (optional)
 
 The setup command asks this: none (the default), a folder, or a bucket. A folder or bucket gets a copy of

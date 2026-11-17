@@ -241,10 +241,12 @@ def run(answers: dict, get, post, connect, schema_path: Path, say=print, s3_fact
     check_anthropic(answers["ANTHROPIC_API_KEY"], get)
     say("  the key is accepted.")
 
-    say("Checking the database…")
-    check_database(answers["DB_HOST"], answers["DB_PORT"], answers["DB_NAME"],
-                   answers["DB_USER"], answers["DB_PASSWORD"], connect)
-    say("  the database answers.")
+    local_db = answers.get("DB_LOCATION") == "local"
+    if not local_db:
+        say("Checking the database…")
+        check_database(answers["DB_HOST"], answers["DB_PORT"], answers["DB_NAME"],
+                       answers["DB_USER"], answers["DB_PASSWORD"], connect)
+        say("  the database answers.")
 
     folder = check_folder(answers["BACKUP_DIR"])
     say(f"  backups can be written to {folder}.")
@@ -255,7 +257,7 @@ def run(answers: dict, get, post, connect, schema_path: Path, say=print, s3_fact
         check_destination(answers, s3_factory)
         say("  the destination takes a copy.")
 
-    values = {k: v for k, v in answers.items() if k != "PUBLIC_URL"}   # the address is for the webhook, not .env
+    values = {k: v for k, v in answers.items() if k not in ("PUBLIC_URL", "DB_LOCATION")}   # the address is for the webhook, not .env
     values["TELEGRAM_WEBHOOK_SECRET"] = generate_secret()
     values["MONZO_WEBHOOK_SECRET"] = generate_secret()
 
@@ -265,10 +267,23 @@ def run(answers: dict, get, post, connect, schema_path: Path, say=print, s3_fact
         set_telegram_webhook(answers["TELEGRAM_BOT_TOKEN"], url, values["TELEGRAM_WEBHOOK_SECRET"], post)
         say("  Telegram will send updates to it.")
 
+    if local_db:
+        values["DB_HOST"] = "db"
+        values["DB_PORT"] = "5432"
+        db_env = {"POSTGRES_DB": answers["DB_NAME"], "POSTGRES_USER": answers["DB_USER"],
+                  "POSTGRES_PASSWORD": answers["DB_PASSWORD"]}
+        write_env(db_env, ENV_PATH.with_name("db.env"))
+        say("Wrote the database's own settings to config/db.env.")
+
     say("Writing config/.env…")
     kept = write_env(values, ENV_PATH)
     if kept:
         say(f"  the old file is kept at {kept.name}.")
+
+    if local_db:
+        say("The database runs in Docker. Start it with: docker compose --profile local-db up -d db")
+        say("The server creates its tables when it starts, so the first backup waits for that.")
+        return values
 
     say("Taking a first test backup…")
     env = {k: values[k] for k in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")}
@@ -333,12 +348,21 @@ def main() -> int:
     answers = {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": _ask_chat_id(token)}
     print(f"  bot @{username} is yours to talk to.\n")
     answers["ANTHROPIC_API_KEY"] = _ask("Anthropic API key (console.anthropic.com)", secret=True)
-    print("\nThe database: Postgres you already run, reachable from this machine.")
-    answers["DB_HOST"] = _ask("Database host")
-    answers["DB_PORT"] = _ask("Database port", default="5432")
-    answers["DB_NAME"] = _ask("Database name")
-    answers["DB_USER"] = _ask("Database user")
-    answers["DB_PASSWORD"] = _ask("Database password", secret=True)
+    print("\nThe live database: where your data is kept.")
+    where = _ask("Use an existing Postgres, or run one here in Docker? (existing / local)", default="existing").lower()
+    if where == "local":
+        answers["DB_LOCATION"] = "local"
+        answers["DB_NAME"] = _ask("Database name", default="bank_enrichment")
+        answers["DB_USER"] = _ask("Database user", default="bank_enrichment")
+        answers["DB_PASSWORD"] = generate_secret()[:40]
+        print("  A password is made for it, and written to config/db.env.")
+    else:
+        answers["DB_LOCATION"] = "existing"
+        answers["DB_HOST"] = _ask("Database host")
+        answers["DB_PORT"] = _ask("Database port", default="5432")
+        answers["DB_NAME"] = _ask("Database name")
+        answers["DB_USER"] = _ask("Database user")
+        answers["DB_PASSWORD"] = _ask("Database password", secret=True)
     answers["BACKUP_DIR"] = _ask("Folder for backups (a full path)",
                                  default=str(Path.home() / "bank-enrichment-backups"))
     print("\nA daily copy of the data, besides the database: none, a folder, or a bucket.")
