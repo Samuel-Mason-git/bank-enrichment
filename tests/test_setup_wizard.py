@@ -240,3 +240,64 @@ def test_a_failed_access_change_stops_the_write(tmp_path, monkeypatch):
     with pytest.raises(sw.SetupError, match="access denied"):
         sw.restrict_to_owner(tmp_path / ".env")
 
+
+
+# ── the bronze copy's destination ───────────────────────────────────────────
+
+class _Bucket:
+    def __init__(self, fail=False):
+        self.fail, self.calls = fail, []
+
+    def upload_file(self, path, bucket, key):
+        if self.fail:
+            raise RuntimeError("denied")
+        self.calls.append(("upload", bucket, key))
+
+    def delete_object(self, Bucket, Key):
+        self.calls.append(("delete", Bucket, Key))
+
+
+_S3_ANSWERS = {"BRONZE_DESTINATION": "s3", "BRONZE_S3_ENDPOINT": "https://acct.r2.example",
+               "BRONZE_S3_BUCKET": "copies", "BRONZE_S3_PREFIX": "bank-enrichment",
+               "BRONZE_S3_KEY_ID": "k", "BRONZE_S3_SECRET": "s"}
+
+
+def test_no_daily_copy_needs_no_check(tmp_path):
+    sw.check_destination({"BRONZE_DESTINATION": "none"})
+
+
+def test_a_bucket_is_tested_with_a_file_that_is_removed_again():
+    client = _Bucket()
+    sw.check_destination(dict(_S3_ANSWERS), s3_factory=lambda dest: client)
+    kinds = [c[0] for c in client.calls]
+    assert kinds == ["upload", "delete"]
+    assert client.calls[0][2] == "bank-enrichment/.bank-enrichment-setup-test"
+
+
+def test_a_bucket_that_refuses_the_test_file_is_reported():
+    with pytest.raises(sw.SetupError, match="didn't take a test file"):
+        sw.check_destination(dict(_S3_ANSWERS), s3_factory=lambda dest: _Bucket(fail=True))
+
+
+def test_a_bucket_under_bronze_is_refused_before_anything_is_sent():
+    client = _Bucket()
+    answers = dict(_S3_ANSWERS, BRONZE_S3_PREFIX="bronze/bank-enrichment")
+    with pytest.raises(sw.SetupError, match="bronze"):
+        sw.check_destination(answers, s3_factory=lambda dest: client)
+    assert client.calls == []
+
+
+def test_a_folder_destination_is_checked_as_a_folder(tmp_path):
+    sw.check_destination({"BRONZE_DESTINATION": "folder", "BRONZE_FOLDER": str(tmp_path / "copies")})
+    assert (tmp_path / "copies").is_dir()
+
+
+def test_a_full_run_writes_the_destination_settings(tmp_path, monkeypatch):
+    env_path = tmp_path / "config" / ".env"
+    monkeypatch.setattr(sw, "ENV_PATH", env_path)
+    monkeypatch.setattr(sw, "first_backup", lambda *a, **k: tmp_path / "x")
+    answers = _answers(tmp_path, **_S3_ANSWERS)
+    sw.run(answers, ok_get, lambda *a: {"ok": True}, lambda **kw: _Con(), tmp_path / "schema.sql",
+           say=lambda *_: None, s3_factory=lambda dest: _Bucket())
+    written = env_path.read_text(encoding="utf-8")
+    assert "BRONZE_DESTINATION=s3" in written and "BRONZE_S3_BUCKET=copies" in written

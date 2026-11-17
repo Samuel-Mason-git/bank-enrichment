@@ -22,3 +22,27 @@ any can also be deleted by hand from the same section (behind a confirmation).
 
 On the Backups tab you can **download** any backup as a zip, to keep it somewhere else. The zip holds the
 backup's files at the top level: its `.parquet` tables and `manifest.json`.
+
+## A bronze copy somewhere else
+
+Besides the database, the app can put a copy of its data somewhere each day. It's **off by default**:
+nothing is written unless `BRONZE_DESTINATION` says where.
+
+| `BRONZE_DESTINATION` | Where | Needs |
+|---|---|---|
+| `none` (default) | Nowhere | Nothing |
+| `folder` | A folder on the machine running the worker | `BRONZE_FOLDER`, a full path |
+| `s3` | An S3-compatible bucket: Cloudflare R2, Backblaze B2, Oracle Object Storage, AWS | `BRONZE_S3_ENDPOINT` (https), `BRONZE_S3_BUCKET`, `BRONZE_S3_PREFIX`, `BRONZE_S3_KEY_ID`, `BRONZE_S3_SECRET` |
+
+Each copy is one folder (`<date>-<time>_export`): a gzipped JSON Lines file per table, plus a
+`manifest.json` with the row counts. That's readable without this app. The copy is written once a day,
+on the first worker run after 08:00 (the worker doesn't run overnight).
+
+- **Checked:** after each copy, every file is confirmed to be there at the same size. A failure is tried
+  again on the next run.
+- **Kept:** the newest `BRONZE_KEEP` copies (10 by default). Only copies under this destination are removed.
+- **Safe prefix:** the bucket prefix can't be `bronze`, or sit under `bronze/`, which is where a setup that
+  already writes its own copies keeps them.
+
+The setup command asks where the copy should go, and tests the bucket by writing and removing a test file
+before it saves anything. The bucket keys are kept in `config/.env` with the rest of the secrets.

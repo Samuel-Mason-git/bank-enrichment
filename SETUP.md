@@ -490,3 +490,13 @@ data; a change that needs to is a one-off script, run deliberately, after a back
 ```bash
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
+
+**Before you start:** this app needs a PostgreSQL database that you already run and can reach from this machine. It doesn't install one. The setup command asks for its details.
+
+**Optional, bronze:** a raw save of everything the app receives, as plain files. It's kept apart from the database, so it survives if the database does. The app doesn't need it to run, so skip it unless you want that safety copy. The setup command asks where it goes: none (the default), a folder, or a bucket.
+
+### Optional: a bronze copy
+
+The setup command asks this: none (the default), a folder, or a bucket. A folder or bucket gets a copy of
+the data every day, after the worker's first run of the day. See [Backups](docs/data/backups.md#a-daily-copy-somewhere-else)
+for the settings and what's kept.

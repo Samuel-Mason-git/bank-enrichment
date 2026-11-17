@@ -29,3 +29,8 @@ def monzo_login_user() -> str | None:
 
 def monzo_login_password() -> str | None:
     return os.getenv("MONZO_LOGIN_PASSWORD") or None
+
+
+def get(name: str, default: str | None = None) -> str | None:
+    """Any setting by its name, read at call time. For the settings with no accessor of their own."""
+    return os.getenv(name) or default
