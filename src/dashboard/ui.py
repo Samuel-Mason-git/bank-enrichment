@@ -126,3 +126,15 @@ row_colors = {
     "Saved": "rgba(52, 219, 193, 0.14)",
     "Transferred / Excluded": "rgba(149, 165, 166, 0.14)",
 }
+
+
+def settings_link(tab: str) -> None:
+    """A link to the Settings page, where this is set up: the tab named. The page
+    is registered by dashboard.py, which stores it in session state."""
+    import streamlit as st
+    label = f"Set this up in Settings → {tab}"
+    page = st.session_state.get("settings_page")
+    if page is None:
+        st.caption(label)
+    else:
+        st.page_link(page, label=label, icon="⚙️")

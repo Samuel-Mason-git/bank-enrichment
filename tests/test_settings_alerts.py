@@ -27,3 +27,19 @@ def test_the_alerts_tab_starts_from_the_saved_settings(db):
     at.switch_page("views/settings.py").run()
     assert at.radio(key="unusual_level").value == "less"
     assert at.toggle(key="unusual_on").value is True
+
+
+def test_the_budget_telegram_settings_are_on_the_settings_page(db):
+    at = AppTest.from_file(_DASHBOARD, default_timeout=30)
+    at.switch_page("views/settings.py").run()
+    assert not at.exception
+    assert at.multiselect(key="budget_alert_kinds") is not None
+    assert at.selectbox(key="budget_mode") is not None
+
+
+def test_the_budget_page_links_to_settings(db):
+    at = AppTest.from_file(_DASHBOARD, default_timeout=30)
+    at.switch_page("views/budget.py").run()
+    assert not at.exception
+    assert "Set this up in Settings" in " ".join(str(el.value) for el in at.get("page_link")) or \
+        any("Set this up in Settings" in m.value for m in at.markdown)

@@ -17,6 +17,8 @@ from dashboard_helpers import (
 from ui import _query, _card_rows
 import finance_agent as fa
 import alert_settings as AS
+import budget_messages
+import budgets as bg
 from page_context import shared
 
 df, = shared('df')
@@ -50,8 +52,48 @@ tax_parents = [
 ]
 tax_parent_names = [p["name"] for p in tax_parents]
 
-tab_categories, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
-    ["Categories", "Alerts", "Ask", "Backups", "Danger zone"]
+ALERT_LABELS = {"near": "80% used", "over": "Over budget", "pace": "Off pace (from day 7)"}
+
+
+def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
+    st.caption("Sent by the worker after its runs. Its first run each day is at 08:00, so a morning message is "
+               "there when you wake up. Each alert comes at most once per category per month. Nothing is sent "
+               "while there are no budgets.")
+    current = bg.digest_settings()
+    with st.form("budget_telegram_form"):
+        mode = st.selectbox("How often to get the budget message (text and a chart of bars)",
+                            list(bg.DIGEST_MODES), format_func=bg.DIGEST_MODES.get,
+                            index=list(bg.DIGEST_MODES).index(current["mode"]), key="budget_mode")
+        days, monthday = [], current["monthday"]
+        if mode == "days":
+            day_names = st.multiselect("On these days", bg.WEEKDAYS,
+                                       default=[bg.WEEKDAYS[d] for d in current["days"]] or [bg.WEEKDAYS[0]],
+                                       key="budget_days")
+            days = [bg.WEEKDAYS.index(n) for n in day_names]
+        elif mode == "monthly":
+            monthday = st.number_input("On this day of the month (1 to 28, e.g. your payday)", min_value=1,
+                                       max_value=28, value=int(current["monthday"]), step=1, key="budget_monthday")
+        wanted = st.multiselect("Instant alerts", list(ALERT_LABELS), default=sorted(bg.alerts_wanted()),
+                                format_func=ALERT_LABELS.get, key="budget_alert_kinds")
+        if st.form_submit_button("Save", type="primary"):
+            try:
+                bg.set_digest(mode, days=days, monthday=int(monthday))
+                bg.set_alerts_wanted(wanted)
+                st.success("Saved: " + bg.DIGEST_MODES[mode].lower()
+                           + (f" ({', '.join(bg.WEEKDAYS[d] for d in sorted(days))})" if mode == "days" else "")
+                           + (f" on day {int(monthday)}" if mode == "monthly" else "")
+                           + ". Alerts: " + (", ".join(ALERT_LABELS[k].lower() for k in wanted) or "none") + ".")
+            except bg.BudgetError as e:
+                st.error(str(e))
+    if st.button("Send me the budget message now", key="budget_send_now", disabled=not mb_now.statuses):
+        if budget_messages.send_digest(mb_now):
+            st.success("Sent to Telegram. It doesn't count as today's message, so the usual one still comes.")
+        else:
+            st.error("Telegram didn't take it: check TELEGRAM_API and TELEGRAM_CHAT_ID in config/.env.")
+
+
+tab_categories, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
+    ["Categories", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
 )
 
 with tab_categories:
@@ -434,6 +476,11 @@ with tab_categories:
                     st.caption(f"{len(txns)} transaction(s)")
                 else:
                     st.info("No transactions assigned to this subcategory.")
+
+with tab_budgets:
+    st.caption("When you get budget messages and alerts on Telegram. The budgets themselves are set on the Budget page.")
+    st.subheader("Telegram messages and alerts")
+    _budget_telegram_settings(bg.month_budgets())
 
 with tab_alerts:
     st.caption("The Telegram messages from the hourly checks. Each can be switched off, and tuned here.")
