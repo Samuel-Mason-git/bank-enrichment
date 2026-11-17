@@ -222,14 +222,14 @@ def _steps() -> None:
         except Exception as e:
             log.error(f"Unusual-payment alerts failed: {e}", exc_info=True)
 
-    # The daily copy to a folder or bucket, if one is set (export_destinations.py). Once a day.
+    # The bronze copy to a folder or bucket, if one is set (export_destinations.py). Once a day.
     with _timed("export"):
         try:
             where = run_export(datetime.now(ZoneInfo("Europe/London")).date())
             if where:
-                log.info(f"Daily copy sent to {where}")
+                log.info(f"Bronze copy sent to {where}")
         except Exception as e:
-            log.error(f"Daily copy failed: {e}", exc_info=True)
+            log.error(f"Bronze copy failed: {e}", exc_info=True)
 
     # Last, so everything classified this run counts against the budgets.
     with _timed("budget_messages"):

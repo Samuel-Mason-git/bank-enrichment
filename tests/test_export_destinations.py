@@ -1,4 +1,4 @@
-"""Where a daily copy goes: a folder or a bucket, off by default, checked after each copy, and kept
+"""Where the bronze copy goes: a folder or a bucket, off by default, checked after each copy, and kept
 to a number of copies, only under its own prefix."""
 import gzip
 import json
@@ -50,7 +50,7 @@ def _dest(**kw):
 # ── the rules ──────────────────────────────────────────────────────────────
 
 def test_nothing_set_means_no_copy(monkeypatch):
-    for name in ("EXPORT_DESTINATION", "EXPORT_FOLDER"):
+    for name in ("BRONZE_DESTINATION", "BRONZE_FOLDER"):
         monkeypatch.delenv(name, raising=False)
     dest = ed.load()
     assert dest.kind == "none"
@@ -63,7 +63,7 @@ def test_a_folder_must_be_a_full_path(tmp_path):
 
 
 def test_a_bucket_needs_every_setting():
-    with pytest.raises(ed.ExportError, match="EXPORT_S3_SECRET"):
+    with pytest.raises(ed.ExportError, match="BRONZE_S3_SECRET"):
         ed.validate(_dest(secret=None))
 
 
@@ -145,8 +145,8 @@ def test_a_copy_the_bucket_doesnt_hold_is_an_error(db):
 # ── once a day ─────────────────────────────────────────────────────────────
 
 def test_a_day_is_exported_once(db, monkeypatch, tmp_path):
-    monkeypatch.setenv("EXPORT_DESTINATION", "folder")
-    monkeypatch.setenv("EXPORT_FOLDER", str(tmp_path / "copies"))
+    monkeypatch.setenv("BRONZE_DESTINATION", "folder")
+    monkeypatch.setenv("BRONZE_FOLDER", str(tmp_path / "copies"))
     today = date(2026, 11, 17)
     assert ed.nightly(today) is not None
     assert ed.nightly(today) is None
@@ -154,8 +154,8 @@ def test_a_day_is_exported_once(db, monkeypatch, tmp_path):
 
 
 def test_a_failed_copy_is_tried_again_on_the_next_run(db, monkeypatch):
-    monkeypatch.setenv("EXPORT_DESTINATION", "folder")
-    monkeypatch.setenv("EXPORT_FOLDER", "relative/not-allowed")
+    monkeypatch.setenv("BRONZE_DESTINATION", "folder")
+    monkeypatch.setenv("BRONZE_FOLDER", "relative/not-allowed")
     today = date(2026, 11, 17)
     assert ed.nightly(today) is None
     assert dbf.get_setting(ed.LAST_DAY_SETTING) is None      # not marked done, so it's tried again

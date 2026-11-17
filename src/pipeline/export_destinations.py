@@ -7,11 +7,11 @@ the shape data-vault's bronze uses, and it can be read without this app. The wor
 doesn't carry pandas, so the tables are read with psycopg.
 
 Safety:
-  - Nothing is written unless EXPORT_DESTINATION says where.
+  - Nothing is written unless BRONZE_DESTINATION says where.
   - A destination needs its own prefix, and the prefix can't be bronze, or sit under
     bronze/: that's where a setup that already writes its own copies keeps them.
   - After each copy, every file is checked to be there at the same size.
-  - Only the newest EXPORT_KEEP copies are kept, and only under this destination.
+  - Only the newest BRONZE_KEEP copies are kept, and only under this destination.
   - A day is exported once. A failure is tried again on the next run.
 """
 import gzip
@@ -29,7 +29,7 @@ from database_functions import BACKUP_TABLES, get_con, get_setting, now, set_set
 
 log = logging.getLogger(__name__)
 
-LAST_DAY_SETTING = "export_last_day"
+LAST_DAY_SETTING = "bronze_last_day"
 COPY_NAME = re.compile(r"^\d{8}-\d{6}_export(-\d+)?$")
 MANIFEST = "manifest.json"
 RESERVED_PREFIXES = ("bronze",)
@@ -53,16 +53,16 @@ class Destination:
 
 def load() -> Destination:
     """The destination from config/.env. Nothing set means none."""
-    kind = (app_config.get("EXPORT_DESTINATION", "none") or "none").strip().lower()
-    keep = int(app_config.get("EXPORT_KEEP", "10") or 10)
+    kind = (app_config.get("BRONZE_DESTINATION", "none") or "none").strip().lower()
+    keep = int(app_config.get("BRONZE_KEEP", "10") or 10)
     return Destination(
         kind=kind,
-        folder=app_config.get("EXPORT_FOLDER"),
-        endpoint=app_config.get("EXPORT_S3_ENDPOINT"),
-        bucket=app_config.get("EXPORT_S3_BUCKET"),
-        prefix=(app_config.get("EXPORT_S3_PREFIX") or "").strip("/") or None,
-        key_id=app_config.get("EXPORT_S3_KEY_ID"),
-        secret=app_config.get("EXPORT_S3_SECRET"),
+        folder=app_config.get("BRONZE_FOLDER"),
+        endpoint=app_config.get("BRONZE_S3_ENDPOINT"),
+        bucket=app_config.get("BRONZE_S3_BUCKET"),
+        prefix=(app_config.get("BRONZE_S3_PREFIX") or "").strip("/") or None,
+        key_id=app_config.get("BRONZE_S3_KEY_ID"),
+        secret=app_config.get("BRONZE_S3_SECRET"),
         keep=keep,
     )
 
@@ -72,25 +72,25 @@ def validate(dest: Destination) -> None:
     if dest.kind == "none":
         return
     if dest.keep < 1:
-        raise ExportError("EXPORT_KEEP must be at least 1.")
+        raise ExportError("BRONZE_KEEP must be at least 1.")
     if dest.kind == "folder":
         if not dest.folder or not Path(dest.folder).is_absolute():
-            raise ExportError("EXPORT_FOLDER must be a full path.")
+            raise ExportError("BRONZE_FOLDER must be a full path.")
         return
     if dest.kind == "s3":
         missing = [name for name, value in (
-            ("EXPORT_S3_ENDPOINT", dest.endpoint), ("EXPORT_S3_BUCKET", dest.bucket),
-            ("EXPORT_S3_PREFIX", dest.prefix), ("EXPORT_S3_KEY_ID", dest.key_id),
-            ("EXPORT_S3_SECRET", dest.secret)) if not value]
+            ("BRONZE_S3_ENDPOINT", dest.endpoint), ("BRONZE_S3_BUCKET", dest.bucket),
+            ("BRONZE_S3_PREFIX", dest.prefix), ("BRONZE_S3_KEY_ID", dest.key_id),
+            ("BRONZE_S3_SECRET", dest.secret)) if not value]
         if missing:
             raise ExportError("Missing for the bucket: " + ", ".join(missing))
         if not dest.endpoint.startswith("https://"):
-            raise ExportError("EXPORT_S3_ENDPOINT must start with https://")
+            raise ExportError("BRONZE_S3_ENDPOINT must start with https://")
         first = dest.prefix.split("/")[0]
         if first in RESERVED_PREFIXES:
             raise ExportError(f"The prefix can't start with {first}/: that's kept for another copy of the data.")
         return
-    raise ExportError(f"EXPORT_DESTINATION must be none, folder or s3, not {dest.kind!r}.")
+    raise ExportError(f"BRONZE_DESTINATION must be none, folder or s3, not {dest.kind!r}.")
 
 
 def _stamp(when: datetime) -> str:

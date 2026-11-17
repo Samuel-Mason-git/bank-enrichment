@@ -242,7 +242,7 @@ def test_a_failed_access_change_stops_the_write(tmp_path, monkeypatch):
 
 
 
-# ── the daily copy's destination ───────────────────────────────────────────
+# ── the bronze copy's destination ───────────────────────────────────────────
 
 class _Bucket:
     def __init__(self, fail=False):
@@ -257,13 +257,13 @@ class _Bucket:
         self.calls.append(("delete", Bucket, Key))
 
 
-_S3_ANSWERS = {"EXPORT_DESTINATION": "s3", "EXPORT_S3_ENDPOINT": "https://acct.r2.example",
-               "EXPORT_S3_BUCKET": "copies", "EXPORT_S3_PREFIX": "bank-enrichment",
-               "EXPORT_S3_KEY_ID": "k", "EXPORT_S3_SECRET": "s"}
+_S3_ANSWERS = {"BRONZE_DESTINATION": "s3", "BRONZE_S3_ENDPOINT": "https://acct.r2.example",
+               "BRONZE_S3_BUCKET": "copies", "BRONZE_S3_PREFIX": "bank-enrichment",
+               "BRONZE_S3_KEY_ID": "k", "BRONZE_S3_SECRET": "s"}
 
 
 def test_no_daily_copy_needs_no_check(tmp_path):
-    sw.check_destination({"EXPORT_DESTINATION": "none"})
+    sw.check_destination({"BRONZE_DESTINATION": "none"})
 
 
 def test_a_bucket_is_tested_with_a_file_that_is_removed_again():
@@ -281,14 +281,14 @@ def test_a_bucket_that_refuses_the_test_file_is_reported():
 
 def test_a_bucket_under_bronze_is_refused_before_anything_is_sent():
     client = _Bucket()
-    answers = dict(_S3_ANSWERS, EXPORT_S3_PREFIX="bronze/bank-enrichment")
+    answers = dict(_S3_ANSWERS, BRONZE_S3_PREFIX="bronze/bank-enrichment")
     with pytest.raises(sw.SetupError, match="bronze"):
         sw.check_destination(answers, s3_factory=lambda dest: client)
     assert client.calls == []
 
 
 def test_a_folder_destination_is_checked_as_a_folder(tmp_path):
-    sw.check_destination({"EXPORT_DESTINATION": "folder", "EXPORT_FOLDER": str(tmp_path / "copies")})
+    sw.check_destination({"BRONZE_DESTINATION": "folder", "BRONZE_FOLDER": str(tmp_path / "copies")})
     assert (tmp_path / "copies").is_dir()
 
 
@@ -300,4 +300,4 @@ def test_a_full_run_writes_the_destination_settings(tmp_path, monkeypatch):
     sw.run(answers, ok_get, lambda *a: {"ok": True}, lambda **kw: _Con(), tmp_path / "schema.sql",
            say=lambda *_: None, s3_factory=lambda dest: _Bucket())
     written = env_path.read_text(encoding="utf-8")
-    assert "EXPORT_DESTINATION=s3" in written and "EXPORT_S3_BUCKET=copies" in written
+    assert "BRONZE_DESTINATION=s3" in written and "BRONZE_S3_BUCKET=copies" in written

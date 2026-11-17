@@ -185,18 +185,18 @@ def check_bucket(dest, client) -> None:
 
 
 def check_destination(answers: dict, s3_factory=None) -> None:
-    """The daily copy's destination: none needs nothing; a folder is checked as the backups are;
+    """The bronze copy's destination: none needs nothing; a folder is checked as the backups are;
     a bucket is validated and then tested."""
     import export_destinations as ed
-    kind = answers.get("EXPORT_DESTINATION", "none")
+    kind = answers.get("BRONZE_DESTINATION", "none")
     if kind == "none":
         return
     if kind == "folder":
-        check_folder(answers["EXPORT_FOLDER"])
+        check_folder(answers["BRONZE_FOLDER"])
         return
-    dest = ed.Destination(kind="s3", endpoint=answers.get("EXPORT_S3_ENDPOINT"),
-                          bucket=answers.get("EXPORT_S3_BUCKET"), prefix=answers.get("EXPORT_S3_PREFIX"),
-                          key_id=answers.get("EXPORT_S3_KEY_ID"), secret=answers.get("EXPORT_S3_SECRET"))
+    dest = ed.Destination(kind="s3", endpoint=answers.get("BRONZE_S3_ENDPOINT"),
+                          bucket=answers.get("BRONZE_S3_BUCKET"), prefix=answers.get("BRONZE_S3_PREFIX"),
+                          key_id=answers.get("BRONZE_S3_KEY_ID"), secret=answers.get("BRONZE_S3_SECRET"))
     try:
         ed.validate(dest)
     except ed.ExportError as e:
@@ -249,9 +249,9 @@ def run(answers: dict, get, post, connect, schema_path: Path, say=print, s3_fact
     folder = check_folder(answers["BACKUP_DIR"])
     say(f"  backups can be written to {folder}.")
 
-    kind = answers.get("EXPORT_DESTINATION", "none")
+    kind = answers.get("BRONZE_DESTINATION", "none")
     if kind != "none":
-        say(f"Checking the daily copy's destination ({kind})…")
+        say(f"Checking the bronze copy's destination ({kind})…")
         check_destination(answers, s3_factory)
         say("  the destination takes a copy.")
 
@@ -341,18 +341,18 @@ def main() -> int:
     answers["DB_PASSWORD"] = _ask("Database password", secret=True)
     answers["BACKUP_DIR"] = _ask("Folder for backups (a full path)",
                                  default=str(Path.home() / "bank-enrichment-backups"))
-    print("\nA daily copy of the data, besides the database: none, a folder, or a bucket.")
-    kind = _ask("Where should the daily copy go? (none / folder / bucket)", default="none").lower()
-    answers["EXPORT_DESTINATION"] = kind
+    print("\nA bronze copy of the data, besides the database: none, a folder, or a bucket.")
+    kind = _ask("Where should the bronze copy go? (none / folder / bucket)", default="none").lower()
+    answers["BRONZE_DESTINATION"] = kind
     if kind == "folder":
-        answers["EXPORT_FOLDER"] = _ask("Folder for the daily copy (a full path)")
+        answers["BRONZE_FOLDER"] = _ask("Folder for the bronze copy (a full path)")
     elif kind == "bucket":
-        answers["EXPORT_DESTINATION"] = "s3"
-        answers["EXPORT_S3_ENDPOINT"] = _ask("Bucket endpoint, e.g. https://<account>.r2.cloudflarestorage.com")
-        answers["EXPORT_S3_BUCKET"] = _ask("Bucket name")
-        answers["EXPORT_S3_PREFIX"] = _ask("Folder inside the bucket for these copies", default="bank-enrichment")
-        answers["EXPORT_S3_KEY_ID"] = _ask("Access key ID")
-        answers["EXPORT_S3_SECRET"] = _ask("Secret access key", secret=True)
+        answers["BRONZE_DESTINATION"] = "s3"
+        answers["BRONZE_S3_ENDPOINT"] = _ask("Bucket endpoint, e.g. https://<account>.r2.cloudflarestorage.com")
+        answers["BRONZE_S3_BUCKET"] = _ask("Bucket name")
+        answers["BRONZE_S3_PREFIX"] = _ask("Folder inside the bucket for these copies", default="bank-enrichment")
+        answers["BRONZE_S3_KEY_ID"] = _ask("Access key ID")
+        answers["BRONZE_S3_SECRET"] = _ask("Secret access key", secret=True)
     print("\nMonzo: the login that guards linking your account (see SETUP.md, the OAuth step).")
     answers["MONZO_LOGIN_USER"] = _ask("Login name", default="admin")
     answers["MONZO_LOGIN_PASSWORD"] = _ask("Login password", secret=True)
