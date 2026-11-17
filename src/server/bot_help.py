@@ -6,6 +6,7 @@ HELP = (
     "/ask &lt;question&gt; — ask about your money, e.g. <code>/ask how much did I spend this week?</code>\n"
     "/ask on its own — start a fresh chat\n"
     "/budget — this month's budgets, as text and a chart\n"
+    "/health — is the app working: server, database, last payment and last run\n"
     "/help — this message\n\n"
     "<b>Anything else</b>\n"
     "A plain message answers the payment I've just asked you about: a sentence of context, "

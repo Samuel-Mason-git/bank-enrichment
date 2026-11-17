@@ -6,7 +6,6 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 import asyncio
-import app_config
 import uvicorn
 import html
 import logging
@@ -15,6 +14,13 @@ import secrets
 import json
 import os
 import sys
+
+BASE_DIR = os.path.dirname(__file__)
+
+# The pipeline's modules (app_config, activity, ...). Put on the path before
+# anything imports them, and last, so nothing there shadows the server's own.
+sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
+import app_config  # noqa: E402
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -30,15 +36,13 @@ from monzo_oauth import (
     begin_authorization, complete_authorization, fetch_transaction, monzo_refresh_loop, MONZO_CLIENT_ID,
 )
 
-BASE_DIR = os.path.dirname(__file__)
-
 # The pipeline's activity log (warnings and errors into the database, for the
-# dashboard's Activity page). Last on the path, so nothing there shadows ours.
-sys.path.append(os.path.join(BASE_DIR, "..", "pipeline"))
+# dashboard's Activity page).
 import activity  # noqa: E402
 import database_functions  # noqa: E402
 import ask_tg  # noqa: E402  (imports the pipeline's finance_agent)
 import bot_help  # noqa: E402
+import bot_health  # noqa: E402
 import budget_messages  # noqa: E402
 
 LOG_PATH = os.path.join(BASE_DIR, "..", "..", "data", "server.log")
@@ -743,6 +747,11 @@ async def recieve_telegram(request: Request):
         # /help: what the bot understands (bot_help.py).
         if bot_help.is_help(msg.text):
             bot.send_message(chat_id, bot_help.HELP)
+            return {"ok": True}
+
+        # /health: how the app is doing (bot_health.py).
+        if bot_health.is_health(msg.text):
+            bot.send_message(chat_id, bot_health.report(get_con))
             return {"ok": True}
 
         # /budget: this month's budgets, sent as text and a chart (budget_messages.report).
