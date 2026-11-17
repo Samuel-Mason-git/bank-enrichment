@@ -123,6 +123,10 @@ def _render(entry: dict, key: str) -> None:
 st.header("Ask")
 settings_link("Ask")
 
+import ask_settings as ASK
+if not ASK.get(ASK.PAGE_ON):
+    st.info("The Ask page is switched off. Turn it on in Settings → Ask.")
+    st.stop()
 if not fa.is_configured():
     st.info("The Ask page needs the agent's own read-only database login: add AGENT_DB_USER and "
             "AGENT_DB_PASSWORD to config/.env (see SETUP.md for creating the role), then restart the dashboard.")
