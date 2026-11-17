@@ -92,3 +92,19 @@ def test_a_payment_after_a_gap_clears_it(db, alert_post):
     _charge(db, "newer", 10.99, days_ago=20)   # paid again: the gap is over
     assert sa.run() == 0
     assert db.execute("SELECT COUNT(*) FROM subscription_alerts WHERE sub_id = %s", [sid]).fetchone()[0] == 1
+
+
+def test_an_old_gap_is_not_reported_on_the_first_run(db, alert_post):
+    # a monthly subscription last paid 200 days ago: cancelled, or never deactivated
+    dbf.upsert_subscription("OldPlan", 5.0, "monthly", "OldPlan")
+    _charge(db, "old", 5.0, days_ago=200, merchant="OldPlan")
+    assert sa.run() == 0
+    assert alert_post.call_count == 0
+
+
+def test_a_fresh_gap_is_reported(db, alert_post):
+    # 50 days: past a month and a week's grace, and still within the two-week window
+    dbf.upsert_subscription("NewGap", 5.0, "monthly", "NewGap")
+    _charge(db, "fresh", 5.0, days_ago=50, merchant="NewGap")
+    assert sa.run() == 1
+

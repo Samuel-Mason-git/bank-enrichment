@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 # The pipeline's database library: the dashboard reads the same database the same way.
@@ -19,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
 # The server's rule matching (check_rules), so the Rules page judges a match
 # exactly as the webhook does. Last on the path: nothing there shadows ours.
 sys.path.append(str(Path(__file__).parent.parent / "server"))
-import app_config  # loads config/.env
+import app_config  # noqa: F401  (loads config/.env)
 # Changes made here are recorded as the dashboard's (settings_changes).
 os.environ.setdefault("DB_APP_NAME", "dashboard")
 

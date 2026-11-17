@@ -14,6 +14,7 @@ subscriptions and the transactions. A subscription with no payment ever seen
 isn't checked.
 """
 import html
+import app_settings
 import logging
 from datetime import date
 
@@ -25,6 +26,10 @@ log = logging.getLogger(__name__)
 
 PRICE_LOOKBACK_DAYS = 3   # only a payment this recent can show a new price, so a first run doesn't alert on old ones
 PERIOD_DAYS = {"weekly": 7, "fortnightly": 14, "monthly": 31, "annual": 366}
+# A missed payment is reported only for two weeks after it becomes one. A gap that's older
+# than that (a cancelled subscription, or one never deactivated) stays quiet, so the first run
+# after deploying doesn't send one message per old subscription.
+MISSED_WINDOW_DAYS = 14
 
 _MATCH = "COALESCE(t.merchant_name, t.counterparty_name) = COALESCE(s.merchant_name, s.name)"
 
@@ -36,7 +41,9 @@ def price_changed(stored: float, paid: float, pounds: float, percent: float) -> 
 
 
 def missed(days_since: int, frequency: str, grace_days: int) -> bool:
-    return days_since > PERIOD_DAYS[frequency] + grace_days
+    """Whether the gap since the last payment is a missed payment that's still new."""
+    late_after = PERIOD_DAYS[frequency] + grace_days
+    return late_after < days_since <= late_after + MISSED_WINDOW_DAYS
 
 
 def _london_now():
@@ -96,9 +103,9 @@ def run() -> int:
     """Send the alerts that are due. Returns how many were sent. Each kind is
     checked only while it's switched on."""
     sent = 0
-    price_on = AS.get(AS.SUB_PRICE_ON)
-    pounds = float(AS.get(AS.SUB_PRICE_POUNDS))
-    percent = float(AS.get(AS.SUB_PRICE_PERCENT))
+    price_on = app_settings.get(AS.SUB_PRICE_ON)
+    pounds = float(app_settings.get(AS.SUB_PRICE_POUNDS))
+    percent = float(app_settings.get(AS.SUB_PRICE_PERCENT))
     for row in _price_candidates() if price_on else []:
         stored, paid = float(row["amount"]), float(row["paid"])
         if not price_changed(stored, paid, pounds, percent) or _sent(row["id"], "price", row["txn_id"]):
@@ -110,9 +117,9 @@ def run() -> int:
         else:
             log.warning("Subscription price alert not sent: Telegram refused it; it will be tried again")
 
-    if not AS.get(AS.SUB_MISSED_ON):
+    if not app_settings.get(AS.SUB_MISSED_ON):
         return sent
-    grace = AS.get(AS.SUB_MISSED_GRACE)
+    grace = app_settings.get(AS.SUB_MISSED_GRACE)
     today = _london_now()
     for row in _last_seen():
         last = row["last_seen"]

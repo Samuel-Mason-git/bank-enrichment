@@ -6,7 +6,7 @@ bad call from killing a run, but it also means running out of credit produces
 nothing except error lines in a log file. That is easy to miss, and the
 symptom (transactions quietly not being classified) looks like nothing at all.
 
-This sends to Telegram directly, with the same bot the server uses (TELEGRAM_API
+This sends to Telegram directly, with the same bot the server uses (TELEGRAM_BOT_TOKEN
 and TELEGRAM_CHAT_ID in config/.env). Alerts carry a kind, a fix, and counts --
 never transaction text. The exception classes, not their messages, are what get
 reported: a JSON parse error's message quotes the model's output, which can
@@ -21,13 +21,10 @@ import app_config
 import logging
 import os
 import threading
-from pathlib import Path
 
 import anthropic
 import requests
-from dotenv import load_dotenv
 
-import app_config  # loads config/.env
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +103,7 @@ def classify_error(e: Exception) -> tuple[str, str, str]:
     if isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
         return (
             "auth", "Anthropic API key rejected",
-            "Check CLAUDE_SECRET in config/.env. Nothing is classified until it works; "
+            "Check ANTHROPIC_API_KEY in config/.env. Nothing is classified until it works; "
             "transactions are retried on the next run.",
         )
     detail = type(e).__name__

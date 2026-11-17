@@ -214,7 +214,7 @@ def _public_base_url(request: Request) -> str:
 @app.get("/oauth/start")
 async def oauth_start(request: Request, credentials: HTTPBasicCredentials = Depends(verify_credentials)):
     """Begin (or redo) Monzo authorization: sends you to Monzo's login with a
-    fresh single-use state. Behind the login (DASHBOARD_USER), so only you can
+    fresh single-use state. Behind the login (MONZO_LOGIN_USER), so only you can
     start a flow whose result gets stored."""
     if not MONZO_CLIENT_ID:
         return HTMLResponse("<p>MONZO_CLIENT_ID isn't set on the server -- see SETUP.md.</p>", status_code=503)

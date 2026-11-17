@@ -38,7 +38,7 @@ class TestClassifyError:
 
     def test_a_rejected_key_points_at_the_config(self):
         kind, title, message = alerts.classify_error(auth_error())
-        assert kind == "auth" and "CLAUDE_SECRET" in message
+        assert kind == "auth" and "ANTHROPIC_API_KEY" in message
 
     def test_other_bad_requests_are_not_mistaken_for_credit(self):
         other = anthropic.BadRequestError("prompt is too long", response=_response(400), body=None)

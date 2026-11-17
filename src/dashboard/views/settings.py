@@ -1,6 +1,7 @@
 """Settings, in tabs: categories and their roles, the unusual-payment alerts, the Ask page's
 daily limit, backups, and the danger zone."""
 import pandas as pd
+import app_settings
 import streamlit as st
 from pathlib import Path
 from database_functions import (
@@ -8,7 +9,7 @@ from database_functions import (
     backup_zip, default_backup_dir,
     delete_backup, delete_parent, reset_backup_dir, set_backup_dir,
     delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
-    get_setting, read_backup_manifest, rename_parent, set_parent_role, set_setting, set_subcategory_role, upsert_parent,
+    read_backup_manifest, rename_parent, set_parent_role, set_subcategory_role, upsert_parent,
     upsert_subcategory, wipe_parent_labels, wipe_taxonomy,
 )
 from dashboard_helpers import (
@@ -479,6 +480,13 @@ with tab_categories:
                 else:
                     st.info("No transactions assigned to this subcategory.")
 
+@st.cache_data(show_spinner=False)
+def _backup_zip_cached(path: str, modified: float) -> bytes:
+    """A backup as a zip, built once per backup. The modification time is in the key,
+    so a backup that changes is zipped again; a rerun of the page doesn't zip it."""
+    return backup_zip(Path(path))
+
+
 with tab_classification:
     st.subheader("Classification")
     st.caption(
@@ -487,12 +495,12 @@ with tab_classification:
         "history before you rely on it: model_eval.py compares them."
     )
     c_models = list(CLS.MODELS)
-    c_saved = CLS.get(CLS.MODEL)
+    c_saved = app_settings.get(CLS.MODEL)
     c_model = st.selectbox("Model for placing payments", c_models, index=c_models.index(c_saved),
                            format_func=CLS.MODELS.get, key="classifier_model")
     if st.button("Save classification settings", key="classifier_save"):
         try:
-            CLS.save(CLS.MODEL, c_model)
+            app_settings.save(CLS.MODEL, c_model)
         except ValueError as e:
             st.error(str(e))
         else:
@@ -511,56 +519,56 @@ with tab_alerts:
         "A payment far above what its merchant usually costs. Amounts are compared on a log scale against that "
         "merchant's past payments, so a £3 coffee and a £300 shop are judged by the same measure."
     )
-    u_on = st.toggle("Send unusual-payment alerts", value=bool(AS.get(AS.UNUSUAL_ON)), key="unusual_on")
+    u_on = st.toggle("Send unusual-payment alerts", value=bool(app_settings.get(AS.UNUSUAL_ON)), key="unusual_on")
     levels = list(AS.LEVELS)
-    saved_level = AS.get(AS.UNUSUAL_LEVEL)
+    saved_level = app_settings.get(AS.UNUSUAL_LEVEL)
     u_level = st.radio(
         "How far a payment has to stand out", levels, index=levels.index(saved_level),
         format_func=AS.LEVEL_LABELS.get, horizontal=True, key="unusual_level", disabled=not u_on,
     )
     u_history = st.number_input(
         "Earlier payments to a merchant needed before comparing", min_value=int(AS.UNUSUAL_MIN_HISTORY.low),
-        max_value=int(AS.UNUSUAL_MIN_HISTORY.high), value=int(AS.get(AS.UNUSUAL_MIN_HISTORY)), step=1,
+        max_value=int(AS.UNUSUAL_MIN_HISTORY.high), value=int(app_settings.get(AS.UNUSUAL_MIN_HISTORY)), step=1,
         key="unusual_history", disabled=not u_on,
     )
     u_gap = st.number_input(
         "And at least this far above the usual (£)", min_value=float(AS.UNUSUAL_MIN_GAP.low),
-        max_value=float(AS.UNUSUAL_MIN_GAP.high), value=float(AS.get(AS.UNUSUAL_MIN_GAP)), step=1.0,
+        max_value=float(AS.UNUSUAL_MIN_GAP.high), value=float(app_settings.get(AS.UNUSUAL_MIN_GAP)), step=1.0,
         format="%.2f", key="unusual_gap", disabled=not u_on,
     )
 
     st.subheader("Subscriptions")
     st.caption("Checked against the subscriptions on this page, using the payments that come in.")
-    p_on = st.toggle("Tell me when a subscription's price changes", value=bool(AS.get(AS.SUB_PRICE_ON)),
+    p_on = st.toggle("Tell me when a subscription's price changes", value=bool(app_settings.get(AS.SUB_PRICE_ON)),
                      key="sub_price_on")
     p_pounds = st.number_input(
         "A price change counts from (£)", min_value=float(AS.SUB_PRICE_POUNDS.low),
-        max_value=float(AS.SUB_PRICE_POUNDS.high), value=float(AS.get(AS.SUB_PRICE_POUNDS)), step=0.10,
+        max_value=float(AS.SUB_PRICE_POUNDS.high), value=float(app_settings.get(AS.SUB_PRICE_POUNDS)), step=0.10,
         format="%.2f", key="sub_price_pounds", disabled=not p_on,
     )
     p_percent = st.number_input(
         "…and from (% of the amount)", min_value=float(AS.SUB_PRICE_PERCENT.low),
-        max_value=float(AS.SUB_PRICE_PERCENT.high), value=float(AS.get(AS.SUB_PRICE_PERCENT)), step=1.0,
+        max_value=float(AS.SUB_PRICE_PERCENT.high), value=float(app_settings.get(AS.SUB_PRICE_PERCENT)), step=1.0,
         format="%.1f", key="sub_price_percent", disabled=not p_on,
     )
-    m_on = st.toggle("Tell me when a payment is missed", value=bool(AS.get(AS.SUB_MISSED_ON)), key="sub_missed_on")
+    m_on = st.toggle("Tell me when a payment is missed", value=bool(app_settings.get(AS.SUB_MISSED_ON)), key="sub_missed_on")
     m_grace = st.number_input(
         "Days late before a missed-payment alert", min_value=int(AS.SUB_MISSED_GRACE.low),
-        max_value=int(AS.SUB_MISSED_GRACE.high), value=int(AS.get(AS.SUB_MISSED_GRACE)), step=1,
+        max_value=int(AS.SUB_MISSED_GRACE.high), value=int(app_settings.get(AS.SUB_MISSED_GRACE)), step=1,
         key="sub_grace", disabled=not m_on,
     )
 
     if st.button("Save alert settings", key="alerts_save"):
         try:
-            AS.save(AS.UNUSUAL_ON, bool(u_on))
-            AS.save(AS.UNUSUAL_LEVEL, u_level)
-            AS.save(AS.UNUSUAL_MIN_HISTORY, int(u_history))
-            AS.save(AS.UNUSUAL_MIN_GAP, float(u_gap))
-            AS.save(AS.SUB_PRICE_ON, bool(p_on))
-            AS.save(AS.SUB_PRICE_POUNDS, float(p_pounds))
-            AS.save(AS.SUB_PRICE_PERCENT, float(p_percent))
-            AS.save(AS.SUB_MISSED_ON, bool(m_on))
-            AS.save(AS.SUB_MISSED_GRACE, int(m_grace))
+            app_settings.save(AS.UNUSUAL_ON, bool(u_on))
+            app_settings.save(AS.UNUSUAL_LEVEL, u_level)
+            app_settings.save(AS.UNUSUAL_MIN_HISTORY, int(u_history))
+            app_settings.save(AS.UNUSUAL_MIN_GAP, float(u_gap))
+            app_settings.save(AS.SUB_PRICE_ON, bool(p_on))
+            app_settings.save(AS.SUB_PRICE_POUNDS, float(p_pounds))
+            app_settings.save(AS.SUB_PRICE_PERCENT, float(p_percent))
+            app_settings.save(AS.SUB_MISSED_ON, bool(m_on))
+            app_settings.save(AS.SUB_MISSED_GRACE, int(m_grace))
         except ValueError as e:
             st.error(str(e))
         else:
@@ -569,30 +577,29 @@ with tab_alerts:
 with tab_ask:
     st.subheader("Ask")
     st.caption("The agent that answers questions about your money, on the Ask page and on Telegram with /ask.")
-    a_page = st.toggle("Ask page on", value=bool(ASK.get(ASK.PAGE_ON)), key="ask_page_on")
-    a_tg = st.toggle("Ask on Telegram (/ask)", value=bool(ASK.get(ASK.TELEGRAM_ON)), key="ask_tg_on")
+    a_page = st.toggle("Ask page on", value=bool(app_settings.get(ASK.PAGE_ON)), key="ask_page_on")
+    a_tg = st.toggle("Ask on Telegram (/ask)", value=bool(app_settings.get(ASK.TELEGRAM_ON)), key="ask_tg_on")
     a_models = list(ASK.MODELS)
-    a_model = st.selectbox("Model", a_models, index=a_models.index(ASK.get(ASK.MODEL)),
+    a_model = st.selectbox("Model", a_models, index=a_models.index(app_settings.get(ASK.MODEL)),
                            format_func=ASK.MODELS.get, key="ask_model")
     st.caption("A stronger model costs more per question. The daily limit below still applies to either.")
     a_efforts = list(ASK.EFFORTS)
-    a_effort = st.radio("How hard it thinks", a_efforts, index=a_efforts.index(ASK.get(ASK.EFFORT)),
+    a_effort = st.radio("How hard it thinks", a_efforts, index=a_efforts.index(app_settings.get(ASK.EFFORT)),
                         format_func=ASK.EFFORTS.get, horizontal=True, key="ask_effort")
     a_chat = st.number_input("Minutes after a question before a Telegram chat starts afresh",
                              min_value=int(ASK.CHAT_MINUTES.low), max_value=int(ASK.CHAT_MINUTES.high),
-                             value=int(ASK.get(ASK.CHAT_MINUTES)), step=5, key="ask_chat_minutes")
+                             value=int(app_settings.get(ASK.CHAT_MINUTES)), step=5, key="ask_chat_minutes")
     a_prop = st.number_input("Minutes a budget suggestion on Telegram stays open",
                              min_value=int(ASK.PROPOSAL_MINUTES.low), max_value=int(ASK.PROPOSAL_MINUTES.high),
-                             value=int(ASK.get(ASK.PROPOSAL_MINUTES)), step=5, key="ask_proposal_minutes")
+                             value=int(app_settings.get(ASK.PROPOSAL_MINUTES)), step=5, key="ask_proposal_minutes")
     if st.button("Save Ask settings", key="ask_settings_save"):
         try:
-            AS_ = ASK
-            AS_.save(AS_.PAGE_ON, bool(a_page))
-            AS_.save(AS_.TELEGRAM_ON, bool(a_tg))
-            AS_.save(AS_.MODEL, a_model)
-            AS_.save(AS_.EFFORT, a_effort)
-            AS_.save(AS_.CHAT_MINUTES, int(a_chat))
-            AS_.save(AS_.PROPOSAL_MINUTES, int(a_prop))
+            app_settings.save(ASK.PAGE_ON, bool(a_page))
+            app_settings.save(ASK.TELEGRAM_ON, bool(a_tg))
+            app_settings.save(ASK.MODEL, a_model)
+            app_settings.save(ASK.EFFORT, a_effort)
+            app_settings.save(ASK.CHAT_MINUTES, int(a_chat))
+            app_settings.save(ASK.PROPOSAL_MINUTES, int(a_prop))
         except ValueError as e:
             st.error(str(e))
         else:
@@ -611,7 +618,7 @@ with tab_ask:
         new_limit = st.number_input("Daily limit (USD)", min_value=0.0, max_value=20.0, step=0.10,
                                     value=float(_limit), format="%.2f", key="ask_daily_limit")
         if st.button("Save limit", key="ask_daily_limit_save"):
-            set_setting(fa.DAILY_LIMIT_SETTING, round(float(new_limit), 2))
+            app_settings.save(ASK.DAILY_LIMIT, round(float(new_limit), 2))
             st.success(f"Daily limit set to ${new_limit:.2f}.")
             st.rerun()
 
@@ -755,7 +762,8 @@ with tab_backups:
     st.caption("Download a backup as a zip, to keep it somewhere else.")
     if _backups:
         pick = st.selectbox("Backup to download", _backups, format_func=lambda p: p.name, key="backup_pick")
-        st.download_button("Download as a zip", data=backup_zip(pick), file_name=f"{pick.name}.zip",
+        st.download_button("Download as a zip", data=_backup_zip_cached(str(pick), pick.stat().st_mtime),
+                           file_name=f"{pick.name}.zip",
                            mime="application/zip", key="backup_download")
 
 with tab_danger:
@@ -782,10 +790,14 @@ with tab_danger:
         )
         wipe_ready = wipe_ack and wipe_text.strip() == "WIPE TAXONOMY"
 
-        if st.button("Permanently wipe entire taxonomy", type="primary", disabled=not wipe_ready):
-            wipe_taxonomy()
+        def _clear_wipe_confirmation():
+            # A click callback runs before the widgets are drawn again, so the fields can be reset here.
             st.session_state.wipe_taxonomy_ack = False
             st.session_state.wipe_taxonomy_text = ""
+
+        if st.button("Permanently wipe entire taxonomy", type="primary", disabled=not wipe_ready,
+                     on_click=_clear_wipe_confirmation):
+            wipe_taxonomy()
             st.cache_data.clear()
             st.success("Taxonomy wiped. Re-run the pipeline to re-seed the default taxonomy and re-classify.")
             st.rerun()

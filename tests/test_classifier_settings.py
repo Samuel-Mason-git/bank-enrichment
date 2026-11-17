@@ -3,6 +3,7 @@ passes 1 to 3. The match against existing categories and the placement judge sta
 from pathlib import Path
 
 import pytest
+import app_settings
 from streamlit.testing.v1 import AppTest
 
 import classifier_settings as CLS
@@ -13,25 +14,25 @@ _DASHBOARD = str(Path(__file__).parent.parent / "src" / "dashboard" / "dashboard
 
 
 def test_the_default_is_the_model_the_code_always_used(db):
-    assert CLS.get(CLS.MODEL) == "claude-sonnet-4-6"
+    assert app_settings.get(CLS.MODEL) == "claude-sonnet-4-6"
     assert ll.job("classify_parents")["model"] == "claude-sonnet-4-6"
 
 
 def test_the_classifying_passes_follow_the_setting(db):
-    CLS.save(CLS.MODEL, "claude-sonnet-5-5")
+    app_settings.save(CLS.MODEL, "claude-sonnet-5-5")
     for name in ll.CLASSIFY_PASSES:
         assert ll.job(name)["model"] == "claude-sonnet-5-5", name
 
 
 def test_match_and_the_judge_stay_on_haiku(db):
-    CLS.save(CLS.MODEL, "claude-sonnet-5-5")
+    app_settings.save(CLS.MODEL, "claude-sonnet-5-5")
     assert ll.job("match_existing")["model"] == "claude-haiku-5-5"
     assert ll.JOBS["placement_judge"]["model"] == "claude-haiku-5-5"
 
 
 def test_an_unknown_model_is_refused(db):
     with pytest.raises(ValueError):
-        CLS.save(CLS.MODEL, "gpt-whatever")
+        app_settings.save(CLS.MODEL, "gpt-whatever")
 
 
 def test_the_classification_tab_saves_the_model(db):

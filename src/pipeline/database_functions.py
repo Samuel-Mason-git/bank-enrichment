@@ -17,10 +17,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
-from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
-import app_config  # loads config/.env
+import app_config  # noqa: F401  (loads config/.env)
 
 log = logging.getLogger(__name__)
 

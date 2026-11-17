@@ -20,6 +20,7 @@ page's **Alerts** tab:
   this page if it's the new price.
 - **A missed payment.** When the last payment is older than the subscription's period plus a grace
   period, you're told. The grace is 7 days by default, for every frequency. A later payment ends that
-  gap, and a later gap alerts again.
+  gap. A gap is reported only in the two weeks after it becomes one, so an old or cancelled subscription
+  doesn't send a message when the feature is first switched on.
 
 Subscriptions with no payment ever seen aren't checked.

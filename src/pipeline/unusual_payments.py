@@ -10,6 +10,7 @@ is never enough on its own. Each payment is
 alerted on once; a send that fails is tried again on the next run.
 """
 import html
+import app_settings
 import logging
 import math
 import statistics
@@ -82,11 +83,11 @@ def _history(merchant: str, exclude_id: str) -> list[float]:
 
 def run() -> int:
     """Send the alerts that are due. Returns how many were sent. Off, it sends nothing."""
-    if not AS.get(AS.UNUSUAL_ON):
+    if not app_settings.get(AS.UNUSUAL_ON):
         return 0
-    z = AS.LEVELS[AS.get(AS.UNUSUAL_LEVEL)]
-    min_history = AS.get(AS.UNUSUAL_MIN_HISTORY)
-    min_gap = float(AS.get(AS.UNUSUAL_MIN_GAP))
+    z = AS.LEVELS[app_settings.get(AS.UNUSUAL_LEVEL)]
+    min_history = app_settings.get(AS.UNUSUAL_MIN_HISTORY)
+    min_gap = float(app_settings.get(AS.UNUSUAL_MIN_GAP))
     sent = 0
     for txn in _recent_unalerted():
         merchant = txn["merchant_name"] or txn["counterparty_name"]

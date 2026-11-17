@@ -14,18 +14,14 @@ Telegram card.
 import json
 import app_config
 import logging
-import os
 import time
 from datetime import date
-from pathlib import Path
 
 import anthropic
-from dotenv import load_dotenv
 
 import llm_calls
 from database_functions import get_con, init_db, insert_with_next_id, now
 
-import app_config  # loads config/.env
 
 CLAUDE_SECRET = app_config.anthropic_key()
 MODEL = "claude-sonnet-4-6"

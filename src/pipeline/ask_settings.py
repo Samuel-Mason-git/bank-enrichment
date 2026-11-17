@@ -2,7 +2,7 @@
 command. Stored in app_settings and set on the Settings page's Ask tab, with
 the same defaults, ranges and fallbacks as the alert settings (alert_settings).
 """
-from alert_settings import Setting, get, save  # noqa: F401  (re-exported for the callers)
+from app_settings import Setting
 
 MODELS = {
     "claude-haiku-5-5": "Haiku 5.5 (default, cheapest)",
@@ -16,5 +16,8 @@ MODEL = Setting("ask_model", "claude-haiku-5-5", choices=tuple(MODELS))
 EFFORT = Setting("ask_effort", "medium", choices=tuple(EFFORTS))
 CHAT_MINUTES = Setting("ask_chat_minutes", 30, 5, 240)
 PROPOSAL_MINUTES = Setting("ask_proposal_minutes", 30, 5, 240)
+# The most the Ask page and Telegram may spend on Claude in a day, in US dollars. Same key
+# finance_agent.daily_limit() reads.
+DAILY_LIMIT = Setting("finance_agent_daily_limit_usd", 0.30, 0.0, 20.0)
 
-ALL = [PAGE_ON, TELEGRAM_ON, MODEL, EFFORT, CHAT_MINUTES, PROPOSAL_MINUTES]
+ALL = [PAGE_ON, TELEGRAM_ON, MODEL, EFFORT, CHAT_MINUTES, PROPOSAL_MINUTES, DAILY_LIMIT]

@@ -1,12 +1,9 @@
 import json
 import app_config
 import logging
-import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from dotenv import load_dotenv
 import anthropic
 
 from database_functions import (
@@ -16,11 +13,12 @@ from database_functions import (
     get_subcategory_stats, format_subcategory_stats,
 )
 import alerts
+import app_settings
+import classifier_settings as CS
 import llm_calls
 import category_proposals
 import placement_judge
 
-import app_config  # loads config/.env
 
 CLAUDE_SECRET = app_config.anthropic_key()
 MODEL = "claude-sonnet-4-6"   # the default; the Settings page's Classification tab sets the one used (classifier_settings)
@@ -52,8 +50,7 @@ def job(name: str) -> dict:
     """A pass's model settings. The classifying passes use the model chosen on the
     Settings page, read when the pass runs; the others use JOBS as they are."""
     if name in CLASSIFY_PASSES:
-        import classifier_settings as CS
-        return {"model": CS.get(CS.MODEL)}
+        return {"model": app_settings.get(CS.MODEL)}
     return JOBS[name]
 BATCH_SIZE = 15
 # Output tokens are billed per token generated, so a ceiling well above what

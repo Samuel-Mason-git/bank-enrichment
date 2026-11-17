@@ -2,10 +2,8 @@ import logging
 import time
 from datetime import date, timedelta
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from dotenv import load_dotenv
 
-import app_config  # loads config/.env
+import app_config  # noqa: F401  (loads config/.env)
 
 import html
 

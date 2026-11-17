@@ -28,6 +28,7 @@ job's spend stops new questions once it is reached.
 Kept free of pandas: the worker image doesn't have it, and a Telegram /ask
 would run there."""
 import json
+import app_settings
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+import ask_settings as ASK
 import llm_calls
 from database_functions import get_con, get_setting
 
@@ -53,8 +55,9 @@ MODEL_SETTINGS = {"model": "claude-haiku-5-5", "effort": "medium", "thinking": T
 
 def model_settings() -> dict:
     """The agent's model settings as chosen on the Settings page's Ask tab."""
-    import ask_settings as ASK
-    return {"model": ASK.get(ASK.MODEL), "effort": ASK.get(ASK.EFFORT), "thinking": True}
+    return {"model": app_settings.get(ASK.MODEL), "effort": app_settings.get(ASK.EFFORT), "thinking": True}
+
+
 MAX_TOKENS = 16_000
 # Rounds of tool calls per question before it must answer with what it has.
 MAX_TOOL_ROUNDS = 10

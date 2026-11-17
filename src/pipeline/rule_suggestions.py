@@ -10,20 +10,16 @@ isn't safe to auto-rule, and a one-off coincidence isn't a pattern.
 """
 import logging
 import app_config
-import os
 import re
 from collections import Counter
-from pathlib import Path
 
 import anthropic
-from dotenv import load_dotenv
 
 import alerts
 import llm_calls
 from database_functions import get_con, insert_with_next_id, now
 from llm_labelling import MODEL, _extract_json
 
-import app_config  # loads config/.env
 
 CLAUDE_SECRET = app_config.anthropic_key()
 

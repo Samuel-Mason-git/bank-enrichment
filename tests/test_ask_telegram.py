@@ -102,7 +102,7 @@ def test_a_follow_up_carries_on_but_half_an_hour_later_starts_afresh(configured)
     asyncio.run(chats.answer(bot, 1, "one"))
     clock.now += 60
     asyncio.run(chats.answer(bot, 1, "two"))
-    clock.now += ask_tg.IDLE_SECONDS + 1
+    clock.now += 30 * 60 + 1   # half an hour: the default chat timeout
     asyncio.run(chats.answer(bot, 1, "three"))
     assert first.asked == ["one", "two"] and second.asked == ["three"]
 

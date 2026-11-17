@@ -6,8 +6,8 @@ asked for and what came back -- so any figure can be checked. The agent reads
 through its own read-only database login and ignores the sidebar's filters:
 the dates come from the question. A chat lasts as long as the browser tab."""
 import json
+import app_settings
 import app_config
-import os
 
 import anthropic
 import plotly.express as px
@@ -125,7 +125,7 @@ st.header("Ask")
 settings_link("Ask")
 
 import ask_settings as ASK
-if not ASK.get(ASK.PAGE_ON):
+if not app_settings.get(ASK.PAGE_ON):
     st.info("The Ask page is switched off. Turn it on in Settings → Ask.")
     st.stop()
 if not fa.is_configured():
