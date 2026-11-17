@@ -333,7 +333,8 @@ def main() -> int:
     answers = {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": _ask_chat_id(token)}
     print(f"  bot @{username} is yours to talk to.\n")
     answers["ANTHROPIC_API_KEY"] = _ask("Anthropic API key (console.anthropic.com)", secret=True)
-    print("\nThe database: Postgres you already run, reachable from this machine.")
+    print("\nThe database. This app needs a PostgreSQL database that you already run and can reach from this machine.\n"
+          "It doesn't install one, and it keeps your transactions there.")
     answers["DB_HOST"] = _ask("Database host")
     answers["DB_PORT"] = _ask("Database port", default="5432")
     answers["DB_NAME"] = _ask("Database name")
@@ -341,8 +342,10 @@ def main() -> int:
     answers["DB_PASSWORD"] = _ask("Database password", secret=True)
     answers["BACKUP_DIR"] = _ask("Folder for backups (a full path)",
                                  default=str(Path.home() / "bank-enrichment-backups"))
-    print("\nA bronze copy of the data, besides the database: none, a folder, or a bucket.")
-    kind = _ask("Where should the bronze copy go? (none / folder / bucket)", default="none").lower()
+    print("\nOptional: a bronze copy. This is a raw save of everything the app receives, as plain files, kept\n"
+          "apart from the database so it survives if the database does. It's not needed to run the app.\n"
+          "Choose none to skip it (the default), a folder on this machine, or a bucket in cloud storage.")
+    kind = _ask("Keep a bronze copy? (none / folder / bucket)", default="none").lower()
     answers["BRONZE_DESTINATION"] = kind
     if kind == "folder":
         answers["BRONZE_FOLDER"] = _ask("Folder for the bronze copy (a full path)")
