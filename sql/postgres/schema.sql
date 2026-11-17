@@ -238,6 +238,13 @@ CREATE TABLE IF NOT EXISTS budget_alerts (
     PRIMARY KEY (parent_id, month, kind)
 );
 
+-- A payment that was far above its merchant's usual amount, once it's been
+-- sent on Telegram (unusual_payments.py). Keeps it from alerting twice.
+CREATE TABLE IF NOT EXISTS unusual_payment_alerts (
+    txn_id  VARCHAR     PRIMARY KEY REFERENCES transactions_raw (id) ON DELETE CASCADE,
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS summaries (
     period         VARCHAR(5)    NOT NULL CHECK (period IN ('week', 'month')),
     period_key     VARCHAR(10)   NOT NULL,   -- '2026-W43' / '2026-10'

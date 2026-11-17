@@ -30,3 +30,10 @@ transactions, which in turn depends on Monzo's own access confirmation staying c
 "Set Up the Monzo OAuth Confidential Client" in SETUP.md. If that lapses, categorization itself
 keeps working fine from the raw description text; only the personalized quick-pick buttons fall
 back to a generic top-5 list instead of that merchant's own history.
+
+## Unusual payments
+
+A payment that's far above what its merchant usually costs gets its own Telegram alert, within the
+hour. It's compared with that merchant's payments over the past year. It needs at least five of them,
+and it has to be at least twice their median and £20 more. Each payment alerts once, and skipped
+payments are never checked.
