@@ -15,7 +15,7 @@ from dashboard_helpers import (
 )
 from ui import _query, _card_rows
 import finance_agent as fa
-import unusual_settings as UNUSUAL
+import alert_settings as AS
 from page_context import shared
 
 df, = shared('df')
@@ -435,27 +435,67 @@ with tab_categories:
                     st.info("No transactions assigned to this subcategory.")
 
 with tab_alerts:
+    st.caption("The Telegram messages from the hourly checks. Each can be switched off, and tuned here.")
+
     st.subheader("Unusual payments")
     st.caption(
-        "A Telegram message when a payment is far above what its merchant usually costs. The check "
-        "compares amounts on a log scale against that merchant's past payments, so a £3 coffee and a "
-        "£300 shop are judged by the same measure. It needs at least five earlier payments to a merchant."
+        "A payment far above what its merchant usually costs. Amounts are compared on a log scale against that "
+        "merchant's past payments, so a £3 coffee and a £300 shop are judged by the same measure."
     )
-    alerts_on = st.toggle("Send unusual-payment alerts", value=bool(get_setting(UNUSUAL.ON_SETTING, True)),
-                          key="unusual_on")
-    levels = list(UNUSUAL.LEVELS)
-    saved_level = get_setting(UNUSUAL.LEVEL_SETTING, UNUSUAL.DEFAULT_LEVEL)
-    level = st.radio(
-        "How far a payment has to stand out", levels,
-        index=levels.index(saved_level) if saved_level in levels else levels.index(UNUSUAL.DEFAULT_LEVEL),
-        format_func=UNUSUAL.LEVEL_LABELS.get, horizontal=True, key="unusual_level", disabled=not alerts_on,
+    u_on = st.toggle("Send unusual-payment alerts", value=bool(AS.get(AS.UNUSUAL_ON)), key="unusual_on")
+    levels = list(AS.LEVELS)
+    saved_level = AS.get(AS.UNUSUAL_LEVEL)
+    u_level = st.radio(
+        "How far a payment has to stand out", levels, index=levels.index(saved_level),
+        format_func=AS.LEVEL_LABELS.get, horizontal=True, key="unusual_level", disabled=not u_on,
     )
-    st.caption("Less sensitive waits until a payment stands well out from the usual; more sensitive alerts on "
-               "smaller differences. Changes apply from the next hourly run.")
-    if st.button("Save alert settings", key="unusual_save"):
-        set_setting(UNUSUAL.ON_SETTING, bool(alerts_on))
-        set_setting(UNUSUAL.LEVEL_SETTING, level)
-        st.success("Saved. Alerts are " + ("on" if alerts_on else "off") + f", {UNUSUAL.LEVEL_LABELS[level].lower()}.")
+    u_history = st.number_input(
+        "Earlier payments to a merchant needed before comparing", min_value=int(AS.UNUSUAL_MIN_HISTORY.low),
+        max_value=int(AS.UNUSUAL_MIN_HISTORY.high), value=int(AS.get(AS.UNUSUAL_MIN_HISTORY)), step=1,
+        key="unusual_history", disabled=not u_on,
+    )
+    u_gap = st.number_input(
+        "And at least this far above the usual (£)", min_value=float(AS.UNUSUAL_MIN_GAP.low),
+        max_value=float(AS.UNUSUAL_MIN_GAP.high), value=float(AS.get(AS.UNUSUAL_MIN_GAP)), step=1.0,
+        format="%.2f", key="unusual_gap", disabled=not u_on,
+    )
+
+    st.subheader("Subscriptions")
+    st.caption("Checked against the subscriptions on this page, using the payments that come in.")
+    p_on = st.toggle("Tell me when a subscription's price changes", value=bool(AS.get(AS.SUB_PRICE_ON)),
+                     key="sub_price_on")
+    p_pounds = st.number_input(
+        "A price change counts from (£)", min_value=float(AS.SUB_PRICE_POUNDS.low),
+        max_value=float(AS.SUB_PRICE_POUNDS.high), value=float(AS.get(AS.SUB_PRICE_POUNDS)), step=0.10,
+        format="%.2f", key="sub_price_pounds", disabled=not p_on,
+    )
+    p_percent = st.number_input(
+        "…and from (% of the amount)", min_value=float(AS.SUB_PRICE_PERCENT.low),
+        max_value=float(AS.SUB_PRICE_PERCENT.high), value=float(AS.get(AS.SUB_PRICE_PERCENT)), step=1.0,
+        format="%.1f", key="sub_price_percent", disabled=not p_on,
+    )
+    m_on = st.toggle("Tell me when a payment is missed", value=bool(AS.get(AS.SUB_MISSED_ON)), key="sub_missed_on")
+    m_grace = st.number_input(
+        "Days late before a missed-payment alert", min_value=int(AS.SUB_MISSED_GRACE.low),
+        max_value=int(AS.SUB_MISSED_GRACE.high), value=int(AS.get(AS.SUB_MISSED_GRACE)), step=1,
+        key="sub_grace", disabled=not m_on,
+    )
+
+    if st.button("Save alert settings", key="alerts_save"):
+        try:
+            AS.save(AS.UNUSUAL_ON, bool(u_on))
+            AS.save(AS.UNUSUAL_LEVEL, u_level)
+            AS.save(AS.UNUSUAL_MIN_HISTORY, int(u_history))
+            AS.save(AS.UNUSUAL_MIN_GAP, float(u_gap))
+            AS.save(AS.SUB_PRICE_ON, bool(p_on))
+            AS.save(AS.SUB_PRICE_POUNDS, float(p_pounds))
+            AS.save(AS.SUB_PRICE_PERCENT, float(p_percent))
+            AS.save(AS.SUB_MISSED_ON, bool(m_on))
+            AS.save(AS.SUB_MISSED_GRACE, int(m_grace))
+        except ValueError as e:
+            st.error(str(e))
+        else:
+            st.success("Saved. Changes apply from the next hourly run.")
 
 with tab_ask:
     # ── Ask: the agent's daily limit ───────────────────────────────────────────

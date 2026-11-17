@@ -18,6 +18,7 @@ from llm_labelling import run as run_classifier, regenerate_category_proposals, 
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from budget_messages import run as run_budget_messages
+from subscription_alerts import run as run_subscription_alerts
 from unusual_payments import run as run_unusual_payments
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
 from category_proposals import collect_decisions as collect_category_decisions
@@ -201,6 +202,14 @@ def _steps() -> None:
             run_weekly_summary()
         except Exception as e:
             log.error(f"Weekly summary run failed: {e}", exc_info=True)
+
+    with _timed("subscription_alerts"):
+        try:
+            count = run_subscription_alerts()
+            if count:
+                log.info(f"Subscription alerts sent: {count}")
+        except Exception as e:
+            log.error(f"Subscription alerts failed: {e}", exc_info=True)
 
     with _timed("unusual_payments"):
         try:
