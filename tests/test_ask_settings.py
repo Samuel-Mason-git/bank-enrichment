@@ -85,7 +85,7 @@ def test_a_budget_suggestion_expires_on_the_chosen_timeout(db, configured):
 def test_the_ask_page_can_be_switched_off(db, monkeypatch):
     monkeypatch.setenv("AGENT_DB_USER", "bank_enrichment_agent")
     monkeypatch.setenv("AGENT_DB_PASSWORD", "x")
-    monkeypatch.setenv("CLAUDE_SECRET", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     app_settings.save(ASK.PAGE_ON, False)
     at = AppTest.from_file(_DASHBOARD, default_timeout=30)
     at.switch_page("views/ask.py").run()

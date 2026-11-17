@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 patch("dotenv.load_dotenv", return_value=False).start()
 
 # Set all required env vars to safe, test-only values.
-os.environ["CLAUDE_SECRET"] = "test-claude-secret"
-os.environ["TELEGRAM_API"] = "test-telegram-token"
+os.environ["ANTHROPIC_API_KEY"] = "test-claude-secret"
+os.environ["TELEGRAM_BOT_TOKEN"] = "test-telegram-token"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
 _repo = Path(__file__).parent.parent
@@ -90,7 +90,7 @@ def alert_post(monkeypatch):
     once per process). Yields the mocked requests.post so a test can assert on
     what would have been sent."""
     import alerts
-    monkeypatch.setenv("TELEGRAM_API", "test-token")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     alerts._sent.clear()
     with patch.object(alerts.requests, "post", return_value=MagicMock(status_code=200, ok=True)) as post:

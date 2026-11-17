@@ -76,7 +76,7 @@ class Clock:
 def configured(monkeypatch):
     monkeypatch.setenv("AGENT_DB_USER", "bank_enrichment_agent")
     monkeypatch.setenv("AGENT_DB_PASSWORD", "x")
-    monkeypatch.setenv("CLAUDE_SECRET", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
 
 
 def _chats(agents, clock=None):

@@ -314,7 +314,7 @@ def _offered(shop, monkeypatch, clock=None):
     import ask_tg
     monkeypatch.setenv("AGENT_DB_USER", "x")
     monkeypatch.setenv("AGENT_DB_PASSWORD", "x")
-    monkeypatch.setenv("CLAUDE_SECRET", "x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     chats = ask_tg.AskChats(make_agent=lambda: ProposingAgent([_proposal(shop)]), clock=clock or Clock())
     bot = MagicMock()
     asyncio.run(chats.answer(bot, 1, "what should shopping be?"))

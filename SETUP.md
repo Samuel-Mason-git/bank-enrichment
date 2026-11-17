@@ -74,7 +74,6 @@ Then open `config/.env` and fill in all values:
 | `MONZO_LOGIN_USER` | Server | Username for the login in front of `/oauth/start` (linking your Monzo account) |
 | `MONZO_LOGIN_PASSWORD` | Server | Password for that login |
 
-The older names still work, so an existing `config/.env` doesn't need changing: `CLAUDE_SECRET` for `ANTHROPIC_API_KEY`, `TELEGRAM_API` for `TELEGRAM_BOT_TOKEN`, and `DASHBOARD_USER` and `DASHBOARD_PASSWORD` for the `MONZO_LOGIN_` pair. A current name wins if both are set.
 | `TELEGRAM_BOT_TOKEN` | Both | Your Telegram bot token from @BotFather — the pipeline sends its summaries and alerts with it too |
 | `TELEGRAM_CHAT_ID` | Both | Your personal Telegram chat ID (see step 3) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Both | The database login you created for this project. `DB_HOST` is the database's address as the server and your machine reach it |

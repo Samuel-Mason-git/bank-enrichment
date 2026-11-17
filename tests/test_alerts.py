@@ -85,7 +85,7 @@ class TestSendAlert:
         assert alerts.send_alert("credit", "a", "b") is False
 
     def test_no_bot_configured_means_no_request(self, alert_post, monkeypatch):
-        monkeypatch.delenv("TELEGRAM_API")
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN")
         assert alerts.send_alert("credit", "a", "b") is False
         alert_post.assert_not_called()
 

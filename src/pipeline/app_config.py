@@ -1,10 +1,8 @@
-"""The app's configuration: config/.env, read once, and the names it accepts.
+"""The app's configuration: config/.env, read once, through these accessors.
 
-Each setting has a current name and, where the name has changed, the old one,
-which still works. The Anthropic key is ANTHROPIC_API_KEY (the SDK's own
-default) or CLAUDE_SECRET; the Telegram token is TELEGRAM_BOT_TOKEN or
-TELEGRAM_API; the Monzo OAuth login is MONZO_LOGIN_USER and MONZO_LOGIN_PASSWORD,
-or DASHBOARD_USER and DASHBOARD_PASSWORD (the login used to guard the dashboard).
+The names are ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, MONZO_LOGIN_USER and
+MONZO_LOGIN_PASSWORD (the Monzo login guards linking a Monzo account). Config
+written under the older names must be renamed in config/.env.
 
 Read at call time, so a test or a change to the environment takes effect at once.
 """
@@ -17,25 +15,17 @@ ENV_FILE = Path(__file__).resolve().parent.parent.parent / "config" / ".env"
 load_dotenv(ENV_FILE)
 
 
-def _first(*names: str) -> str | None:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return None
-
-
 def anthropic_key() -> str | None:
-    return _first("ANTHROPIC_API_KEY", "CLAUDE_SECRET")
+    return os.getenv("ANTHROPIC_API_KEY") or None
 
 
 def telegram_token() -> str | None:
-    return _first("TELEGRAM_BOT_TOKEN", "TELEGRAM_API")
+    return os.getenv("TELEGRAM_BOT_TOKEN") or None
 
 
 def monzo_login_user() -> str | None:
-    return _first("MONZO_LOGIN_USER", "DASHBOARD_USER")
+    return os.getenv("MONZO_LOGIN_USER") or None
 
 
 def monzo_login_password() -> str | None:
-    return _first("MONZO_LOGIN_PASSWORD", "DASHBOARD_PASSWORD")
+    return os.getenv("MONZO_LOGIN_PASSWORD") or None
