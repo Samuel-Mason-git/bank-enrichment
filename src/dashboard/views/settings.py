@@ -17,6 +17,7 @@ from dashboard_helpers import (
 from ui import _query, _card_rows
 import finance_agent as fa
 import alert_settings as AS
+import ask_settings as ASK
 import budget_messages
 import budgets as bg
 from page_context import shared
@@ -546,6 +547,38 @@ with tab_alerts:
             st.success("Saved. Changes apply from the next hourly run.")
 
 with tab_ask:
+    st.subheader("Ask")
+    st.caption("The agent that answers questions about your money, on the Ask page and on Telegram with /ask.")
+    a_page = st.toggle("Ask page on", value=bool(ASK.get(ASK.PAGE_ON)), key="ask_page_on")
+    a_tg = st.toggle("Ask on Telegram (/ask)", value=bool(ASK.get(ASK.TELEGRAM_ON)), key="ask_tg_on")
+    a_models = list(ASK.MODELS)
+    a_model = st.selectbox("Model", a_models, index=a_models.index(ASK.get(ASK.MODEL)),
+                           format_func=ASK.MODELS.get, key="ask_model")
+    st.caption("A stronger model costs more per question. The daily limit below still applies to either.")
+    a_efforts = list(ASK.EFFORTS)
+    a_effort = st.radio("How hard it thinks", a_efforts, index=a_efforts.index(ASK.get(ASK.EFFORT)),
+                        format_func=ASK.EFFORTS.get, horizontal=True, key="ask_effort")
+    a_chat = st.number_input("Minutes after a question before a Telegram chat starts afresh",
+                             min_value=int(ASK.CHAT_MINUTES.low), max_value=int(ASK.CHAT_MINUTES.high),
+                             value=int(ASK.get(ASK.CHAT_MINUTES)), step=5, key="ask_chat_minutes")
+    a_prop = st.number_input("Minutes a budget suggestion on Telegram stays open",
+                             min_value=int(ASK.PROPOSAL_MINUTES.low), max_value=int(ASK.PROPOSAL_MINUTES.high),
+                             value=int(ASK.get(ASK.PROPOSAL_MINUTES)), step=5, key="ask_proposal_minutes")
+    if st.button("Save Ask settings", key="ask_settings_save"):
+        try:
+            AS_ = ASK
+            AS_.save(AS_.PAGE_ON, bool(a_page))
+            AS_.save(AS_.TELEGRAM_ON, bool(a_tg))
+            AS_.save(AS_.MODEL, a_model)
+            AS_.save(AS_.EFFORT, a_effort)
+            AS_.save(AS_.CHAT_MINUTES, int(a_chat))
+            AS_.save(AS_.PROPOSAL_MINUTES, int(a_prop))
+        except ValueError as e:
+            st.error(str(e))
+        else:
+            st.success("Saved. A new Telegram chat or question uses the new model; a chat already open keeps its model until it starts afresh.")
+    st.divider()
+
     # ── Ask: the agent's daily limit ───────────────────────────────────────────
     _limit = fa.daily_limit()
     _spent = fa.spent_today()

@@ -24,3 +24,12 @@ it used, what it asked for and what came back, so any figure can be checked.
   agent puts a chart under it. It only chooses *what* to plot; the figures come from the data.
 - **Accuracy** is measured by `src/pipeline/agent_eval.py`: questions whose answers are worked out from
   your data, graded automatically. On 13 Nov 2026 Haiku got 15/15, as did Sonnet 5.5 at 15x the cost.
+
+## Settings
+
+On the Settings page's **Ask** tab you can turn the Ask page off, and turn `/ask` on Telegram off. You can
+choose the model (Haiku 5.5 by default, or Sonnet 5.5, which costs several times as much per question), and
+how hard it thinks (low, medium or high). For Telegram, you can set how many minutes after a question a chat
+starts afresh (30 by default), and how long a budget suggestion stays open to a tap (30 by default). The daily
+limit is on the same tab and applies to either model.
+
