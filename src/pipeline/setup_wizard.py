@@ -168,6 +168,42 @@ def check_folder(path: str) -> Path:
     return folder
 
 
+def check_bucket(dest, client) -> None:
+    """The bucket takes a file under the prefix and gives it back, and the test file is removed
+    again. So a wrong key, endpoint or bucket is caught now, not on the first night."""
+    import tempfile
+    key = f"{dest.prefix}/.bank-enrichment-setup-test"
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as f:
+        f.write("ok")
+    try:
+        client.upload_file(f.name, dest.bucket, key)
+        client.delete_object(Bucket=dest.bucket, Key=key)
+    except Exception as e:
+        raise SetupError(f"The bucket didn't take a test file: {type(e).__name__}. Check the endpoint, bucket and key.") from e
+    finally:
+        Path(f.name).unlink(missing_ok=True)
+
+
+def check_destination(answers: dict, s3_factory=None) -> None:
+    """The daily copy's destination: none needs nothing; a folder is checked as the backups are;
+    a bucket is validated and then tested."""
+    import export_destinations as ed
+    kind = answers.get("EXPORT_DESTINATION", "none")
+    if kind == "none":
+        return
+    if kind == "folder":
+        check_folder(answers["EXPORT_FOLDER"])
+        return
+    dest = ed.Destination(kind="s3", endpoint=answers.get("EXPORT_S3_ENDPOINT"),
+                          bucket=answers.get("EXPORT_S3_BUCKET"), prefix=answers.get("EXPORT_S3_PREFIX"),
+                          key_id=answers.get("EXPORT_S3_KEY_ID"), secret=answers.get("EXPORT_S3_SECRET"))
+    try:
+        ed.validate(dest)
+    except ed.ExportError as e:
+        raise SetupError(str(e)) from e
+    check_bucket(dest, (s3_factory or ed.s3_client)(dest))
+
+
 # ── The first test backup ──────────────────────────────────────────────────
 
 def first_backup(schema_path: Path, backup_folder: Path, connect, env: dict[str, str]) -> Path:
@@ -193,7 +229,7 @@ def env_connect(env: dict[str, str]) -> dict:
 
 # ── Putting it together ────────────────────────────────────────────────────
 
-def run(answers: dict, get, post, connect, schema_path: Path, say=print) -> dict[str, str]:
+def run(answers: dict, get, post, connect, schema_path: Path, say=print, s3_factory=None) -> dict[str, str]:
     """Check every answer, write config/.env, and take the first test backup. `answers` holds
     the questions' answers. Returns the values written. Stops at the first failed check, so
     nothing is written for a wrong answer."""
@@ -212,6 +248,12 @@ def run(answers: dict, get, post, connect, schema_path: Path, say=print) -> dict
 
     folder = check_folder(answers["BACKUP_DIR"])
     say(f"  backups can be written to {folder}.")
+
+    kind = answers.get("EXPORT_DESTINATION", "none")
+    if kind != "none":
+        say(f"Checking the daily copy's destination ({kind})…")
+        check_destination(answers, s3_factory)
+        say("  the destination takes a copy.")
 
     values = {k: v for k, v in answers.items() if k != "PUBLIC_URL"}   # the address is for the webhook, not .env
     values["TELEGRAM_WEBHOOK_SECRET"] = generate_secret()
@@ -299,6 +341,18 @@ def main() -> int:
     answers["DB_PASSWORD"] = _ask("Database password", secret=True)
     answers["BACKUP_DIR"] = _ask("Folder for backups (a full path)",
                                  default=str(Path.home() / "bank-enrichment-backups"))
+    print("\nA daily copy of the data, besides the database: none, a folder, or a bucket.")
+    kind = _ask("Where should the daily copy go? (none / folder / bucket)", default="none").lower()
+    answers["EXPORT_DESTINATION"] = kind
+    if kind == "folder":
+        answers["EXPORT_FOLDER"] = _ask("Folder for the daily copy (a full path)")
+    elif kind == "bucket":
+        answers["EXPORT_DESTINATION"] = "s3"
+        answers["EXPORT_S3_ENDPOINT"] = _ask("Bucket endpoint, e.g. https://<account>.r2.cloudflarestorage.com")
+        answers["EXPORT_S3_BUCKET"] = _ask("Bucket name")
+        answers["EXPORT_S3_PREFIX"] = _ask("Folder inside the bucket for these copies", default="bank-enrichment")
+        answers["EXPORT_S3_KEY_ID"] = _ask("Access key ID")
+        answers["EXPORT_S3_SECRET"] = _ask("Secret access key", secret=True)
     print("\nMonzo: the login that guards linking your account (see SETUP.md, the OAuth step).")
     answers["MONZO_LOGIN_USER"] = _ask("Login name", default="admin")
     answers["MONZO_LOGIN_PASSWORD"] = _ask("Login password", secret=True)

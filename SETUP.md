@@ -490,3 +490,9 @@ data; a change that needs to is a one-off script, run deliberately, after a back
 ```bash
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
+
+### Where the daily copy goes (optional)
+
+The setup command asks this: none (the default), a folder, or a bucket. A folder or bucket gets a copy of
+the data every day, after the worker's first run of the day. See [Backups](docs/data/backups.md#a-daily-copy-somewhere-else)
+for the settings and what's kept.

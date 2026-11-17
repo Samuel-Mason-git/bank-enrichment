@@ -9,7 +9,9 @@ category or taxonomy proposal, a rule suggestion) is sent by the server."""
 import logging
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from zoneinfo import ZoneInfo
 
 import activity
 import llm_calls
@@ -18,6 +20,7 @@ from llm_labelling import run as run_classifier, regenerate_category_proposals, 
 from monthly_summary import run as run_monthly_summary
 from weekly_summary import run as run_weekly_summary
 from budget_messages import run as run_budget_messages
+from export_destinations import nightly as run_export
 from subscription_alerts import run as run_subscription_alerts
 from unusual_payments import run as run_unusual_payments
 from taxonomy_review import run as run_taxonomy_review, collect_decisions as collect_taxonomy_decisions
@@ -218,6 +221,15 @@ def _steps() -> None:
                 log.info(f"Unusual-payment alerts sent: {count}")
         except Exception as e:
             log.error(f"Unusual-payment alerts failed: {e}", exc_info=True)
+
+    # The daily copy to a folder or bucket, if one is set (export_destinations.py). Once a day.
+    with _timed("export"):
+        try:
+            where = run_export(datetime.now(ZoneInfo("Europe/London")).date())
+            if where:
+                log.info(f"Daily copy sent to {where}")
+        except Exception as e:
+            log.error(f"Daily copy failed: {e}", exc_info=True)
 
     # Last, so everything classified this run counts against the budgets.
     with _timed("budget_messages"):

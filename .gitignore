@@ -1,6 +1,8 @@
 .env
 *.env
 config/.env
+config/.env.*
+!config/.env.example
 
 # Database files
 *.db

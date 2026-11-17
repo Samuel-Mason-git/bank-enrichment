@@ -36,6 +36,7 @@ matplotlib = ">=3.11.2,<4.0.0"
 
 # The Streamlit dashboard, on your own machine. Installed by a plain
 # `poetry install` like any other group, so local setup and CI are unchanged.
+boto3 = ">=1.35,<2"
 [tool.poetry.group.local.dependencies]
 streamlit = ">=1.66.1,<2.0.0"
 plotly = ">=7.1.0,<8.0.0"
