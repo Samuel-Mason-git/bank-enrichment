@@ -15,19 +15,20 @@ import math
 import statistics
 
 from alerts import send_telegram
-from database_functions import _rows, get_con, now
+from database_functions import _rows, get_con, get_setting, now
+import unusual_settings as cfg
 
 log = logging.getLogger(__name__)
 
 MIN_HISTORY = 5      # earlier payments to the merchant before comparing
 LOOKBACK_DAYS = 2    # only payments this recent, so a first run doesn't alert on old history
 HISTORY_DAYS = 365
-OUTLIER_Z = 3.5      # modified z-score on log amounts (Iglewicz and Hoaglin's cut-off)
+OUTLIER_Z = cfg.LEVELS[cfg.DEFAULT_LEVEL]   # modified z-score on log amounts (Iglewicz and Hoaglin's cut-off)
 MIN_SCALE = 0.15     # the spread is never taken as tighter than about ±15%, so a merchant that always costs the same doesn't alert on pence
 MIN_GAP = 5.0        # and the payment is at least this many pounds above the usual
 
 
-def unusual(spend: float, history: list[float]) -> float | None:
+def unusual(spend: float, history: list[float], z: float = OUTLIER_Z) -> float | None:
     """The usual amount, when this spend is an outlier against that history; else None.
 
     Works on log amounts, so spends are judged by how far they are in
@@ -41,9 +42,9 @@ def unusual(spend: float, history: list[float]) -> float | None:
     centre = statistics.median(logs)
     mad = statistics.median(abs(x - centre) for x in logs)
     scale = max(1.4826 * mad, MIN_SCALE)
-    z = (math.log(spend) - centre) / scale
+    score = (math.log(spend) - centre) / scale
     usual = math.exp(centre)
-    if z < OUTLIER_Z or spend - usual < MIN_GAP:
+    if score < z or spend - usual < MIN_GAP:
         return None
     return usual
 
@@ -79,7 +80,11 @@ def _history(merchant: str, exclude_id: str) -> list[float]:
 
 
 def run() -> int:
-    """Send the alerts that are due. Returns how many were sent."""
+    """Send the alerts that are due. Returns how many were sent. Off, it sends nothing."""
+    if not get_setting(cfg.ON_SETTING, True):
+        return 0
+    level = get_setting(cfg.LEVEL_SETTING, cfg.DEFAULT_LEVEL)
+    z = cfg.LEVELS.get(level, cfg.LEVELS[cfg.DEFAULT_LEVEL])
     sent = 0
     for txn in _recent_unalerted():
         merchant = txn["merchant_name"] or txn["counterparty_name"]
@@ -87,7 +92,7 @@ def run() -> int:
             continue
         spend = -float(txn["amount"])
         history = _history(merchant, txn["id"])
-        usual = unusual(spend, history)
+        usual = unusual(spend, history, z)
         if usual is None:
             continue
         if not send_telegram(alert_text(merchant, spend, usual, len(history))):
