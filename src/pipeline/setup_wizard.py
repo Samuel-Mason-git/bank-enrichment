@@ -10,6 +10,7 @@ same either way.
 import json
 import os
 import secrets
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -49,19 +50,34 @@ def merge_env(existing: str, updates: dict[str, str]) -> str:
     return "\n".join(out) + "\n"
 
 
+def _private_write(path: Path, text: str) -> None:
+    """Write a file that only its owner can read. The mode is set when the file is
+    created, so the secrets are never readable by anyone else, not even for a moment.
+    (On Windows the mode is ignored; the file takes the folder's permissions.)"""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def write_env(updates: dict[str, str], path: Path = ENV_PATH) -> Path | None:
     """Write the answers into config/.env. The file it replaces is kept beside it,
-    with a timestamp, so a wrong answer can be undone. Returns that copy, if any."""
+    with a timestamp, so a wrong answer can be undone; that copy is private too.
+    The new file is written to a temporary name in the same folder and renamed over
+    the old one, so a crash can't leave a half-written file. Returns the kept copy, if any."""
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     kept = None
     if existing:
         kept = path.with_name(f"{path.name}.{datetime.now():%Y%m%d-%H%M%S}.bak")
-        kept.write_text(existing, encoding="utf-8")
+        _private_write(kept, existing)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(merge_env(existing, updates), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".env-", suffix=".tmp")   # 0600 on Linux
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(merge_env(existing, updates))
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return kept
 
 

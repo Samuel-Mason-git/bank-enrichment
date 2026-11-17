@@ -1,5 +1,7 @@
 """The setup command: its checks, the config file it writes, and the run that ties them together.
 The network and the database are stood in for, so these run anywhere."""
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -178,3 +180,21 @@ def test_a_failed_check_writes_nothing(tmp_path, monkeypatch):
         sw.run(_answers(tmp_path), bad_anthropic, lambda *a: {"ok": True}, lambda **kw: _Con(),
                tmp_path / "schema.sql", say=lambda *_: None)
     assert not env_path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are a POSIX thing")
+def test_the_env_file_and_its_copy_are_only_readable_by_the_owner(tmp_path):
+    path = tmp_path / "config" / ".env"
+    path.parent.mkdir()
+    path.write_text("OLD=secret\n", encoding="utf-8")
+    os.chmod(path, 0o644)                       # as it was: readable by everyone
+    kept = sw.write_env({"NEW": "secret2"}, path)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(kept).st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are a POSIX thing")
+def test_no_temporary_file_is_left_behind(tmp_path):
+    path = tmp_path / "config" / ".env"
+    sw.write_env({"A": "1"}, path)
+    assert sorted(p.name for p in path.parent.iterdir()) == [".env"]
