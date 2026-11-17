@@ -11,6 +11,7 @@ import os
 import anthropic
 import plotly.express as px
 import streamlit as st
+from ui import settings_link
 
 import budgets as bg
 import finance_agent as fa
@@ -120,6 +121,7 @@ def _render(entry: dict, key: str) -> None:
 
 
 st.header("Ask")
+settings_link("Ask")
 
 if not fa.is_configured():
     st.info("The Ask page needs the agent's own read-only database login: add AGENT_DB_USER and "

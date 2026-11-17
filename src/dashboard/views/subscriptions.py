@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from dashboard_helpers import FREQ_MONTHLY, detect_subscriptions, merchant_display_name, should_deactivate_subscription
 from database_functions import delete_subscription, get_subscriptions, toggle_subscription, update_subscription, upsert_subscription
-from ui import _fmt, _card_rows, row_colors
+from ui import _fmt, _card_rows, row_colors, settings_link
 from page_context import shared
 
 df, = shared('df')
@@ -145,6 +145,7 @@ st.divider()
 # ── Detected candidates ────────────────────────────────────────────────────
 st.subheader("Suggested Subscriptions")
 st.caption("Detected from recurring transactions — click Add to confirm.")
+settings_link("Alerts")
 # A subscription you've named yourself ("WIFI Subscription") still covers
 # its merchant ("EE LTD"), so that merchant isn't suggested again.
 candidates = detect_subscriptions(
