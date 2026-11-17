@@ -18,6 +18,7 @@ from dashboard_helpers import (
 from ui import _query, _card_rows
 import finance_agent as fa
 import alert_settings as AS
+import app_config
 import ask_settings as ASK
 import classifier_settings as CLS
 import budget_messages
@@ -95,8 +96,8 @@ def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
             st.error("Telegram didn't take it: check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in config/.env.")
 
 
-tab_categories, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
-    ["Categories", "Classification", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
+tab_categories, tab_storage, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
+    ["Categories", "Storage", "Classification", "Budgets", "Alerts", "Ask", "Backups", "Danger zone"]
 )
 
 with tab_categories:
@@ -486,6 +487,34 @@ def _backup_zip_cached(path: str, modified: float) -> bytes:
     so a backup that changes is zipped again; a rerun of the page doesn't zip it."""
     return backup_zip(Path(path))
 
+
+with tab_storage:
+    import export_destinations as ed
+    import setup_wizard as sw_
+    st.caption("Where your data is kept. These are set in config/.env, by the setup command. This page shows them and tests them.")
+    st.subheader("Live database")
+    st.write(f"This page reads it, so it's connected. Host `{app_config.get('DB_HOST', '')}`, "
+             f"port `{app_config.get('DB_PORT', '5432')}`, database `{app_config.get('DB_NAME', '')}`. "
+             "Its password isn't shown.")
+    st.subheader("Bronze copy")
+    st.caption("An optional raw save of everything the app receives, as plain files. The app runs without it.")
+    dest = ed.load()
+    info = ed.describe(dest)
+    if info["kind"] == "none":
+        st.info("Off. Set BRONZE_DESTINATION in config/.env, or run the setup command, to turn it on.")
+    else:
+        where = info["folder"] if info["kind"] == "folder" else f"{info['bucket']}/{info['prefix']} at {info['endpoint']}"
+        st.write(f"Kind: **{info['kind']}**. Where: `{where}`. Keeps the newest {info['keep']} copies.")
+        st.write(f"Last copy: {info['last_day'] or 'none yet'}.")
+        if st.button("Test the bronze copy", key="storage_test_bronze"):
+            try:
+                sw_.check_destination(ed.as_answers(dest))
+            except sw_.SetupError as e:
+                st.error(str(e))
+            else:
+                st.success("The destination takes a copy.")
+    st.subheader("Silver")
+    st.caption("Not in use yet. When it is, it lives in a schema in the live database, next to the transactions.")
 
 with tab_classification:
     st.subheader("Classification")

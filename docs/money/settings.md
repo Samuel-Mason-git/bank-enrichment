@@ -48,3 +48,15 @@ now, the list of backups, downloading one as a zip, and deleting one. See [Backu
 ## Danger zone
 
 Wiping the whole taxonomy, behind a confirmation. See [Categories and roles](../classification/categories-and-roles.md).
+
+## Storage
+
+Where the data is kept. The page shows each layer and tests the optional bronze copy. It doesn't change
+anything: those settings live in `config/.env`, and the setup command writes them.
+
+- **Live database:** the one the app reads. Shown with its host, port and name. The password isn't shown.
+- **Bronze copy:** optional, off by default. Shows its kind (folder or bucket), where it goes, how many copies
+  are kept, and when the last one went. A test button runs the same checks the setup command does. See
+  [Backups](../data/backups.md#a-daily-copy-somewhere-else).
+- **Silver:** not in use yet. When it is, it lives in a schema in the live database.
+
