@@ -24,7 +24,7 @@ def test_help_sends_the_command_list_and_asks_nothing():
 
 
 def test_the_list_names_every_command():
-    for command in ("/ask", "/budget", "/help"):
+    for command in ("/ask", "/budget", "/health", "/help"):
         assert command in bot_help.HELP
 
 
