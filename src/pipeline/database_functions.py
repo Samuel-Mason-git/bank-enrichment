@@ -1166,8 +1166,55 @@ BACKUP_TABLES = [
 ]
 
 
+BACKUP_DIR_SETTING = "backup_dir"
+
+
+class BackupDirError(ValueError):
+    """A backup folder that can't be used, with a message to show."""
+
+
+def default_backup_dir() -> Path:
+    return Path.home() / "bank-enrichment-backups"
+
+
 def backup_dir() -> Path:
-    return Path(os.getenv("BACKUP_DIR") or Path.home() / "bank-enrichment-backups")
+    """Where backups go: the folder chosen on the Settings page, else BACKUP_DIR,
+    else ~/bank-enrichment-backups. A problem reading the choice never stops a backup."""
+    try:
+        chosen = get_setting(BACKUP_DIR_SETTING)
+    except Exception:
+        chosen = None
+    if chosen:
+        return Path(chosen)
+    return Path(os.getenv("BACKUP_DIR") or default_backup_dir())
+
+
+def set_backup_dir(path: str) -> Path:
+    """Save the folder backups go to. It must be a full path on this machine
+    (for WSL, /mnt/c/... or /home/...), and it's created if it's missing. Raises
+    BackupDirError with a message to show if it can't be used."""
+    text = (path or "").strip()
+    if not text:
+        raise BackupDirError("Type the folder's full path first.")
+    folder = Path(text).expanduser()
+    if not folder.is_absolute():
+        raise BackupDirError(
+            "That's not a full path. Start from the root, e.g. /mnt/c/Users/you/Backups for a folder on "
+            "your Windows drive, or /home/you/backups inside WSL.")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".bank-enrichment-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as e:
+        raise BackupDirError(f"Can't write to {folder}: {e.strerror or e}") from e
+    set_setting(BACKUP_DIR_SETTING, str(folder))
+    return folder
+
+
+def reset_backup_dir() -> None:
+    """Back to BACKUP_DIR, or the default folder."""
+    set_setting(BACKUP_DIR_SETTING, None)
 
 
 def list_backups() -> list[Path]:

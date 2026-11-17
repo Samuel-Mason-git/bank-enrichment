@@ -4,7 +4,8 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 from database_functions import (
-    BACKUPS_KEPT, ROLES, backup_db, backup_dir, backup_size_bytes, delete_backup, delete_parent,
+    BACKUPS_KEPT, ROLES, BackupDirError, backup_db, backup_dir, backup_size_bytes, default_backup_dir,
+    delete_backup, delete_parent, reset_backup_dir, set_backup_dir,
     delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
     get_setting, read_backup_manifest, rename_parent, set_parent_role, set_setting, set_subcategory_role, upsert_parent,
     upsert_subcategory, wipe_parent_labels, wipe_taxonomy,
@@ -480,11 +481,31 @@ with tab_backups:
         f"💾 Backups ({len(_backups)})"
         + (f" — last {backup_label(_backups[0])}" if _backups else " — none yet")
     ):
+        st.markdown("**Where backups are saved**")
+        st.caption(
+            "A folder on the machine running the dashboard. On Windows with WSL, a folder on your Windows "
+            "drive is /mnt/c/... (for example /mnt/c/Users/you/Backups), and it shows up in Explorer."
+        )
+        st.write(f"Saving to `{backup_dir()}`")
+        loc_col, save_col, default_col = st.columns([4, 1, 1])
+        loc = loc_col.text_input("Folder", key="backup_dir_input", placeholder=str(default_backup_dir()),
+                                 label_visibility="collapsed")
+        if save_col.button("Save folder", key="backup_dir_save"):
+            try:
+                saved = set_backup_dir(loc)
+            except BackupDirError as e:
+                st.error(str(e))
+            else:
+                st.success(f"Backups will be saved to {saved}.")
+                st.rerun()
+        if default_col.button("Use the default", key="backup_dir_default"):
+            reset_backup_dir()
+            st.rerun()
         st.caption(
             "Back up the database however you run it; this project doesn't include backups. "
             "This is only a copy you take yourself before trying something: every "
-            f"table saved as a Parquet file in a folder under `{backup_dir()}` (set BACKUP_DIR "
-            f"to change it). The most recent {BACKUPS_KEPT} are kept, and any can be deleted below. "
+            f"table saved as a Parquet file in the folder above. The most recent {BACKUPS_KEPT} are kept, "
+            "and any can be deleted below. "
             "Nothing here is ever taken automatically — and every change to a transaction is "
             "kept in its history anyway."
         )
