@@ -27,8 +27,12 @@ A plain message (anything that isn't a command) answers the payment the bot has 
 - **Weekly and monthly summaries**. See [Summaries](../money/summaries.md).
 - **Unusual payments and subscription changes**, from the Alerts tab. See [Point of purchase](point-of-purchase.md#unusual-payments) and [Subscriptions](subscriptions.md#alerts).
 - **Failure alerts** when Claude calls fail. See [Failure alerts](../classification/failure-alerts.md).
+- **The worker has stopped running**, if a scheduled run (hourly, 08:00 to 22:00 London time) hasn't
+  started half an hour after it was due. The server checks every 15 minutes, tells you once, with the
+  commands to look at it, and once more when runs start again. Nothing is expected overnight, so the
+  quiet hours never set it off.
 - **Category and rule decisions** that need your approval. See [New categories](../classification/new-categories.md) and [Rules](rules.md).
 
 ## Setting it up
 
-The BotFather step in [SETUP.md](../../SETUP.md) makes `/ask`, `/budget`, `/health` and `/help` appear as you type.
+The setup command registers the webhook ([SETUP.md](../../SETUP.md), step 2). The optional `/setcommands` step in [SETUP.md](../../SETUP.md#registering-the-telegram-webhook-by-hand) makes `/ask`, `/budget`, `/health` and `/help` appear as you type.

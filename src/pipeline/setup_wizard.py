@@ -356,7 +356,7 @@ def main() -> int:
         answers["BRONZE_S3_PREFIX"] = _ask("Folder inside the bucket for these copies", default="bank-enrichment")
         answers["BRONZE_S3_KEY_ID"] = _ask("Access key ID")
         answers["BRONZE_S3_SECRET"] = _ask("Secret access key", secret=True)
-    print("\nMonzo: the login that guards linking your account (see SETUP.md, the OAuth step).")
+    print("\nMonzo: the login that guards linking your account (SETUP.md, step 4: Connect Monzo).")
     answers["MONZO_LOGIN_USER"] = _ask("Login name", default="admin")
     answers["MONZO_LOGIN_PASSWORD"] = _ask("Login password", secret=True)
     answers["PUBLIC_URL"] = _ask("This server's public address, e.g. https://your-name.duckdns.org "

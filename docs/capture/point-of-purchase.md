@@ -27,7 +27,7 @@ days later still files exactly what it said, even if the buttons have changed si
 
 The per-merchant personalization depends on Monzo actually sending a `merchant` name on new
 transactions, which in turn depends on Monzo's own access confirmation staying current — see
-"Set Up the Monzo OAuth Confidential Client" in SETUP.md. If that lapses, categorization itself
+step 4 of [SETUP.md](../../SETUP.md#4-connect-monzo). If that lapses, categorization itself
 keeps working fine from the raw description text; only the personalized quick-pick buttons fall
 back to a generic top-5 list instead of that merchant's own history.
 

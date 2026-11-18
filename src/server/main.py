@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -158,6 +159,25 @@ async def _skip_timeout(chat_id: int, message_id: int):
         bot.delete_message(chat_id, message_id)
 
 
+HEARTBEAT_EVERY = 15 * 60   # seconds between checks that the worker is still running
+
+
+async def heartbeat_loop(bot) -> None:
+    """Every quarter of an hour, check that the worker hasn't missed a run (bot_health.Heartbeat),
+    and tell the owner on Telegram once when it has, and once when it's back."""
+    beat = bot_health.Heartbeat()
+    while True:
+        await asyncio.sleep(HEARTBEAT_EVERY)
+        try:
+            message = await asyncio.to_thread(beat.check, get_con(), datetime.now(timezone.utc))
+            chat = os.getenv("TELEGRAM_CHAT_ID")
+            if message and bot and chat:
+                await asyncio.to_thread(bot.send_message, int(chat), message)
+                log.info("Sent a worker heartbeat message")
+        except Exception as e:
+            log.warning(f"Worker heartbeat check failed: {type(e).__name__}: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot
@@ -166,7 +186,7 @@ async def lifespan(app: FastAPI):
         # Refuse to start rather than run with a webhook anyone can call.
         raise RuntimeError(
             f"{' and '.join(unset)} not set in config/.env. The server won't start without both, since "
-            "its webhooks would accept requests from anyone who knows their URL. See SETUP.md steps 4, 8 and 9."
+            "its webhooks would accept requests from anyone who knows their URL. The setup command (SETUP.md, step 2) generates both."
         )
     init_db()
     activity.attach("server", get_con)
@@ -183,10 +203,13 @@ async def lifespan(app: FastAPI):
     log.info("Requester loop started")
     monzo_task = asyncio.create_task(monzo_refresh_loop(bot))
     log.info("Monzo OAuth refresh loop started")
+    heartbeat_task = asyncio.create_task(heartbeat_loop(bot))
+    log.info("Worker heartbeat started")
     yield
     task.cancel()
     monzo_task.cancel()
-    for t in (task, monzo_task):
+    heartbeat_task.cancel()
+    for t in (task, monzo_task, heartbeat_task):
         try:
             await t
         except asyncio.CancelledError:

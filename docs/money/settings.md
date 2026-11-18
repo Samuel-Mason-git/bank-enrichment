@@ -5,6 +5,21 @@
 Everything you can change without touching the code is on the dashboard's **Settings** page, in tabs. Pages that
 have settings link to the right tab, and the page says "Set this up in Settings → …".
 
+## Setup check
+
+Whether each part of the app is working, checked when you press **Run the checks** (two of the checks
+ask Telegram and Anthropic, so they don't run on every page load):
+
+| Check | OK when | Otherwise |
+|---|---|---|
+| Database | The dashboard can query it | A problem: check the `DB_` settings in `config/.env`. The checks that need the database are skipped |
+| Worker | The last scheduled run (hourly, 08:00 to 22:00 London time, with half an hour's grace) started | A problem if a run didn't start, with the commands to look at it on the server. A warning if the last run had a failed step |
+| Monzo payments | One arrived in the last 4 days | A warning: if you've paid for things since, the Monzo webhook isn't arriving |
+| Telegram webhook | Telegram has this app's webhook address, and its last delivery worked | A problem if no webhook is registered or the token is wrong. A warning if it points somewhere else, or Telegram's last delivery failed (with Telegram's error) |
+| Claude key | Anthropic accepts `ANTHROPIC_API_KEY` | A problem if it's missing or rejected |
+
+The server also watches the worker on its own: see [Telegram](../capture/telegram.md#messages-the-bot-sends-you).
+
 ## Categories
 
 The taxonomy: parent categories and their subcategories, each one's **Role** (Income, Spend, Investment, Saving,

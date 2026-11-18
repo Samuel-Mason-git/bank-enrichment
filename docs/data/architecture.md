@@ -48,6 +48,7 @@
 │       └── dashboard_helpers.py   # Pure logic used by the dashboard (role/subscription/rule/chart helpers) — unit tested standalone
 ├── scripts/
 │   ├── run_dashboard_wsl.sh   # Runs the dashboard in WSL (launch_dashboard.bat calls it)
+│   ├── find_poetry.sh         # Finds Poetry and installs the packages, for the two WSL scripts
 │   ├── run_process_wsl.sh     # Runs the pipeline once, by hand, in WSL
 │   └── setup_swap.sh          # Adds swap to the server (rerunnable)
 ├── sql/
