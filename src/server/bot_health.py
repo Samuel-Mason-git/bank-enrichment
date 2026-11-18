@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 
 import app_config
+import run_schedule
 
 HEALTH_COMMAND = re.compile(r"^/health(?:@\w+)?\s*$", re.IGNORECASE)
 
@@ -31,6 +32,33 @@ def _ago(when: datetime | None) -> str:
     if seconds < 2 * 86400:
         return f"{seconds // 3600} h ago"
     return f"{seconds // 86400} days ago"
+
+
+class Heartbeat:
+    """Tells you once when the worker has missed a scheduled run, and once when it runs
+    again. Remembers which missed run it reported, so a long gap alerts only once. A
+    server restart starts it afresh, so at most one repeat after a restart."""
+
+    def __init__(self):
+        self.alerted_for: datetime | None = None
+
+    def check(self, con, now: datetime) -> str | None:
+        """The message to send now, if any."""
+        last = con.execute("SELECT MAX(started_at) FROM runs").fetchone()[0]
+        missed = run_schedule.missed_run(last, now)
+        if missed is not None and self.alerted_for is None:
+            self.alerted_for = missed
+            since = "never" if last is None else f"{last.astimezone(run_schedule.LONDON):%a %d %b, %H:%M}"
+            return ("⚠️ <b>The worker has stopped running</b>\n\n"
+                    f"The {missed:%H:%M} run didn't start. Last run started: {since}.\n"
+                    "Payments still arrive, but nothing is classified, and no summaries or budget messages go out "
+                    "until it runs again. On the server: <code>docker compose ps</code>, then "
+                    "<code>docker compose logs worker</code>.")
+        if missed is None and self.alerted_for is not None:
+            self.alerted_for = None
+            return (f"✅ <b>The worker is running again</b>\n\nIts last run started "
+                    f"{last.astimezone(run_schedule.LONDON):%H:%M}.")
+        return None
 
 
 def report(get_con) -> str:

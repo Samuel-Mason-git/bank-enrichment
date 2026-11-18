@@ -8,7 +8,7 @@ from database_functions import (
     BACKUPS_KEPT, ROLES, BackupDirError, backup_db, backup_dir, backup_size_bytes,
     backup_zip, default_backup_dir,
     delete_backup, delete_parent, reset_backup_dir, set_backup_dir,
-    delete_subcategory, edit_subcategory, get_parents, get_subcategories, list_backups, move_all_transactions,
+    delete_subcategory, edit_subcategory, get_con, get_parents, get_subcategories, list_backups, move_all_transactions,
     read_backup_manifest, rename_parent, set_parent_role, set_subcategory_role, upsert_parent,
     upsert_subcategory, wipe_parent_labels, wipe_taxonomy,
 )
@@ -138,9 +138,24 @@ def _budget_telegram_settings(mb_now: bg.MonthBudgets) -> None:
             st.error("Telegram didn't take it: check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in config/.env.")
 
 
-tab_categories, tab_storage, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
-    ["Categories", "Storage", "Classification", "Budgets", "Alerts", "Ask", "Backups", "⚠️ Danger zone"]
+tab_check, tab_categories, tab_storage, tab_classification, tab_budgets, tab_alerts, tab_ask, tab_backups, tab_danger = st.tabs(
+    ["Setup check", "Categories", "Storage", "Classification", "Budgets", "Alerts", "Ask", "Backups", "⚠️ Danger zone"]
 )
+
+with tab_check:
+    import setup_check as sc
+    st.caption("Whether each part of the app is working. The checks run when you press the button: two of them "
+               "ask Telegram and Anthropic, so they don't run on every page load.")
+    if st.button("Run the checks", key="setup_run_checks", type="primary"):
+        st.session_state["setup_check_results"] = sc.run_all(get_con())
+    for check in st.session_state.get("setup_check_results", []):
+        text = f"**{check.name}:** {check.detail}"
+        if check.result == sc.OK:
+            st.success(text)
+        elif check.result == sc.WARNING:
+            st.warning(text)
+        else:
+            st.error(text)
 
 with tab_categories:
     settings_stat_color = "rgba(127, 140, 141, 0.16)"

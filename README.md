@@ -46,7 +46,7 @@ Bank Enrichment is **UK-only**: it's built for Monzo's UK accounts, and it assum
 - **Your own computer:** for the dashboard, with Python and Poetry, or WSL on Windows.
 - **Optional:** a bronze copy, a raw save of your data to a folder or a bucket. The app runs without it.
 
-The [SETUP guide](SETUP.md) walks through each step.
+The [SETUP guide](SETUP.md) is five steps, built around a setup command that checks each answer as you go.
 
 ## How it works
 
@@ -76,6 +76,7 @@ A Monzo payment fires a webhook. The server stores it, then either applies a rul
 | [Your data](docs/data/your-data.md) | What's stored, and how it's kept |
 | [Security](docs/data/security.md) | Who can reach what |
 | [Architecture](docs/data/architecture.md) | Project structure, tech stack and CI/CD |
+| [Advanced setup](docs/setup/advanced.md) | Small servers, firewalls, a database elsewhere, Windows, automatic deploys |
 
 ## Disclaimer
 
@@ -83,4 +84,4 @@ Bank Enrichment isn't affiliated with, endorsed by or sponsored by Monzo, Telegr
 
 ## Setup
 
-See [SETUP.md](SETUP.md) for full setup instructions.
+See [SETUP.md](SETUP.md): five steps, then the Settings page's setup check confirms each part works.
