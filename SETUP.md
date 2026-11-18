@@ -63,6 +63,10 @@ cd bank-enrichment
    ```bash
    scp config/.env ubuntu@your_server_ip:~/bank-enrichment/config/.env
    ```
+   Then make sure only your server user can read it. `scp` doesn't keep the access rules from your machine, so set them on the server:
+   ```bash
+   chmod 600 ~/bank-enrichment/config/.env
+   ```
 4. Start it:
    ```bash
    sudo docker compose up -d
