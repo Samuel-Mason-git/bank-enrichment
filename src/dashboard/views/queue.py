@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+import manual_run
 from database_functions import get_lifetime_stats, get_queue_transactions
 from payment_actions import STATUS_LABELS, payee, payment_actions, payment_label
 from ui import _card_rows
@@ -50,6 +51,27 @@ st.caption(
     "Payments still waiting for something: an answer from you (Telegram asks about these), or a category "
     "from the classifier, which runs every hour from 08:00 to 22:00. Pick one to answer, skip or delete it."
 )
+
+# Run the pipeline now, rather than waiting for the next hourly run. The button is disabled while a run from
+# here is still going. If the worker is running, the run says so in its output and stops.
+run = st.session_state.get("queue_run")
+running = run is not None and manual_run.status(run) == "running"
+if st.button("Run the pipeline now", key="queue_run_now", type="secondary", disabled=running,
+             help="Classify what's waiting, check the queue and send any Telegram cards now."):
+    run = manual_run.start()
+    st.session_state["queue_run"] = run
+    running = True
+if run is not None:
+    state = manual_run.status(run)
+    if state == "running":
+        st.info("The pipeline is running. It can take a few minutes. Refresh the page to see the queue update.")
+    elif state == "finished":
+        st.success("The last run from here finished.")
+    else:
+        st.error("The last run from here failed. The end of its output is below.")
+    if state != "running":
+        st.code(manual_run.log_tail() or "(no output)")
+
 _card_rows([
     ("Needs your answer", str(len(pending)), QUEUE_COLOR, "No context yet.", ""),
     ("Waiting for the classifier", str(len(enriched)), QUEUE_COLOR,
