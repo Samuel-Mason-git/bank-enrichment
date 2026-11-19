@@ -41,7 +41,7 @@ if errorlevel 1 (
 echo Starting the dashboard in WSL ^(%DISTRO%^). Your browser opens when it's ready.
 rem Opens the browser once the port answers. A plain socket check, so it's quick to notice.
 start /b "" powershell -NoProfile -WindowStyle Hidden -Command "for ($i = 0; $i -lt 300; $i++) { try { $c = New-Object System.Net.Sockets.TcpClient('localhost', 8501); $c.Close(); Start-Process 'http://localhost:8501'; break } catch { Start-Sleep -Milliseconds 500 } }"
-wsl -d "%DISTRO%" --cd "%~dp0" -- bash scripts/run_dashboard_wsl.sh
+wsl -d %DISTRO% --cd "%~dp0" -- bash scripts/run_dashboard_wsl.sh
 if errorlevel 1 goto :failed
 exit /b 0
 
