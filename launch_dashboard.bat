@@ -28,8 +28,19 @@ if not defined DISTRO (
     goto :failed
 )
 
+rem Check the name before using it, so a wrong name says what's installed
+rem instead of a bare "no distribution" error.
+powershell -NoProfile -Command "$env:WSL_UTF8='1'; $names = wsl -l -q | ForEach-Object { $_.Trim() }; if ($names -contains $env:DISTRO) { exit 0 } else { exit 1 }"
+if errorlevel 1 (
+    echo Couldn't find the WSL distro "%DISTRO%". Installed distros are:
+    wsl -l -q
+    echo Set BANK_WSL_DISTRO to one of those names, e.g.  setx BANK_WSL_DISTRO Ubuntu-24.04
+    goto :failed
+)
+
 echo Starting the dashboard in WSL ^(%DISTRO%^). Your browser opens when it's ready.
-start /b "" powershell -NoProfile -WindowStyle Hidden -Command "for ($i = 0; $i -lt 300; $i++) { if (Test-NetConnection -ComputerName localhost -Port 8501 -InformationLevel Quiet -WarningAction SilentlyContinue) { Start-Process 'http://localhost:8501'; break }; Start-Sleep -Seconds 1 }"
+rem Opens the browser once the port answers. A plain socket check, so it's quick to notice.
+start /b "" powershell -NoProfile -WindowStyle Hidden -Command "for ($i = 0; $i -lt 300; $i++) { try { $c = New-Object System.Net.Sockets.TcpClient('localhost', 8501); $c.Close(); Start-Process 'http://localhost:8501'; break } catch { Start-Sleep -Milliseconds 500 } }"
 wsl -d "%DISTRO%" --cd "%~dp0" -- bash scripts/run_dashboard_wsl.sh
 if errorlevel 1 goto :failed
 exit /b 0
