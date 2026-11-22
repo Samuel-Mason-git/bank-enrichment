@@ -137,7 +137,7 @@ def spent_by_category(first: date, last: date, con=None) -> dict[str, float]:
     rows = _rows(con or get_con(), """
         SELECT llm_category AS category,
                COALESCE(-SUM(amount) FILTER (WHERE role = 'spend' AND amount < 0), 0) AS spent
-        FROM transaction_roles
+        FROM transaction_lines
         WHERE NOT skipped AND llm_category IS NOT NULL
           AND created_at >= %s AND created_at < %s::date + 1
         GROUP BY 1""", [first, last])
@@ -283,7 +283,7 @@ def history(months: int = 6, today: date | None = None, con=None) -> list[dict]:
     rows = _rows(con, """
         SELECT date_trunc('month', created_at)::date AS m, llm_category AS category,
                COALESCE(-SUM(amount) FILTER (WHERE role = 'spend' AND amount < 0), 0) AS spent
-        FROM transaction_roles
+        FROM transaction_lines
         WHERE NOT skipped AND llm_category IS NOT NULL AND created_at >= %s AND created_at < %s::date + 1
         GROUP BY 1, 2""", [first, last])
     by_month: dict[date, float] = {}
