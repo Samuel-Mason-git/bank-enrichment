@@ -974,7 +974,7 @@ def get_totals_by_role(date_from: str, date_to: str) -> dict[str, float]:
                CASE WHEN role = 'income' THEN GREATEST(amount, 0)
                     WHEN role IN ('saving', 'investment') THEN -amount
                     ELSE GREATEST(-amount, 0) END
-           ), 0) FROM transaction_roles
+           ), 0) FROM transaction_lines
            WHERE skipped = FALSE AND created_at BETWEEN %s AND %s
            GROUP BY role""",
         [date_from, date_to]
@@ -992,12 +992,60 @@ def get_category_totals_by_role(role: str, date_from: str, date_to: str) -> list
     _validate_role(role)
     return _rows(
         """SELECT llm_category AS category, SUM(amount) AS total
-           FROM transaction_roles
+           FROM transaction_lines
            WHERE role = %s AND llm_category IS NOT NULL
              AND skipped = FALSE AND created_at BETWEEN %s AND %s
            GROUP BY llm_category
            ORDER BY total DESC""",
         [role, date_from, date_to]
+    )
+
+
+def get_subcategory_options() -> list[dict]:
+    """Every live subcategory as a form option: its label ("Parent › Sub") and its ids."""
+    rows = get_con().execute("""
+        SELECT p.name, s.name, p.id, s.id FROM subcategories s
+        JOIN parent_categories p ON p.id = s.parent_id
+        WHERE s.archived_at IS NULL AND p.archived_at IS NULL
+        ORDER BY p.name, s.name
+    """).fetchall()
+    return [{"label": f"{p} › {s}", "parent_id": p_id, "subcategory_id": s_id} for p, s, p_id, s_id in rows]
+
+
+def get_split(txn_id: str) -> list[dict]:
+    """The current split of a payment: its lines, or [] if it isn't split."""
+    row = get_con().execute(
+        """SELECT lines FROM split_events WHERE txn_id = %s ORDER BY event_id DESC LIMIT 1""",
+        [txn_id],
+    ).fetchone()
+    return list(row[0]) if row and row[0] else []
+
+
+def set_split(txn_id: str, lines: list[dict], source: str) -> None:
+    """Split a payment across categories, or clear the split with lines=[]. `lines` are dicts of
+    {"parent_id", "subcategory_id", "pence"} (see splits.Line). The lines are checked against the
+    payment first, so a split that doesn't add up is never stored. Each change is a new row, so the
+    history of splits is kept."""
+    import json
+    import splits
+    if source not in ("telegram", "dashboard"):
+        raise ValueError(f"unknown split source {source!r}")
+    con = get_con()
+    if lines:
+        amount = con.execute("SELECT amount FROM transactions WHERE id = %s", [txn_id]).fetchone()
+        if not amount:
+            raise ValueError(f"No transaction {txn_id}")
+        checked = [splits.Line(int(l["parent_id"]), l.get("subcategory_id"), int(l["pence"])) for l in lines]
+        splits.check(round(float(amount[0]) * 100), checked)
+        for line in lines:
+            if line.get("subcategory_id") is not None:
+                parent = con.execute("SELECT parent_id FROM subcategories WHERE id = %s AND archived_at IS NULL",
+                                     [line["subcategory_id"]]).fetchone()
+                if not parent or parent[0] != line["parent_id"]:
+                    raise ValueError("A split line's subcategory isn't in its category")
+    con.execute(
+        "INSERT INTO split_events (txn_id, lines, source) VALUES (%s, %s, %s)",
+        [txn_id, json.dumps(lines), source],
     )
 
 

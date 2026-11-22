@@ -23,7 +23,7 @@ import app_config  # noqa: F401  (loads config/.env)
 os.environ.setdefault("DB_APP_NAME", "dashboard")
 
 from database_functions import init_db, get_con
-from dashboard_helpers import merchant_display_name
+from dashboard_helpers import expand_split_rows, merchant_display_name
 from page_context import share
 
 st.set_page_config(
@@ -61,6 +61,21 @@ def load_transactions():
     return df
 
 
+@st.cache_data(ttl=60, show_spinner="Loading split payments...")
+def load_split_parts():
+    """The lines of every split payment: the parts that the category pages count."""
+    result = get_con().execute("""
+        SELECT txn_id AS id, line_no, amount, llm_category, llm_subcategory, role
+        FROM transaction_lines
+        WHERE txn_id IN (SELECT txn_id FROM transaction_lines WHERE line_no > 0)
+        ORDER BY txn_id, line_no
+    """)
+    cols = [c.name for c in result.description]
+    parts = pd.DataFrame(result.fetchall(), columns=cols)
+    parts["amount"] = parts["amount"].astype(float)
+    return parts
+
+
 @st.cache_data(ttl=60, show_spinner="Loading taxonomy...")
 def load_taxonomy():
     parents = get_con().execute("SELECT name FROM parent_categories WHERE archived_at IS NULL ORDER BY name").fetchall()
@@ -81,6 +96,8 @@ def load_taxonomy():
 
 
 df = load_transactions()
+# One row per payment, and one per part of a split payment: the category pages count the parts.
+df_parts = expand_split_rows(df, load_split_parts())
 all_parents, all_subs, subs_by_parent = load_taxonomy()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
@@ -185,34 +202,37 @@ if st.sidebar.button("Refresh data"):
 
 # ── Apply filters ──────────────────────────────────────────────────────────────
 
-filtered = df.copy()
-filtered = filtered[
-    (filtered["created_at"].dt.date >= date_from) &
-    (filtered["created_at"].dt.date <= date_to)
-]
-if not show_skipped:
-    filtered = filtered[filtered["skipped"] != True]
-if not show_unclassified:
-    filtered = filtered[filtered["llm_category"].notna()]
-if selected_parents:
-    filtered = filtered[filtered["llm_category"].isin(selected_parents)]
-if selected_subs:
-    filtered = filtered[filtered["llm_subcategory"].isin(selected_subs)]
-if search:
-    mask = (
-        filtered["description"].str.contains(search, case=False, na=False, regex=False)
-        | filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
-        # Direct debits and bank transfers -- rent, utility bills, HMRC-style
-        # payments -- populate counterparty_name instead of merchant_name, so
-        # without this a search for "Octopus Energy" or "HMRC" finds nothing.
-        | filtered["counterparty_name"].str.contains(search, case=False, na=False, regex=False)
-        | filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
-    )
-    filtered = filtered[mask]
-if exclude_merchants:
-    filtered = filtered[~merchant_display_name(filtered).isin(exclude_merchants)]
-if exclude_ids:
-    filtered = filtered[~filtered["id"].isin(exclude_ids)]
+def _apply_filters(frame, start, end):
+    """The sidebar's filters, for one period. Run on payments for the pages that list them, and on
+    the parts of split payments for the category pages."""
+    out = frame[(frame["created_at"].dt.date >= start) & (frame["created_at"].dt.date <= end)].copy()
+    if not show_skipped:
+        out = out[out["skipped"] != True]
+    if not show_unclassified:
+        out = out[out["llm_category"].notna()]
+    if selected_parents:
+        out = out[out["llm_category"].isin(selected_parents)]
+    if selected_subs:
+        out = out[out["llm_subcategory"].isin(selected_subs)]
+    if search:
+        mask = (
+            out["description"].str.contains(search, case=False, na=False, regex=False)
+            | out["merchant_name"].str.contains(search, case=False, na=False, regex=False)
+            # Direct debits and bank transfers -- rent, utility bills, HMRC-style
+            # payments -- populate counterparty_name instead of merchant_name, so
+            # without this a search for "Octopus Energy" or "HMRC" finds nothing.
+            | out["counterparty_name"].str.contains(search, case=False, na=False, regex=False)
+            | out["user_context"].str.contains(search, case=False, na=False, regex=False)
+        )
+        out = out[mask]
+    if exclude_merchants:
+        out = out[~merchant_display_name(out).isin(exclude_merchants)]
+    if exclude_ids:
+        out = out[~out["id"].isin(exclude_ids)]
+    return out
+
+
+filtered = _apply_filters(df, date_from, date_to)
 
 # ── Export (sidebar, after filters applied) ───────────────────────────────────
 
@@ -236,36 +256,15 @@ _period_days = (date_to - date_from).days
 _prev_to = date_from - timedelta(days=1)
 _prev_from = _prev_to - timedelta(days=_period_days)
 
-prev_filtered = df[
-    (df["created_at"].dt.date >= _prev_from) &
-    (df["created_at"].dt.date <= _prev_to)
-].copy()
-if not show_skipped:
-    prev_filtered = prev_filtered[prev_filtered["skipped"] != True]
-if not show_unclassified:
-    prev_filtered = prev_filtered[prev_filtered["llm_category"].notna()]
-if selected_parents:
-    prev_filtered = prev_filtered[prev_filtered["llm_category"].isin(selected_parents)]
-if selected_subs:
-    prev_filtered = prev_filtered[prev_filtered["llm_subcategory"].isin(selected_subs)]
-if search:
-    _mask = (
-        prev_filtered["description"].str.contains(search, case=False, na=False, regex=False)
-        | prev_filtered["merchant_name"].str.contains(search, case=False, na=False, regex=False)
-        | prev_filtered["counterparty_name"].str.contains(search, case=False, na=False, regex=False)
-        | prev_filtered["user_context"].str.contains(search, case=False, na=False, regex=False)
-    )
-    prev_filtered = prev_filtered[_mask]
-if exclude_merchants:
-    prev_filtered = prev_filtered[~merchant_display_name(prev_filtered).isin(exclude_merchants)]
-if exclude_ids:
-    prev_filtered = prev_filtered[~prev_filtered["id"].isin(exclude_ids)]
-
+prev_filtered = _apply_filters(df, _prev_from, _prev_to)
+filtered_lines = _apply_filters(df_parts, date_from, date_to)
+prev_filtered_lines = _apply_filters(df_parts, _prev_from, _prev_to)
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
 
-share(df=df, filtered=filtered, prev_filtered=prev_filtered, all_parents=all_parents, all_subs=all_subs,
+share(df=df, filtered=filtered, prev_filtered=prev_filtered, filtered_lines=filtered_lines,
+      prev_filtered_lines=prev_filtered_lines, all_parents=all_parents, all_subs=all_subs,
       subs_by_parent=subs_by_parent, date_from=date_from, date_to=date_to)
 
 _views = Path(__file__).parent / "views"

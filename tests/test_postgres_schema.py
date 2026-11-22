@@ -12,13 +12,13 @@ from datetime import datetime
 from decimal import Decimal
 
 TABLES = {
-    "transactions_raw", "transaction_updates", "context_events", "label_events",
+    "transactions_raw", "transaction_updates", "context_events", "label_events", "split_events",
     "parent_categories", "subcategories", "category_roles",
     "rules", "rule_suggestions", "taxonomy_proposals", "category_proposals",
     "judge_reviews", "subscriptions", "summaries", "runs", "log_events", "llm_calls", "settings_changes",
     "prompt_versions", "app_settings", "budgets", "budget_alerts", "unusual_payment_alerts", "subscription_alerts",
 }
-VIEWS = {"transactions", "transaction_current", "transaction_roles", "needs_context", "needs_label",
+VIEWS = {"transactions", "transaction_current", "transaction_roles", "transaction_lines", "needs_context", "needs_label",
          "quick_categories"}
 
 # The columns the old DuckDB transactions table had, minus processed_at,

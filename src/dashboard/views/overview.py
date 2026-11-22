@@ -6,7 +6,7 @@ from dashboard_helpers import ROLE_METRICS, pct_delta, role_breakdown
 from ui import _fmt, _delta_badge, _colour_range, _section, _card_rows, row_colors
 from page_context import shared
 
-filtered, prev_filtered = shared('filtered', 'prev_filtered')
+filtered, prev_filtered = shared('filtered_lines', 'prev_filtered_lines')
 
 
 spend_df = filtered[filtered["amount"] < 0]

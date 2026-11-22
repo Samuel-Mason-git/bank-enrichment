@@ -7,7 +7,10 @@ or linked to."""
 import pandas as pd
 import streamlit as st
 
-from database_functions import get_payment, get_payment_history, get_queue_transactions
+import database_functions as dbf
+import splits
+from database_functions import (get_payment, get_payment_history, get_queue_transactions,
+                                get_split, get_subcategory_options)
 from payment_actions import STATUS_LABELS, describe_event, payee, payment_actions, payment_label
 from ui import _fmt
 
@@ -30,6 +33,48 @@ def _forget() -> None:
     _sync_address()
 
 
+def _split_editor(t: dict) -> None:
+    """Split this payment across categories: up to four parts, one of which can take the rest."""
+    st.markdown("**Split across categories**")
+    if st.session_state.pop("split_saved", None) == t["id"]:
+        st.success("Split saved. The category pages count it by its parts.")
+    st.caption("For a payment that covers more than one category, e.g. a supermarket trip with toiletries and "
+               "coffee. Leave one amount blank and that part takes whatever is left.")
+    options = get_subcategory_options()
+    lookup = {o["label"]: (o["parent_id"], o["subcategory_id"]) for o in options}
+    current = get_split(t["id"])
+    if current:
+        names = {(o["parent_id"], o["subcategory_id"]): o["label"] for o in options}
+        st.dataframe(pd.DataFrame([{
+            "Category": names.get((l.get("parent_id"), l.get("subcategory_id")), "—"),
+            "Amount": f"£{l['pence'] / 100:,.2f}",
+        } for l in current]), hide_index=True, width="stretch")
+    with st.form(f"split_form_{t['id']}"):
+        rows = []
+        for i in range(4):
+            label_col, amount_col = st.columns([3, 2])
+            with label_col:
+                label = st.selectbox(f"Part {i + 1}", [""] + list(lookup), key=f"split_cat_{i}")
+            with amount_col:
+                amount = st.text_input(f"Amount {i + 1}", key=f"split_amt_{i}", placeholder="£")
+            rows.append((label, amount))
+        save_col, clear_col = st.columns(2)
+        save = save_col.form_submit_button("Save split", type="primary", key="split_save")
+        clear = clear_col.form_submit_button("Clear split", disabled=not current, key="split_clear")
+    total = round(abs(float(t["amount"])) * 100)
+    if save:
+        try:
+            chosen = splits.lines_from_rows(rows, total, lookup)
+            dbf.set_split(t["id"], [line.as_json() for line in chosen], source="dashboard")
+            st.session_state["split_saved"] = t["id"]
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+    if clear:
+        dbf.set_split(t["id"], [], source="dashboard")
+        st.rerun()
+
+
 payments = load_payments()
 by_id = {t["id"]: t for t in payments}
 if st.session_state.get("payment_id") not in by_id:
@@ -50,6 +95,8 @@ else:
     counterparty = data.get("counterparty") if isinstance(data.get("counterparty"), dict) else {}
     st.subheader(f"{payee(t)} · {_fmt(float(t['amount']))}")
     st.caption(f"{t['created_at']:%A %d %B %Y, %H:%M} · {STATUS_LABELS[t['status']]} · {t['id']}")
+
+    _split_editor(t)
 
     left, right = st.columns(2)
     with left:

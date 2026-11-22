@@ -342,3 +342,19 @@ def first_rule_for(rules: list[dict], data: dict, before_id: int | None = None) 
         if rule["enabled"] and rule_matches(rule, data):
             return rule
     return None
+
+
+def expand_split_rows(payments: pd.DataFrame, parts: pd.DataFrame) -> pd.DataFrame:
+    """One row per part of each payment. A split payment's own row is replaced by one row per line of
+    its split, with that line's amount, category and role; every other payment keeps its one row.
+    The category pages read this, so a split counts by its parts. `parts` has the split lines:
+    id, line_no, amount, llm_category, llm_subcategory, role. Unsplit rows get line_no 0."""
+    payments = payments.assign(line_no=0)
+    if parts.empty:
+        return payments
+    split_ids = set(parts["id"])
+    unsplit = payments[~payments["id"].isin(split_ids)]
+    base = payments[payments["id"].isin(split_ids)].drop(
+        columns=["amount", "llm_category", "llm_subcategory", "role", "line_no"])
+    expanded = base.merge(parts, on="id", how="inner")
+    return pd.concat([unsplit, expanded], ignore_index=True)
