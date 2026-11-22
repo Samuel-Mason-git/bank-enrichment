@@ -66,3 +66,29 @@ def check(total_pence: int, lines: list[Line]) -> None:
         raise SplitError(f"£{remaining / 100:,.2f} is still to be given to a category.")
     if remaining < 0:
         raise SplitError(f"The parts add up to £{-remaining / 100:,.2f} more than the payment.")
+
+
+def lines_from_rows(rows: list[tuple[str, str]], total_pence: int, lookup: dict) -> list[Line]:
+    """Lines from a form's rows: (category label, amount as typed). A blank label is an unused row.
+    `lookup` maps each label to (parent_id, subcategory_id). A blank amount on one row means that
+    row takes whatever is left. Raises SplitError with the message to show."""
+    filled = [(label, (text or "").strip()) for label, text in rows if label]
+    if not filled:
+        raise SplitError("Pick a category for each part.")
+    if sum(1 for _, text in filled if not text) > 1:
+        raise SplitError("Only one part can take the rest. Type an amount for the others.")
+    typed = sum(parse_amount(text) for _, text in filled if text)
+    lines = []
+    for label, text in filled:
+        if label not in lookup:
+            raise SplitError(f"'{label}' isn't a category.")
+        parent_id, subcategory_id = lookup[label]
+        if text:
+            pence = parse_amount(text)
+        else:
+            pence = abs(total_pence) - typed
+            if pence <= 0:
+                raise SplitError("Nothing is left for the part that takes the rest.")
+        lines.append(Line(parent_id, subcategory_id, pence))
+    check(total_pence, lines)
+    return lines

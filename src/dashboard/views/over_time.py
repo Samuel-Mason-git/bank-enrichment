@@ -7,7 +7,7 @@ from dashboard_helpers import ROLE_METRICS, role_breakdown
 from ui import _fmt, _card_rows, row_colors
 from page_context import shared
 
-filtered, = shared('filtered')
+filtered, = shared('filtered_lines')
 
 
 st.caption(

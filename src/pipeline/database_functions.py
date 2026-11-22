@@ -1001,6 +1001,17 @@ def get_category_totals_by_role(role: str, date_from: str, date_to: str) -> list
     )
 
 
+def get_subcategory_options() -> list[dict]:
+    """Every live subcategory as a form option: its label ("Parent › Sub") and its ids."""
+    rows = get_con().execute("""
+        SELECT p.name, s.name, p.id, s.id FROM subcategories s
+        JOIN parent_categories p ON p.id = s.parent_id
+        WHERE s.archived_at IS NULL AND p.archived_at IS NULL
+        ORDER BY p.name, s.name
+    """).fetchall()
+    return [{"label": f"{p} › {s}", "parent_id": p_id, "subcategory_id": s_id} for p, s, p_id, s_id in rows]
+
+
 def get_split(txn_id: str) -> list[dict]:
     """The current split of a payment: its lines, or [] if it isn't split."""
     row = get_con().execute(

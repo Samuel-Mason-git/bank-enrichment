@@ -5,7 +5,7 @@ from dashboard_helpers import merchant_display_name, role_breakdown
 from ui import _fmt, _colour_range, _card_rows, row_colors
 from page_context import shared
 
-filtered, = shared('filtered')
+filtered, = shared('filtered_lines')
 
 
 classified = filtered[filtered["llm_category"].notna()]

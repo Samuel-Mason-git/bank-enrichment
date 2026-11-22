@@ -53,3 +53,40 @@ def test_a_zero_payment_cant_be_split():
 def test_left_over_is_the_difference_either_way():
     assert splits.left_over(-5000, [Line(1, None, 2000)]) == 3000
     assert splits.left_over(-5000, [Line(1, None, 6000)]) == -1000
+
+
+LOOKUP = {"Food & Drink › Groceries": (1, 10), "Food & Drink › Coffee Shops": (1, 11),
+          "Personal Care & Consumables › Toiletries": (2, 20)}
+
+
+def test_a_form_with_one_blank_amount_gives_that_part_the_rest():
+    lines = splits.lines_from_rows([("Personal Care & Consumables › Toiletries", "20"),
+                                    ("Food & Drink › Coffee Shops", "10"),
+                                    ("Food & Drink › Groceries", "")], -5000, LOOKUP)
+    assert [(l.parent_id, l.subcategory_id, l.pence) for l in lines] == [(2, 20, 2000), (1, 11, 1000), (1, 10, 2000)]
+
+
+def test_blank_rows_are_ignored():
+    lines = splits.lines_from_rows([("Food & Drink › Groceries", "30"), ("", ""),
+                                    ("Food & Drink › Coffee Shops", "20")], -5000, LOOKUP)
+    assert len(lines) == 2
+
+
+def test_two_blank_amounts_are_refused():
+    with pytest.raises(SplitError, match="Only one part can take the rest"):
+        splits.lines_from_rows([("Food & Drink › Groceries", ""), ("Food & Drink › Coffee Shops", "")], -5000, LOOKUP)
+
+
+def test_a_rest_that_is_nothing_is_refused():
+    with pytest.raises(SplitError, match="Nothing is left"):
+        splits.lines_from_rows([("Food & Drink › Groceries", "50"), ("Food & Drink › Coffee Shops", "")], -5000, LOOKUP)
+
+
+def test_a_category_that_isnt_known_is_refused():
+    with pytest.raises(SplitError, match="isn't a category"):
+        splits.lines_from_rows([("Made up › Thing", "10"), ("Food & Drink › Groceries", "")], -5000, LOOKUP)
+
+
+def test_no_categories_is_refused():
+    with pytest.raises(SplitError, match="Pick a category"):
+        splits.lines_from_rows([("", "10")], -5000, LOOKUP)
