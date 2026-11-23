@@ -988,14 +988,26 @@ def get_totals_by_role(date_from: str, date_to: str) -> dict[str, float]:
 def get_category_totals_by_role(role: str, date_from: str, date_to: str) -> list[dict]:
     """Per-category breakdown for one role, e.g. "Spend by category". Only
     includes classified transactions -- unclassified ones surface separately
-    as their own "Unclassified" bucket wherever this is displayed."""
+    as their own "Unclassified" bucket wherever this is displayed.
+
+    Spend counts only the money going out, and income only the money coming in,
+    as get_totals_by_role does, so the categories add up to the total. (Summing
+    both sides would let a deposit coming back cancel the bill it was for.)
+    Spend comes back as positive amounts."""
     _validate_role(role)
+    if role == "spend":
+        amount = "GREATEST(-amount, 0)"
+    elif role == "income":
+        amount = "GREATEST(amount, 0)"
+    else:
+        amount = "amount"
     return _rows(
-        """SELECT llm_category AS category, SUM(amount) AS total
+        f"""SELECT llm_category AS category, SUM({amount}) AS total
            FROM transaction_roles
            WHERE role = %s AND llm_category IS NOT NULL
              AND skipped = FALSE AND created_at BETWEEN %s AND %s
            GROUP BY llm_category
+           HAVING SUM({amount}) <> 0
            ORDER BY total DESC""",
         [role, date_from, date_to]
     )

@@ -74,9 +74,10 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
     return _png(fig)
 
 
-def spend_by_category(rows: list[dict], title: str, limit: int = 10) -> bytes | None:
+def spend_by_category(rows: list[dict], title: str, limit: int = 10, subtitle: str | None = None) -> bytes | None:
     """Horizontal bars, biggest first; the smallest folded into 'Everything
-    else'. rows: [{"category", "amount"}]."""
+    else'. rows: [{"category", "amount"}]. Drawn like the budget bars: the title
+    over a muted subtitle, in the same colours and type."""
     rows = sorted((r for r in rows if r["amount"] > 0.005), key=lambda r: -r["amount"])
     if not rows:
         return None
@@ -96,7 +97,9 @@ def spend_by_category(rows: list[dict], title: str, limit: int = 10) -> bytes | 
     ax.tick_params(axis="x", labelsize=8, colors=MUTED)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
-    ax.set_title(title, loc="left", fontsize=12, fontweight="bold", color=INK)
+    ax.set_title(title, loc="left", fontsize=12, fontweight="bold", color=INK, pad=22)
+    if subtitle:
+        ax.text(0, 1.02, subtitle, transform=ax.transAxes, fontsize=8.5, color=MUTED)
     return _png(fig)
 
 
