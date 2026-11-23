@@ -75,9 +75,10 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
 
 
 def spend_by_category(rows: list[dict], title: str, limit: int = 10, subtitle: str | None = None) -> bytes | None:
-    """Horizontal bars, biggest first; the smallest folded into 'Everything
-    else'. rows: [{"category", "amount"}]. Drawn like the budget bars: the title
-    over a muted subtitle, in the same colours and type."""
+    """Spend by category, biggest first, drawn like the budget bars: each row has a track to the largest
+    category's amount, so the bars compare, and a label with the amount in whole pounds and its share of
+    the total. The smallest categories past the limit are folded into 'Everything else'.
+    rows: [{"category", "amount"}]."""
     rows = sorted((r for r in rows if r["amount"] > 0.005), key=lambda r: -r["amount"])
     if not rows:
         return None
@@ -85,19 +86,23 @@ def spend_by_category(rows: list[dict], title: str, limit: int = 10, subtitle: s
         rest = rows[limit - 1:]
         rows = rows[:limit - 1] + [{"category": f"Everything else ({len(rest)})",
                                     "amount": sum(r["amount"] for r in rest)}]
-    rows = list(reversed(rows))
-    fig, ax = plt.subplots(figsize=(WIDTH, 1.0 + 0.42 * len(rows)))
+    total = sum(r["amount"] for r in rows)
     top = max(r["amount"] for r in rows)
-    ax.barh(range(len(rows)), [r["amount"] for r in rows], color=PACE, height=0.62)
+    rows = list(reversed(rows))                       # biggest at the top
+    height = 1.0 + 0.62 * len(rows)
+    fig, ax = plt.subplots(figsize=(WIDTH, height))
     for i, r in enumerate(rows):
-        ax.text(r["amount"] + top * 0.01, i, _money(r["amount"]), va="center", fontsize=8.5, color=INK)
-    ax.set_yticks(range(len(rows)), [r["category"] for r in rows], fontsize=9)
-    ax.set_xlim(0, top * 1.18)
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"£{v:,.0f}"))
-    ax.tick_params(axis="x", labelsize=8, colors=MUTED)
-    for side in ("top", "right", "left"):
+        ax.barh(i, top, color=TRACK, height=0.62, zorder=1)
+        ax.barh(i, r["amount"], color=PACE, height=0.62, zorder=2)
+        ax.text(top * 1.02, i, f"£{r['amount']:,.0f} · {r['amount'] / total:.0%}", va="center", ha="left",
+                fontsize=9, color=INK)
+    ax.set_yticks(range(len(rows)), [r["category"] for r in rows], fontsize=9.5, color=INK)
+    ax.set_xlim(0, top * 1.55)
+    ax.set_xticks([])
+    for side in ("top", "right", "left", "bottom"):
         ax.spines[side].set_visible(False)
-    ax.set_title(title, loc="left", fontsize=12, fontweight="bold", color=INK, pad=22)
+    ax.tick_params(axis="y", length=0)
+    ax.set_title(title + "\n", loc="left", fontsize=12, fontweight="bold", color=INK)
     if subtitle:
         ax.text(0, 1.02, subtitle, transform=ax.transAxes, fontsize=8.5, color=MUTED)
     return _png(fig)

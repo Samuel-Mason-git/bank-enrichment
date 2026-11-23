@@ -7,7 +7,7 @@ import app_config  # noqa: F401  (loads config/.env)
 
 import html
 
-from alerts import send_telegram
+from alerts import send_telegram, send_telegram_photo
 import budget_messages
 from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path, now
 
@@ -137,11 +137,25 @@ def format_weekly_message(stats: dict) -> str:
     return "\n".join(lines)
 
 
-def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
+def send_weekly_report(week_key: str, stats: dict, message: str, chart: bytes | None = None) -> None:
+    """The week's text, and its chart if there is one, as one Telegram message: the chart with the text as
+    its caption. Telegram allows a caption of 1,024 characters, so a longer text goes as a message of its
+    own, with the chart after it. The text is what counts: if it doesn't go, the week isn't recorded and
+    it's tried again next run."""
     con = get_con()
     # Escaped: category names like "Food & Drink" would otherwise break
     # Telegram's HTML parsing and the message would be rejected.
-    if not send_telegram(html.escape(message)):
+    text = html.escape(message)
+    if chart and len(text) <= budget_messages.CAPTION_LIMIT:
+        sent = send_telegram_photo(chart, caption=text)
+        if not sent:
+            log.warning("Chart not sent with the summary: sending the summary on its own")
+            sent = send_telegram(text)
+    else:
+        sent = send_telegram(text)
+        if chart and sent:
+            budget_messages.send_charts(chart)
+    if not sent:
         raise RuntimeError("Telegram didn't take the message -- not recorded, so it's retried next run")
     con.execute(
         """INSERT INTO summaries (period, period_key, total_spend, total_income, net, total_invested, total_saved, sent_at)
@@ -152,19 +166,15 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
     log.info(f"Weekly report sent and recorded for {week_key}")
 
 
-def send_week_charts(stats: dict) -> None:
-    """After the newest week's text: its spend by category. Best-effort, and only for the newest week,
-    so a run catching up on several doesn't send a pile of charts. Budgets are not in here: the budget
-    digest sends those on its own."""
+def week_chart(stats: dict) -> bytes | None:
+    """The week's spend by category, as a chart. Budgets aren't in it: the budget digest sends those."""
     import telegram_charts as charts
     rows = list(stats["spend_by_category"])
     if stats["unclassified_spend"] > 0.005:
         rows.append({"category": "Unclassified", "amount": stats["unclassified_spend"]})
     monday, sunday = stats["monday"], stats["sunday"]
-    budget_messages.send_charts(
-        charts.spend_by_category(rows, "Spending", subtitle=f"{monday:%d %b} – {sunday:%d %b} · "
-                                                            f"£{stats['total_spend']:,.2f} out"),
-    )
+    return charts.spend_by_category(rows, "Spending", subtitle=f"{monday:%d %b} – {sunday:%d %b} · "
+                                                                f"£{stats['total_spend']:,.2f} out")
 
 
 def run() -> None:
@@ -180,9 +190,7 @@ def run() -> None:
             stats = get_week_stats(week)
             message = format_weekly_message(stats)
             newest = week == missing[-1]
-            send_weekly_report(week, stats, message)
-            if newest:
-                send_week_charts(stats)
+            send_weekly_report(week, stats, message, week_chart(stats) if newest else None)
         except Exception as e:
             log.error(f"Failed to send weekly report for {week}: {e}", exc_info=True)
     log.info(f"--- Weekly summary complete in {time.time() - run_start:.2f}s ---")
