@@ -41,9 +41,46 @@ def test_the_weekly_message_has_no_budget_block(db):
     assert "Spend by category" in message
 
 
-def test_the_newest_week_sends_one_spend_chart_and_no_budget_charts(db, monkeypatch):
-    _week_with_a_deposit_back(db)
+PNG = b"\x89PNG\r\n\x1a\n" + b"not really an image"
+
+
+def _record_telegram(monkeypatch):
+    """Record what would be sent: texts and photos, in order."""
     sent = []
-    monkeypatch.setattr(budget_messages, "send_charts", lambda *pngs: sent.extend(pngs) or len(pngs))
-    weekly_summary.send_week_charts(weekly_summary.get_week_stats(WEEK))
-    assert len(sent) == 1 and sent[0] and sent[0][:8] == b"\x89PNG\r\n\x1a\n"
+    monkeypatch.setattr(weekly_summary, "send_telegram", lambda text: sent.append(("text", text)) or True)
+    monkeypatch.setattr(weekly_summary, "send_telegram_photo",
+                        lambda png, caption="": sent.append(("photo", caption)) or True)
+    monkeypatch.setattr(budget_messages, "send_charts", lambda *pngs: [sent.append(("photo", None)) for _ in pngs])
+    return sent
+
+
+def test_the_weekly_chart_is_a_real_chart_of_the_week(db):
+    _week_with_a_deposit_back(db)
+    png = weekly_summary.week_chart(weekly_summary.get_week_stats(WEEK))
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_summary_and_its_chart_go_as_one_message(db, monkeypatch):
+    _week_with_a_deposit_back(db)
+    sent = _record_telegram(monkeypatch)
+    stats = weekly_summary.get_week_stats(WEEK)
+    weekly_summary.send_weekly_report(WEEK, stats, weekly_summary.format_weekly_message(stats), PNG)
+    assert [kind for kind, _ in sent] == ["photo"]
+    assert "Spend by category" in sent[0][1]
+
+
+def test_a_summary_too_long_for_a_caption_goes_first_then_the_chart(db, monkeypatch):
+    _week_with_a_deposit_back(db)
+    sent = _record_telegram(monkeypatch)
+    stats = weekly_summary.get_week_stats(WEEK)
+    long_message = "x" * 1100
+    weekly_summary.send_weekly_report(WEEK, stats, long_message, PNG)
+    assert [kind for kind, _ in sent] == ["text", "photo"]
+
+
+def test_a_week_without_a_chart_is_just_the_text(db, monkeypatch):
+    _week_with_a_deposit_back(db)
+    sent = _record_telegram(monkeypatch)
+    stats = weekly_summary.get_week_stats(WEEK)
+    weekly_summary.send_weekly_report(WEEK, stats, weekly_summary.format_weekly_message(stats), None)
+    assert [kind for kind, _ in sent] == ["text"]
