@@ -9,7 +9,6 @@ import html
 
 from alerts import send_telegram
 import budget_messages
-import budgets as bg
 from database_functions import init_db, get_con, get_totals_by_role, get_category_totals_by_role, log_path, now
 
 LOG_PATH = log_path("weekly_summary.log")
@@ -153,22 +152,18 @@ def send_weekly_report(week_key: str, stats: dict, message: str) -> None:
     log.info(f"Weekly report sent and recorded for {week_key}")
 
 
-def budget_lines_or_none(month) -> list[str]:
-    return budget_messages.budget_lines(month)
-
-
-def send_week_charts(stats: dict, month) -> None:
-    """After the newest week's text: spend by category, then this month's
-    budget bars as they stand. Best-effort, and only for the newest week, so a
-    run catching up on several doesn't send a pile of charts."""
+def send_week_charts(stats: dict) -> None:
+    """After the newest week's text: its spend by category. Best-effort, and only for the newest week,
+    so a run catching up on several doesn't send a pile of charts. Budgets are not in here: the budget
+    digest sends those on its own."""
     import telegram_charts as charts
     rows = list(stats["spend_by_category"])
     if stats["unclassified_spend"] > 0.005:
         rows.append({"category": "Unclassified", "amount": stats["unclassified_spend"]})
     monday, sunday = stats["monday"], stats["sunday"]
     budget_messages.send_charts(
-        charts.spend_by_category(rows, f"Spending, {monday:%d %b} – {sunday:%d %b}"),
-        charts.budget_bars(month, "Budgets so far") if month and month.statuses else None,
+        charts.spend_by_category(rows, "Spending", subtitle=f"{monday:%d %b} – {sunday:%d %b} · "
+                                                            f"£{stats['total_spend']:,.2f} out"),
     )
 
 
@@ -185,12 +180,9 @@ def run() -> None:
             stats = get_week_stats(week)
             message = format_weekly_message(stats)
             newest = week == missing[-1]
-            month = bg.month_budgets() if newest else None
-            if month and month.statuses:
-                message += "\n" + "\n".join(budget_lines_or_none(month))
             send_weekly_report(week, stats, message)
             if newest:
-                send_week_charts(stats, month)
+                send_week_charts(stats)
         except Exception as e:
             log.error(f"Failed to send weekly report for {week}: {e}", exc_info=True)
     log.info(f"--- Weekly summary complete in {time.time() - run_start:.2f}s ---")

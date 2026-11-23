@@ -24516,42 +24516,42 @@
  ],
  "get_category_totals_by_role spend 2026-01-01": [
   {
-   "category": "Subscriptions & Software",
-   "total": -10.99
+   "category": "Bills & Utilities",
+   "total": 2912.0
   },
   {
    "category": "Food & Drink",
-   "total": -138.4
+   "total": 138.4
   },
   {
-   "category": "Bills & Utilities",
-   "total": -2912.0
+   "category": "Subscriptions & Software",
+   "total": 10.99
   }
  ],
  "get_category_totals_by_role spend 2026-06-01": [
   {
    "category": "Food & Drink",
-   "total": -41.0
+   "total": 41.0
   }
  ],
  "get_category_totals_by_role spend 2026-08-01": [
   {
-   "category": "Food & Drink",
-   "total": -49.0
+   "category": "Bills & Utilities",
+   "total": 1597.0
   },
   {
-   "category": "Bills & Utilities",
-   "total": -1597.0
+   "category": "Food & Drink",
+   "total": 49.0
   }
  ],
  "get_category_totals_by_role spend 2026-09-01": [
   {
-   "category": "Food & Drink",
-   "total": -3.4
+   "category": "Subscriptions & Software",
+   "total": 10.99
   },
   {
-   "category": "Subscriptions & Software",
-   "total": -10.99
+   "category": "Food & Drink",
+   "total": 3.4
   }
  ],
  "get_category_totals_by_role transfer 2026-01-01": [
@@ -24650,12 +24650,12 @@
    "net": 1140.0,
    "spend_by_category": [
     {
-     "amount": 45.0,
-     "category": "Food & Drink"
-    },
-    {
      "amount": 1315.0,
      "category": "Bills & Utilities"
+    },
+    {
+     "amount": 45.0,
+     "category": "Food & Drink"
     }
    ],
    "total_income": 2500.0,
@@ -24675,12 +24675,12 @@
    "net": 854.0,
    "spend_by_category": [
     {
-     "amount": 49.0,
-     "category": "Food & Drink"
-    },
-    {
      "amount": 1597.0,
      "category": "Bills & Utilities"
+    },
+    {
+     "amount": 49.0,
+     "category": "Food & Drink"
     }
    ],
    "total_income": 2500.0,
@@ -24695,12 +24695,12 @@
    "net": -14.39,
    "spend_by_category": [
     {
-     "amount": 3.4,
-     "category": "Food & Drink"
-    },
-    {
      "amount": 10.99,
      "category": "Subscriptions & Software"
+    },
+    {
+     "amount": 3.4,
+     "category": "Food & Drink"
     }
    ],
    "total_income": 0.0,
@@ -28022,12 +28022,12 @@
   "📅 *Week 24, 2026 (8 Jun – 14 Jun 2026)*\n\n💸 Spend: £21.00\n💰 Income: £0.00\n📉 Net: £-21.00\n\n*Spend by category:*\n  • Food &amp; Drink: £21.00",
   "📅 *Week 25, 2026 (15 Jun – 21 Jun 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
   "📅 *Week 26, 2026 (22 Jun – 28 Jun 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
-  "📅 *Week 27, 2026 (29 Jun – 5 Jul 2026)*\n\n💸 Spend: £1337.00\n💰 Income: £0.00\n📉 Net: £-1337.00\n\n*Spend by category:*\n  • Food &amp; Drink: £22.00\n  • Bills &amp; Utilities: £1315.00",
+  "📅 *Week 27, 2026 (29 Jun – 5 Jul 2026)*\n\n💸 Spend: £1337.00\n💰 Income: £0.00\n📉 Net: £-1337.00\n\n*Spend by category:*\n  • Bills &amp; Utilities: £1315.00\n  • Food &amp; Drink: £22.00",
   "📅 *Week 28, 2026 (6 Jul – 12 Jul 2026)*\n\n💸 Spend: £23.00\n💰 Income: £0.00\n📉 Net: £-23.00\n\n*Spend by category:*\n  • Food &amp; Drink: £23.00",
   "📅 *Week 29, 2026 (13 Jul – 19 Jul 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
   "📅 *Week 31, 2026 (27 Jul – 2 Aug 2026)*\n\n💸 Spend: £1315.00\n💰 Income: £0.00\n📉 Net: £-1315.00\n\n*Spend by category:*\n  • Bills &amp; Utilities: £1315.00",
   "📅 *Week 32, 2026 (3 Aug – 9 Aug 2026)*\n\n💸 Spend: £24.00\n💰 Income: £0.00\n📉 Net: £-24.00\n\n*Spend by category:*\n  • Food &amp; Drink: £24.00",
-  "📅 *Week 33, 2026 (10 Aug – 16 Aug 2026)*\n\n💸 Spend: £307.00\n💰 Income: £0.00\n📉 Net: £-307.00\n\n*Spend by category:*\n  • Food &amp; Drink: £25.00\n  • Bills &amp; Utilities: £282.00",
+  "📅 *Week 33, 2026 (10 Aug – 16 Aug 2026)*\n\n💸 Spend: £307.00\n💰 Income: £0.00\n📉 Net: £-307.00\n\n*Spend by category:*\n  • Bills &amp; Utilities: £282.00\n  • Food &amp; Drink: £25.00",
   "📅 *Week 34, 2026 (17 Aug – 23 Aug 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
   "📅 *Week 35, 2026 (24 Aug – 30 Aug 2026)*\n\n💸 Spend: £0.00\n💰 Income: £2500.00\n📈 Net: £2500.00\n\n*Income by category:*\n  • Income: £2500.00",
   "📅 *Week 36, 2026 (31 Aug – 6 Sep 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00\n📊 Invested: £250.00\n🏦 Saved: £100.00\n↔ Transferred: £30.00 (excluded from totals)",
@@ -28037,9 +28037,9 @@
   "📅 *Week 40, 2026 (28 Sep – 4 Oct 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
   "📅 *Week 41, 2026 (5 Oct – 11 Oct 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
   "📅 *Week 42, 2026 (12 Oct – 18 Oct 2026)*\n\n💸 Spend: £0.00\n💰 Income: £0.00\n📈 Net: £0.00",
-  "📅 *Week 43, 2026 (19 Oct – 25 Oct 2026)*\n\n💸 Spend: £3224.75\n💰 Income: £0.00\n📉 Net: £-3224.75\n\n*Spend by category:*\n  • Food &amp; Drink: £8.75\n  • Tax: £45.00\n  • Transport: £60.00\n  • Bills &amp; Utilities: £3000.00\n  • Unclassified: £111.00",
-  "📊 *July 2026 Summary*\n\n💸 Spend: £1360.00\n💰 Income: £2500.00\n📈 Net: £1140.00\n\n*Spend by category:*\n  • Food &amp; Drink: £45.00\n  • Bills &amp; Utilities: £1315.00\n\n*Income by category:*\n  • Income: £2500.00",
-  "📊 *August 2026 Summary*\n\n💸 Spend: £1646.00\n💰 Income: £2500.00\n📈 Net: £854.00\n\n*Spend by category:*\n  • Food &amp; Drink: £49.00\n  • Bills &amp; Utilities: £1597.00\n\n*Income by category:*\n  • Income: £2500.00",
+  "📅 *Week 43, 2026 (19 Oct – 25 Oct 2026)*\n\n💸 Spend: £3224.75\n💰 Income: £0.00\n📉 Net: £-3224.75\n\n*Spend by category:*\n  • Bills &amp; Utilities: £3000.00\n  • Transport: £60.00\n  • Tax: £45.00\n  • Food &amp; Drink: £8.75\n  • Unclassified: £111.00",
+  "📊 *July 2026 Summary*\n\n💸 Spend: £1360.00\n💰 Income: £2500.00\n📈 Net: £1140.00\n\n*Spend by category:*\n  • Bills &amp; Utilities: £1315.00\n  • Food &amp; Drink: £45.00\n\n*Income by category:*\n  • Income: £2500.00",
+  "📊 *August 2026 Summary*\n\n💸 Spend: £1646.00\n💰 Income: £2500.00\n📈 Net: £854.00\n\n*Spend by category:*\n  • Bills &amp; Utilities: £1597.00\n  • Food &amp; Drink: £49.00\n\n*Income by category:*\n  • Income: £2500.00",
   "📊 *September 2026 Summary*\n\n💸 Spend: £14.39\n💰 Income: £0.00\n📉 Net: £-14.39\n📊 Invested: £250.00\n🏦 Saved: £60.00\n↔ Transferred: £30.00 (excluded from totals)\n\n*Spend by category:*\n  • Subscriptions &amp; Software: £10.99"
  ],
  "totals after reshaping": {
