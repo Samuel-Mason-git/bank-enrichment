@@ -75,9 +75,8 @@ def budget_bars(mb, title: str | None = None) -> bytes | None:
 
 
 def spend_by_category(rows: list[dict], title: str, limit: int = 10, subtitle: str | None = None) -> bytes | None:
-    """Spend by category, biggest first, drawn like the budget bars: each row has a track to the largest
-    category's amount, so the bars compare, and a label with the amount in whole pounds and its share of
-    the total. The smallest categories past the limit are folded into 'Everything else'.
+    """Spend by category, biggest at the top: one bar each, its amount in whole pounds and its share of the
+    total in a column at the right. The smallest categories past the limit are folded into 'Everything else'.
     rows: [{"category", "amount"}]."""
     rows = sorted((r for r in rows if r["amount"] > 0.005), key=lambda r: -r["amount"])
     if not rows:
@@ -88,23 +87,27 @@ def spend_by_category(rows: list[dict], title: str, limit: int = 10, subtitle: s
                                     "amount": sum(r["amount"] for r in rest)}]
     total = sum(r["amount"] for r in rows)
     top = max(r["amount"] for r in rows)
-    rows = list(reversed(rows))                       # biggest at the top
-    height = 1.0 + 0.62 * len(rows)
-    fig, ax = plt.subplots(figsize=(WIDTH, height))
-    for i, r in enumerate(rows):
-        ax.barh(i, top, color=TRACK, height=0.62, zorder=1)
-        ax.barh(i, r["amount"], color=PACE, height=0.62, zorder=2)
-        ax.text(top * 1.02, i, f"£{r['amount']:,.0f} · {r['amount'] / total:.0%}", va="center", ha="left",
-                fontsize=9, color=INK)
-    ax.set_yticks(range(len(rows)), [r["category"] for r in rows], fontsize=9.5, color=INK)
+    rows = list(reversed(rows))
+    fig, ax = plt.subplots(figsize=(WIDTH, 1.2 + 0.58 * len(rows)))
+    ax.barh(range(len(rows)), [r["amount"] for r in rows], color=PACE, height=0.56)
     ax.set_xlim(0, top * 1.55)
+    ax.set_ylim(-0.6, len(rows) - 0.4)
+    ax.set_yticks(range(len(rows)), [r["category"] for r in rows], fontsize=10.5, color=INK)
+    ax.tick_params(axis="y", length=0, pad=10)
     ax.set_xticks([])
     for side in ("top", "right", "left", "bottom"):
         ax.spines[side].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    ax.set_title(title + "\n", loc="left", fontsize=12, fontweight="bold", color=INK)
+    column = ax.get_yaxis_transform()
+    ax.text(0.98, len(rows) - 0.4, "Amount", transform=column, ha="right", va="bottom", fontsize=8.5, color=MUTED)
+    ax.text(0.83, len(rows) - 0.4, "Share", transform=column, ha="right", va="bottom", fontsize=8.5, color=MUTED)
+    for i, r in enumerate(rows):
+        share = r["amount"] / total
+        ax.text(0.83, i, f"{share:.0%}", transform=column, ha="right", va="center", fontsize=10.5, color=MUTED)
+        ax.text(0.98, i, f"£{r['amount']:,.0f}", transform=column, ha="right", va="center", fontsize=10.5,
+                color=INK, fontweight="bold")
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold", color=INK, pad=30)
     if subtitle:
-        ax.text(0, 1.02, subtitle, transform=ax.transAxes, fontsize=8.5, color=MUTED)
+        ax.text(0, 1.035, subtitle, transform=ax.transAxes, fontsize=9.5, color=MUTED)
     return _png(fig)
 
 
